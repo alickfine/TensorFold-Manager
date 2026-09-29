@@ -125,15 +125,24 @@ export function createApiClient({ getToken = getAdminToken, fetchImpl = globalTh
     const decoder = new TextDecoder();
     let pending = '';
     let result = '';
+    let sawDone = false;
     while (true) {
       const { value, done } = await reader.read();
       pending += decoder.decode(value, { stream: !done });
       const lines = pending.split(/\r?\n/);
       pending = lines.pop() ?? '';
+      if (done && pending) {
+        lines.push(pending);
+        pending = '';
+      }
       for (const line of lines) {
         if (!line.startsWith('data:')) continue;
         const data = line.slice(5).trim();
-        if (!data || data === '[DONE]') continue;
+        if (!data) continue;
+        if (data === '[DONE]') {
+          sawDone = true;
+          continue;
+        }
         let event;
         try {
           event = JSON.parse(data);
@@ -147,6 +156,9 @@ export function createApiClient({ getToken = getAdminToken, fetchImpl = globalTh
         }
       }
       if (done) break;
+    }
+    if (!sawDone) {
+      throw new ApiError('流式响应在完成标记前中断，已保留收到的部分内容', { code:'stream_interrupted' });
     }
     return result;
   }

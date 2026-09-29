@@ -3,8 +3,10 @@ import assert from 'node:assert/strict';
 
 import { escapeHtml, displayValue } from '../web/views/shared.js';
 import { ApiError, parseApiError, createApiClient, resolveBootstrapToken } from '../web/api.js';
-import { serializeSettings } from '../web/views/settings.js';
+import { serializeSettings, partitionProfileConfig } from '../web/views/settings.js';
 import { exportTextFile } from '../web/export.js';
+import { chooseLaunchModel, getLaunchGate } from '../web/views/overview.js';
+import { canValidateModel } from '../web/views/models.js';
 
 test('escapeHtml escapes markup and attribute delimiters from backend text', () => {
   assert.equal(
@@ -153,4 +155,64 @@ test('exportTextFile prefers the native save bridge and treats user cancel as a 
   });
   assert.deepEqual(messages, [{ name:'stats.csv', content:'a,b\n1,2\n' }]);
   assert.deepEqual(result, { saved:false });
+});
+
+test('chooseLaunchModel ignores unsupported scanned models and prefers a verified installed checkpoint', () => {
+  const snapshot = {
+    settings: { selected_model:'/Models/DeepSeek-V4-AWQ' },
+    engine: { model:null },
+    models: [
+      { id:'/Models/DeepSeek-V4-AWQ', name:'DeepSeek-V4-AWQ', installed:true, supported:false },
+      { id:'/Models/Qwen3.8-27B', name:'Qwen3.8-27B', installed:true, supported:true },
+      { id:'/Models/Qwen-Missing', name:'Qwen Missing', installed:false, supported:true },
+    ],
+  };
+  const choice = chooseLaunchModel(snapshot);
+  assert.equal(choice.selected, '/Models/Qwen3.8-27B');
+  assert.deepEqual(choice.options.map((model) => model.id), ['/Models/Qwen3.8-27B']);
+});
+
+test('getLaunchGate blocks engine controls until a runtime is installed', () => {
+  assert.deepEqual(
+    getLaunchGate({ update:{ active:null }, engine:{ state:'stopped' } }, '/Models/Qwen3.8-27B'),
+    { allowed:false, reason:'请先安装 TensorFold 引擎' },
+  );
+  assert.deepEqual(
+    getLaunchGate({ update:{ active:{ version:'v0.3.6' } }, engine:{ state:'stopped' } }, ''),
+    { allowed:false, reason:'请先安装并选择受支持模型' },
+  );
+});
+
+test('streamChat preserves delivered text but rejects EOF before the SSE done marker', async () => {
+  const chunks = [];
+  const client = createApiClient({
+    getToken: async () => 'token',
+    fetchImpl: async () => new Response('data: {"choices":[{"delta":{"content":"partial"}}]}\n\n', {
+      status:200,
+      headers:{ 'content-type':'text/event-stream' },
+    }),
+  });
+  await assert.rejects(
+    client.streamChat({ messages:[] }, { onDelta:(text) => chunks.push(text) }),
+    (error) => error instanceof ApiError && error.code === 'stream_interrupted',
+  );
+  assert.deepEqual(chunks, ['partial']);
+});
+
+test('canValidateModel only offers real CLI validation for complete unsupported local models', () => {
+  assert.equal(canValidateModel({ installed:true, supported:false, id:'/Models/custom' }), true);
+  assert.equal(canValidateModel({ installed:false, supported:false, id:'/Models/missing' }), false);
+  assert.equal(canValidateModel({ installed:true, supported:true, id:'/Models/verified' }), false);
+  assert.equal(canValidateModel({ installed:true, supported:false, id:'owner/remote' }), false);
+});
+
+test('partitionProfileConfig accepts only persisted profile fields and separates model settings', () => {
+  assert.deepEqual(partitionProfileConfig({
+    selected_model:'/Models/Qwen', temperature:0.5, top_p:0.9, thinking:false,
+  }), {
+    settings:{ selected_model:'/Models/Qwen', temperature:0.5, top_p:0.9, thinking:false },
+    modelConfig:{ temperature:0.5, top_p:0.9, thinking:false },
+  });
+  assert.throws(() => partitionProfileConfig({ engine_port:18080 }), /engine_port/);
+  assert.throws(() => partitionProfileConfig({ api_key:'secret' }), /api_key/);
 });

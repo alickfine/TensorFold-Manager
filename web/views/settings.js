@@ -1,6 +1,8 @@
 const STRING_FIELDS = new Set(['selected_model', 'engine_python', 'snapshot_dir']);
 const INTEGER_FIELDS = new Set(['engine_port', 'gateway_port', 'context', 'max_tokens', 'top_k', 'parallel']);
 const NUMBER_FIELDS = new Set(['temperature', 'top_p', 'prompt_cache_gib', 'mlx_cache_gib']);
+const PROFILE_FIELDS = new Set(['selected_model', 'context', 'max_tokens', 'temperature', 'top_p', 'top_k', 'parallel', 'thinking', 'prompt_cache_gib', 'mlx_cache_gib']);
+const MODEL_PROFILE_FIELDS = new Set([...PROFILE_FIELDS].filter((field) => field !== 'selected_model'));
 
 export function serializeSettings(values) {
   const output = {};
@@ -26,4 +28,13 @@ export function serializeSettings(values) {
     }
   }
   return output;
+}
+
+export function partitionProfileConfig(config) {
+  if (!config || typeof config !== 'object' || Array.isArray(config)) throw new TypeError('profile config must be an object');
+  const unknown = Object.keys(config).filter((field) => !PROFILE_FIELDS.has(field));
+  if (unknown.length) throw new TypeError(`Unsupported profile fields: ${unknown.join(', ')}`);
+  const settings = serializeSettings(config);
+  const modelConfig = Object.fromEntries(Object.entries(settings).filter(([field]) => MODEL_PROFILE_FIELDS.has(field)));
+  return { settings, modelConfig };
 }

@@ -1,7 +1,7 @@
 import { api } from './api.js';
 import { exportTextFile } from './export.js';
 import { formValues, escapeHtml, capability } from './views/shared.js';
-import { serializeSettings } from './views/settings.js';
+import { serializeSettings, partitionProfileConfig } from './views/settings.js';
 import { renderOverview } from './views/overview.js';
 import { renderStats } from './views/stats.js';
 import { renderCache } from './views/cache.js';
@@ -186,6 +186,7 @@ async function handleAction(action, value, element) {
   if (action === 'engine-restart') return engineAction('restart', value);
   if (action === 'model-default') return run('默认模型已保存', () => api.request('/api/settings', { method:'PUT', body:{ selected_model:value } }));
   if (action === 'models-scan') return run('模型扫描完成', () => api.request('/api/models/scan', { method:'POST', body:{} }));
+  if (action === 'model-validate') return run('兼容性预检通过；这是 CLI 兼容性证据，尚未加载模型', () => api.request('/api/models/validate', { method:'POST', body:{ model:value } }));
   if (action === 'job-action') {
     const separator = value.lastIndexOf(':');
     const id = value.slice(0, separator);
@@ -196,6 +197,30 @@ async function handleAction(action, value, element) {
   if (action === 'profile-delete') {
     if (confirm('删除这个配置档？')) return run('配置档已删除', () => api.request(`/api/profiles/${encodeURIComponent(value)}`, { method:'DELETE' }));
     return;
+  }
+  if (action === 'profile-export') {
+    const profiles = state.pageData.profiles?.profiles ?? state.snapshot?.profiles ?? [];
+    const profile = profiles.find((item) => item.id === value);
+    if (!profile) throw new Error('配置档不存在');
+    const result = await exportTextFile({ name:`profile-${profile.id}.json`, content:JSON.stringify({ schema:1, profile }, null, 2) });
+    if (result.saved) toast('配置档已导出');
+    return;
+  }
+  if (action === 'profile-apply') {
+    const profiles = state.pageData.profiles?.profiles ?? state.snapshot?.profiles ?? [];
+    const profile = profiles.find((item) => item.id === value);
+    if (!profile) throw new Error('配置档不存在');
+    const requested = state.routeQuery.get('model');
+    const models = state.snapshot?.models ?? [];
+    const target = models.find((model) => model.id === requested)?.id ?? models.find((model) => model.id === state.snapshot?.settings?.selected_model || model.repo === state.snapshot?.settings?.selected_model)?.id;
+    if (!target) throw new Error('请先明确选择配置档的应用目标模型');
+    const { settings, modelConfig } = partitionProfileConfig(profile.config ?? {});
+    if (profile.config?.selected_model && profile.config.selected_model !== target && !confirm(`配置档记录的默认模型为：\n${profile.config.selected_model}\n\n本次明确应用到当前模型：\n${target}\n\n继续吗？`)) return;
+    return run('配置档已应用；运行中参数等待重启生效', async () => {
+      if (Object.keys(modelConfig).length) await api.request('/api/models/config', { method:'PUT', body:{ model:target, config:modelConfig } });
+      await api.request('/api/settings', { method:'PUT', body:{ ...settings, selected_model:target } });
+      return {};
+    });
   }
   if (action === 'cache-clear') {
     if (confirm('清理后端确认归属的受管快照？')) return run('缓存清理完成', () => api.request('/api/cache/clear', { method:'POST', body:{ confirm:true } }));
@@ -304,6 +329,14 @@ async function handleForm(form) {
   if (action === 'profile-create') {
     const model = state.snapshot?.models?.find((item) => item.id === values.model);
     return run('配置档已保存', () => api.request('/api/profiles', { method:'POST', body:{ name:values.name, model:values.model, config:model?.config ?? {} } }));
+  }
+  if (action === 'profile-import') {
+    let parsed;
+    try { parsed = JSON.parse(values.json); } catch { throw new Error('配置档 JSON 格式无效'); }
+    const profile = parsed?.profile ?? parsed;
+    if (!profile || typeof profile.name !== 'string' || !profile.name.trim()) throw new Error('配置档缺少名称');
+    const { settings } = partitionProfileConfig(profile.config ?? {});
+    return run('配置档已导入', () => api.request('/api/profiles', { method:'POST', body:{ name:profile.name.trim(), config:settings } }));
   }
   if (action === 'download-create') {
     if (!/^[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*$/.test(values.repo) || values.repo.includes('..')) {
