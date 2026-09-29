@@ -41,6 +41,59 @@ final class BootstrapTests {
         XCTAssertEqual(file.name, "usage.csv")
         XCTAssertEqual(String(data: file.bytes, encoding: .utf8), "model,tokens\nqwen,42")
     }
+    func testLanguagePreferenceDefaultsToChineseAndPersistsStrictEnum() throws {
+        let suiteName = "TensorFoldManagerNativeTests-" + UUID().uuidString
+        guard let defaults = UserDefaults(suiteName: suiteName) else { fatalError("Could not create test defaults") }
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let preference = NativeLanguagePreference(defaults: defaults)
+        XCTAssertEqual(preference.current, .zhCN)
+        preference.set(.english)
+        XCTAssertEqual(preference.current, .english)
+        XCTAssertEqual(defaults.string(forKey: NativeLanguagePreference.key), "en")
+        defaults.set("fr", forKey: NativeLanguagePreference.key)
+        XCTAssertEqual(preference.current, .zhCN)
+    }
+    func testLanguageBridgeAcceptsOnlyExactEnums() throws {
+        XCTAssertEqual(try NativeLanguageMessage.parse("zh-CN"), .zhCN)
+        XCTAssertEqual(try NativeLanguageMessage.parse("en"), .english)
+        for body: Any in ["zh", "en-US", "EN", " zh-CN", 1, ["language": "en"]] {
+            XCTAssertThrowsError(try NativeLanguageMessage.parse(body))
+        }
+    }
+    func testNativeBridgeRequiresMainFrameAndExactManagementOrigin() {
+        XCTAssertTrue(NativeBridgeOrigin.permits(isMainFrame: true, scheme: "http", host: "127.0.0.1", originPort: 45678,
+                                                 managementPort: 45678, instanceReady: true, quitting: false))
+        let rejected = [
+            NativeBridgeOrigin.permits(isMainFrame: false, scheme: "http", host: "127.0.0.1", originPort: 45678, managementPort: 45678, instanceReady: true, quitting: false),
+            NativeBridgeOrigin.permits(isMainFrame: true, scheme: "https", host: "127.0.0.1", originPort: 45678, managementPort: 45678, instanceReady: true, quitting: false),
+            NativeBridgeOrigin.permits(isMainFrame: true, scheme: "http", host: "localhost", originPort: 45678, managementPort: 45678, instanceReady: true, quitting: false),
+            NativeBridgeOrigin.permits(isMainFrame: true, scheme: "http", host: "127.0.0.1", originPort: 45679, managementPort: 45678, instanceReady: true, quitting: false),
+            NativeBridgeOrigin.permits(isMainFrame: true, scheme: "http", host: "127.0.0.1", originPort: 45678, managementPort: nil, instanceReady: true, quitting: false),
+            NativeBridgeOrigin.permits(isMainFrame: true, scheme: "http", host: "127.0.0.1", originPort: 45678, managementPort: 45678, instanceReady: false, quitting: false),
+            NativeBridgeOrigin.permits(isMainFrame: true, scheme: "http", host: "127.0.0.1", originPort: 45678, managementPort: 45678, instanceReady: true, quitting: true),
+        ]
+        rejected.forEach { XCTAssertFalse($0) }
+    }
+    func testNativeCopyCoversChineseDefaultAndEnglishDialogs() {
+        let zh = NativeCopy(language: .zhCN)
+        XCTAssertEqual(zh.editMenu, "编辑")
+        XCTAssertEqual(zh.startupFailureTitle, "TensorFold Manager 启动失败")
+        XCTAssertEqual(zh.confirmTitle, "确认操作")
+        XCTAssertEqual(zh.shutdownTimeoutTitle, "服务尚未退出")
+        XCTAssertEqual(zh.quitButton, "退出")
+        XCTAssertEqual(zh.resourceDirectoryMissing, "App资源目录缺失")
+        XCTAssertEqual(zh.readinessTimeout, "管理服务30秒内未就绪")
+        XCTAssertEqual(zh.unexpectedStartupFailure("disk error"), "启动管理服务时发生错误：disk error")
+        let en = NativeCopy(language: .english)
+        XCTAssertEqual(en.editMenu, "Edit")
+        XCTAssertEqual(en.startupFailureTitle, "TensorFold Manager Failed to Start")
+        XCTAssertEqual(en.confirmTitle, "Confirm Action")
+        XCTAssertEqual(en.shutdownTimeoutTitle, "Service Has Not Quit")
+        XCTAssertEqual(en.quitButton, "Quit")
+        XCTAssertEqual(en.resourceDirectoryMissing, "App resources directory is missing")
+        XCTAssertEqual(en.unexpectedStartupFailure("disk error"), "An error occurred while starting the management service: disk error")
+        XCTAssertEqual(en.workerExited(status: 9), "Management service exited with code 9")
+    }
     static var allTests = [("testRejectsForeignPID", testRejectsForeignPID), ("testRejectsNonceAndInvalidPorts", testRejectsNonceAndInvalidPorts), ("testAcceptsMatchingHandshake", testAcceptsMatchingHandshake), ("testNavigationExactOrigin", testNavigationExactOrigin)]
 }
 let suite = BootstrapTests()
@@ -49,7 +102,11 @@ try suite.testRejectsNonceAndInvalidPorts()
 try suite.testAcceptsMatchingHandshake()
 suite.testNavigationExactOrigin()
 try suite.testExportRejectsPathsAndUnsupportedTypes()
-print("PASS: 5 native bootstrap, exact-origin and export checks")
+try suite.testLanguagePreferenceDefaultsToChineseAndPersistsStrictEnum()
+try suite.testLanguageBridgeAcceptsOnlyExactEnums()
+suite.testNativeBridgeRequiresMainFrameAndExactManagementOrigin()
+suite.testNativeCopyCoversChineseDefaultAndEnglishDialogs()
+print("PASS: 9 native bootstrap, origin, export and bilingual language checks")
 let credential = try CredentialRequest.parse(Data(#"{"operation":"set","provider":"hf-upload","token":"fixture-secret"}"#.utf8))
 XCTAssertEqual(credential.provider, "hf-upload")
 for input in [#"{"operation":"get","provider":"existing-omlx"}"#, #"{"operation":"status","provider":"hf-upload","token":"secret"}"#, #"{"operation":"set","provider":"hf-upload","token":""}"#] {

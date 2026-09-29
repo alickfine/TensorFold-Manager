@@ -38,6 +38,7 @@ nav { padding:0 13px; }
 .tf-workspace { min-width:0; }
 header { position:sticky; top:0; z-index:2; display:flex; align-items:center; justify-content:space-between; height:59px; padding:0 32px; color:#8995a7; font-size:12px; background:#fff; border-bottom:1px solid var(--line); }
 .tf-header-right,.tf-actions,.tf-row,.tf-inline-filters { display:flex; align-items:center; gap:9px; }
+#language-select { width:auto; min-width:96px; padding:8px 28px 8px 10px; }
 .tf-row { justify-content:space-between; }
 #task-count { color:var(--blue); }
 main { max-width:1660px; min-height:calc(100vh - 140px); margin:auto; padding:24px 32px; }

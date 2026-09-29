@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { escapeHtml, displayValue } from '../web/views/shared.js';
-import { ApiError, parseApiError, createApiClient, resolveBootstrapToken } from '../web/api.js';
+import { ApiError, parseApiError, createApiClient, resolveBootstrapToken, getBootstrapLanguage } from '../web/api.js';
 import { serializeSettings, partitionProfileConfig } from '../web/views/settings.js';
 import { exportTextFile } from '../web/export.js';
 import { chooseLaunchModel, getLaunchGate } from '../web/views/overview.js';
@@ -167,6 +167,16 @@ test('development fragment bootstrap requires explicit loopback dev mode and era
     }),
     /Native bootstrap unavailable/,
   );
+});
+
+test('native bootstrap exposes only a supported persisted language', async () => {
+  const language = { messageHandlers:{ bootstrap:{ postMessage:async () => ({ token:'token', instance_id:'instance', language:'en' }) } } };
+  assert.equal(await resolveBootstrapToken({ webkit:language }), 'token');
+  assert.equal(getBootstrapLanguage(), 'en');
+
+  const invalid = { messageHandlers:{ bootstrap:{ postMessage:async () => ({ token:'token', instance_id:'instance', language:'fr' }) } } };
+  assert.equal(await resolveBootstrapToken({ webkit:invalid }), 'token');
+  assert.equal(getBootstrapLanguage(), null);
 });
 
 test('exportTextFile prefers the native save bridge and treats user cancel as a normal result', async () => {

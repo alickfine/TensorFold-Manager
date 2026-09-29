@@ -17,7 +17,7 @@ import shutil
 import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
-VERSION = '0.1.0-alpha.1'
+VERSION = '0.1.0-alpha.2'
 ALLOWED = {'.py', '.js', '.mjs', '.css', '.html', '.json', '.toml', '.md'}
 
 

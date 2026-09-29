@@ -32,7 +32,7 @@ jobs:
           runtime=$(./uv-aarch64-apple-darwin/uv python find 3.12.9)
           root=$(dirname "$(dirname "$runtime")")
           export TFM_BUILD_VERSION="${GITHUB_REF_NAME#v}"
-          if [[ "$GITHUB_REF" != refs/tags/* ]]; then export TFM_BUILD_VERSION="0.1.0-alpha.1"; fi
+          if [[ "$GITHUB_REF" != refs/tags/* ]]; then export TFM_BUILD_VERSION="0.1.0-alpha.2"; fi
           "$runtime" scripts/build-app.py --runtime "$root" --uv ./uv-aarch64-apple-darwin/uv --output dist/release
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -45,4 +45,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" --prerelease --title "TensorFold Manager $GITHUB_REF_NAME · 测试版" --notes "Apple Silicon 测试版。Ad hoc 签名，未进行 Apple 公证。首次安装引擎需要联网，模型独立下载。运行能力和验收情况见仓库 docs/acceptance.md。" dist/release/*.dmg dist/release/SHA256SUMS.txt
+          notes_args=(--notes "Apple Silicon alpha. Ad hoc signed; not Apple notarized. 引擎和模型首次安装需要联网。 Engine and models require separate installation. 验收 / Acceptance: docs/acceptance.md and docs/acceptance.en.md.")
+          if [[ -f "docs/releases/$GITHUB_REF_NAME.md" ]]; then notes_args=(--notes-file "docs/releases/$GITHUB_REF_NAME.md"); fi
+          gh release create "$GITHUB_REF_NAME" --prerelease --title "TensorFold Manager $GITHUB_REF_NAME · Alpha" "${notes_args[@]}" dist/release/*.dmg dist/release/SHA256SUMS.txt

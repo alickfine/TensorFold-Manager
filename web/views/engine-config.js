@@ -1,5 +1,6 @@
 import { h, capability } from './shared.js';
 import { renderAdvancedOptions } from './advanced-options.js';
+import { t } from '../i18n.js';
 
 export function renderEngineConfig(state) {
   const settings = state.snapshot?.settings ?? {};
@@ -12,7 +13,7 @@ export function renderEngineConfig(state) {
       + h.field('Top P', 'top_p', settings.top_p ?? '', { type:'number', min:0, max:1, step:'0.01' })
       + h.field('Top K', 'top_k', settings.top_k ?? '', { type:'number', min:0 })
       + h.field('并发数', 'parallel', settings.parallel ?? '', { hint:'填写 auto 或 1–128 的整数' })
-      + h.select('Thinking', 'thinking', [['true','启用'],['false','停用']], String(Boolean(settings.thinking)))
+      + h.select('Thinking', 'thinking', [['true',t('启用')],['false',t('停用')]], String(Boolean(settings.thinking)))
       + h.field('Prompt cache GiB', 'prompt_cache_gib', settings.prompt_cache_gib ?? '', { type:'number', min:0, step:'0.1' })
       + h.field('MLX cache GiB', 'mlx_cache_gib', settings.mlx_cache_gib ?? '', { type:'number', min:0, step:'0.1' })
       + h.field('Engine Python', 'engine_python', settings.engine_python ?? '', { disabled:!external.enabled, hint:external.enabled ? '仅显式开发模式可更改' : external.reason }),
