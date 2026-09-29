@@ -24,7 +24,7 @@
 - 下载认证仅通过 App 自有凭据显式启用，官方精确域名可接收对应 token，第三方镜像禁止携带 token，跳转剥离认证头。4 项新增凭据边界测试及原下载测试通过；未操作真实 Keychain。
 - 参考答案测试页已接入题目添加 / 删除、真实结果、部分结果和取消队列。评分为参考文本相等 / 包含，不代表通用知识准确率。
 - 真实 loopback 管理 HTTP 集成检查：state、resources、services、tools、accuracy、downloads/catalog、cache、stats、keys、profiles、logs、benchmark/results、updates 均返回 200。此次未启动模型、未停止外部服务。
-- 本次 Python 全套 93 tests、Web 22 tests 通过；外部生命周期与工具监督器仍在并行完善，因此需以最终集成后的重新验证为准。
+- 前一集成快照 Python 全套 119 tests、Web 22 tests 通过；当前进程连接校验与界面仍在更新，最终集成后必须重新验证。
 
 ## 待完成
 
@@ -35,3 +35,12 @@
 - DMG 挂载 / 安装 / 最终启动、公开源码同步、GitHub Release 和 SHA256。
 
 不能以当前单项通过替代最终安装包与业务闭环验收。部署目标 macOS 14；本记录仅证明本机 macOS 27 实际结果。
+
+## 新增下载与资源证据（仍实施中）
+
+- 官方 Hugging Face 固定提交 `0d77464eeb233a2da68ebf9d7dc4ef46` 的 `mlx-community/gemma-4-26b-a4b-it-4bit` 实际下载完成：12 文件，15,373,588,575 bytes，各文件 SHA256 / Git blob 校验通过；隔离 TensorFold CLI info 成功。尚未加载该模型。
+- 标准 MLX 工具隔离安装完成：mlx-lm 0.31.3、huggingface_hub 1.33.0，完整 freeze 与来源记录已保存；真实 convert CLI help 参数验证通过。尚未进行真实转换。
+- ModelScope 实际官方文件树与 config 下载校验通过。无全仓提交时逐文件固定其 immutable revision，界面标为文件树快照，避免把分支名当成固定提交。
+- 工具转换现要求完整资源采样和真实 OS 重任务锁，不再允许仅检查单一端口或线程锁的降级路径。2 项拒绝降级、12 项工具、6 项监督器测试通过。
+- 169.23 GiB 的本地 GLM 权重在保守驻留与最小上下文预算下仍超出本机系统预留后的容量，因此当前禁止启动；不会为让模型启动而缩小安全预算。
+- 独立审查要求在发送任何请求前，核验已连接 TCP 四元组的实际服务进程身份；相关修正和审查未完成前继续暂停真实模型加载。

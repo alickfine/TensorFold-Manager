@@ -13,7 +13,7 @@
 ## Global Constraints
 - 名称 TensorFold Manager；macOS Apple Silicon；最终 GitHub Releases DMG。
 - 自动检查更新、手动升级、失败回退。
-- 不停止外部引擎、不改oMLX、不读现有凭据；只管理本App创建的子进程。
+- 按用户最新内存管理要求：兼容服务先复用；不兼容服务仅在新鲜同用户 OS 身份绑定和明确切换确认下停止，等待退出和资源释放。保持 oMLX 配置与既有凭据。
 - 正式运行不能包含示例指标/模拟成功；不支持能力禁用并解释。
 - 仅loopback默认；管理bearer随机，API key只保存hash；所有外部内容HTML转义。
 - 命令参数数组，无shell；用户目录和数据不打包进DMG。
@@ -39,7 +39,7 @@ GET /api/keys; POST /api/keys {name,expires_days} returns plaintext only once; D
 GET /api/chat/history; POST /api/chat/history {messages}; POST /api/chat/completions proxy with admin token, stream supported; POST /api/benchmark {prompt,max_tokens,runs}; GET /api/benchmark/results.
 POST /api/tools/quantize and /api/tools/upload gated tools; GET /api/capabilities.
 OpenAI /v1/models,/v1/chat/completions,/v1/completions on gateway port requires issued API key.
-Startup Python module tfmanager.server --data-dir PATH --web-dir PATH --port 0 accepts TFM_ADMIN_TOKEN environment. Prints one JSON line {ready:true,port:N}; never prints token. Gateway chosen settings port. Swift opens URL fragment #token=<token>; JS captures to sessionStorage then removes fragment. Shutdown SIGTERM cleans owned engine and gateway.
+Startup Python module tfmanager.server --data-dir PATH --web-dir PATH --port 0 accepts TFM_ADMIN_TOKEN environment. Prints one JSON line {ready:true,port:N}; never prints token. Gateway chosen settings port. Swift 通过 exact-origin/main-frame WebKit bootstrap 返回令牌，JS 仅保存在模块闭包，不写 URL 或 storage。 Shutdown SIGTERM cleans owned engine and gateway.
 
 ### Task 1: Python management/backend (independent owned tree)
 **Files:** Create manager/tfmanager/{__init__,state,engine,models,downloads,updates,gateway,server,jobs}.py, tests/test_{state,engine,gateway,server,downloads,updates}.py.
@@ -62,7 +62,7 @@ Startup Python module tfmanager.server --data-dir PATH --web-dir PATH --port 0 a
 **Files:** Create macos/{main.swift,Info.plist}, scripts/{build-app.py,release.sh}, tests/test_packaging.py, .github/workflows/release.yml.
 **Interfaces:** bundle Resources contains standalone python/bin/python3, manager/, web/ and uv tool. Python readiness contract above. No system Python dependency. Launch uses random token; validate navigation to own loopback only, external links open in normal browser.
 - [ ] Write failing layout tests, build and launch fixture smoke contract.
-- [ ] Implement native App menus/lifecycle/persisted user data path, Python spawn/readiness/error UI, secure token fragment and cleanup.
+- [ ] Implement native App menus/lifecycle/persisted user data path, Python spawn/readiness/error UI, secure WebKit token bridge and cleanup.
 - [ ] Bundle relocatable managed Python3.12 and uv with provenance, compile arm64 app, ad hoc sign if no Developer ID; mark signing status accurately.
 - [ ] Build DMG with App and Applications symlink; test mount/bundle/launch/quit/sha and CI tagged release artifacts.
 
@@ -81,7 +81,7 @@ Startup Python module tfmanager.server --data-dir PATH --web-dir PATH --port 0 a
 - Upgrade stages/install do not touch active environment. Exclusive lifecycle lock, drain timeout abort, pinned official release/commit only, atomic pointer/config backup, candidate fails => restart old model and prove API readiness. No parallel candidate/old model loads.
 - Download roots require explicit write scope; private staging and owned manifests, reject traversal/symlink escape. Cancel retains task files for resume, never deletes external weights. Cache clear only owned manifest snapshot and stopped engine.
 - Clean runtime env including PYTHONHOME/PYTHONPATH, admin token stripped from children. Arbitrary engine_python ordinary setting rejected; explicit TFM_ALLOW_EXTERNAL_ENGINE=1 development only. Bundle standalone Python3.12.9, uv0.9.5 provenance/SHA recorded; no claim Gatekeeper if ad hoc.
-- Test auth/Host/Origin, conflict/oldPID/AppEOF, traversal/symlink/cancel, failed upgrade true old API recovery, DMG startup without global runtimes, preserve8089.
+- Test auth/Host/Origin, conflict/oldPID/AppEOF, traversal/symlink/cancel, failed upgrade true old API recovery, DMG startup without global runtimes, preserve unrelated services unless explicitly confirmed switch.
 
 ## Desktop review overrides (supersede earlier fragment/resource wording)
 - Native token via `window.webkit.messageHandlers.bootstrap.postMessage({})` Promise returning {token,instance_id}; handler only main frame exact management origin. JS token module closure; no URL/storage. Browser dev fragment bootstrap allowed only explicit dev testing, removed immediately, not persisted.
