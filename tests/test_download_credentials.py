@@ -20,11 +20,11 @@ class DownloadCredentialsTests(unittest.TestCase):
   self.store=Store(Path(self.tmp.name));self.addCleanup(self.store.close)
  def test_credentials_are_opt_in_and_mirror_rejects_before_job(self):
   downloads=Downloads(self.store,Jobs(),Credentials())
-  self.assertFalse(downloads.create({'repo':'org/model'})['use_credentials'])
-  params=downloads.create({'repo':'org/model','use_credentials':True})
+  self.assertFalse(downloads.create({'repo':'Vontra/Qwen3.8-27B-MLX-4bit'})['use_credentials'])
+  params=downloads.create({'repo':'Vontra/Qwen3.8-27B-MLX-4bit','use_credentials':True})
   self.assertNotIn('token',json.dumps(params));self.assertTrue(params['use_credentials'])
-  with self.assertRaises(APIError):downloads.create({'repo':'org/model','source':'hf-mirror','use_credentials':True})
-  with self.assertRaises(APIError):downloads.create({'repo':'org/model','use_credentials':'true'})
+  with self.assertRaises(APIError):downloads.create({'repo':'Vontra/Qwen3.8-27B-MLX-4bit','source':'hf-mirror','use_credentials':True})
+  with self.assertRaises(APIError):downloads.create({'repo':'Vontra/Qwen3.8-27B-MLX-4bit','use_credentials':'true'})
  def test_secret_is_sent_only_to_exact_official_origin(self):
   downloads=Downloads(self.store,Jobs(),Credentials())
   params={'source':'huggingface','use_credentials':True}

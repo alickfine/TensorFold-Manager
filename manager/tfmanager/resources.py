@@ -391,4 +391,6 @@ class ResourceGate:
     def verify_attachment(self,service):
         current=self.observer.identity(service['pid'])
         if not current:return False
-        return all(current.get(key)==service.get(key) for key in ('uid','start_time','command_signature','model_path','listening_ports')) and bool(current.get('health')) and (current['health'].get('status') in ('ok','ready','healthy'))
+        # Identity is checked separately from transient health transport. Engine sampling
+        # still verifies the accepted socket and exact model before admitting requests.
+        return all(current.get(key)==service.get(key) for key in ('uid','start_time','command_signature','model_path','listening_ports'))

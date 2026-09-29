@@ -2,6 +2,23 @@ import { h, html, formatBytes } from './shared.js';
 import { jobDetails, renderJobActions } from './job-controls.js';
 import { t } from '../i18n.js';
 
+const DOWNLOAD_SOURCES = new Set(['huggingface', 'hf-mirror', 'modelscope']);
+
+function sourceName(source) {
+  if (source === 'modelscope') return 'ModelScope';
+  if (source === 'hf-mirror') return t('HF 镜像');
+  return 'Hugging Face';
+}
+
+export function supportedCatalogEntries(catalog = {}) {
+  const entries = Array.isArray(catalog.models) ? catalog.models : [];
+  return entries.flatMap((item) => {
+    if (item?.supported !== true || !item.repo) return [];
+    const sources = item.download_sources ?? [item.source ?? 'huggingface'];
+    return sources.filter((source) => DOWNLOAD_SOURCES.has(source)).map((source) => ({ ...item, source }));
+  });
+}
+
 export function revisionKindLabel(kind) {
   if (kind === 'repository_commit') return t('仓库提交');
   if (kind === 'file_manifest_sha256') return t('文件树快照');
@@ -9,23 +26,16 @@ export function revisionKindLabel(kind) {
 }
 
 export function renderDownloads(state) {
-  const catalog = state.pageData.catalog?.models ?? state.pageData.catalog?.items ?? state.pageData.catalog ?? [];
-  const jobs = state.pageData.jobs?.jobs ?? state.snapshot?.jobs ?? [];
-  const catalogRows = Array.isArray(catalog) ? catalog : [];
-  const sourceOptions = (state.pageData.catalog?.sources ?? []).map((source) => [source.id, `${source.id}${t(source.third_party ? '（第三方，不发送凭据）' : '（官方来源，可选 App 凭据）')}`]);
-  const defaultDirectory = state.pageData.catalog?.default_directory ?? '';
-  const revisionPolicy = `${t(state.pageData.catalog?.revision_policy ?? '下载时解析并验证不可变文件身份')}。${t('留空时 Hugging Face 默认 main，ModelScope 默认 master；后者可能记录为逐文件提交组成的“文件树快照”，不冒充仓库提交。')}`;
-  const providers = state.pageData.credentials?.providers ?? {};
-  const credentialHint = state.pageData.credentials?.unavailable_reason ?? t('Hugging Face：{hf}；ModelScope：{modelscope}。第三方镜像永不发送 App 凭据。', { hf:t(providers['hf-download']?.configured ? '已配置' : '未配置'), modelscope:t(providers['modelscope-download']?.configured ? '已配置' : '未配置') });
-  return h.heading('模型下载器', '创建有固定来源、revision 和受管目标目录的可恢复任务。', h.button('刷新任务', 'load-page', 'downloads'))
-    + h.card('新建下载', h.form('download-create',
-      h.field('仓库 ID', 'repo', '', { required:true, hint:'namespace/repository' })
-      + h.select('来源', 'source', sourceOptions.length ? sourceOptions : [['huggingface', 'Hugging Face'], ['hf-mirror', t('HF 镜像（第三方）')], ['modelscope', 'ModelScope']], 'huggingface')
-      + h.field('Revision（可留空）', 'revision', '', { hint:revisionPolicy })
-      + h.field('目标目录', 'directory', defaultDirectory, { required:true, hint:'更改默认目录会先请求明确写入范围授权' })
-      + h.checkbox('使用 App 中已配置的官方来源凭据', 'use_credentials', false, { hint:credentialHint, disabled:Boolean(state.pageData.credentials?.unavailable_reason) }),
-    '创建下载任务'))
-    + h.card('来源目录', h.table(['名称', '仓库', '来源', '兼容性', '操作'], catalogRows.map((item) => [item.name ?? item.id, item.repo, item.source, t(item.supported ? '受支持' : '未确认'), html(h.button('填入', 'catalog-select', JSON.stringify({ repo:item.repo, source:item.source }), 'compact'))]), '目录暂无条目；可手动输入经过核验的仓库。'))
+  const catalog = state.pageData.catalog ?? {};
+  const jobs = (state.pageData.jobs?.jobs ?? state.snapshot?.jobs ?? []).filter((job) => job.kind === 'download');
+  const catalogRows = supportedCatalogEntries(catalog);
+  const choices = catalogRows.map((item) => {
+    const source = item.source ?? 'huggingface';
+    return [`${source}:${item.repo}`, `${item.name ?? item.repo} · ${sourceName(source)}`];
+  });
+  return h.heading('模型下载器', '选择 TensorFold 已确认支持的模型，并从对应官方模型库直接下载。', h.button('刷新任务', 'load-page', 'downloads'))
+    + h.card('新建下载', `<form data-form="download-create"><div class="tf-form-grid">${h.select('受支持模型与来源', 'catalog_model', choices.length ? choices : [['', t('暂无可下载的受支持模型')]], '', { full:true, hint:'仓库、版本与受管目录由后端支持目录确定' })}</div><div class="tf-actions form-actions"><button type="submit" class="primary"${choices.length ? '' : ` disabled title="${t('暂无可下载的受支持模型')}"`}>${t('开始下载')}</button></div></form>`)
+    + h.card('支持目录', h.table(['模型', '模型库', '仓库', '版本'], catalogRows.map((item) => [item.name ?? item.id, sourceName(item.source), item.repo, item.revision ?? t('由模型库解析')]), '暂无可下载的受支持模型'))
     + h.card('下载任务', jobs.length ? jobs.map((job) => {
       const progress = job.progress ?? {};
       const ratio = progress.total_bytes ? Math.min(100, progress.downloaded_bytes / progress.total_bytes * 100) : null;

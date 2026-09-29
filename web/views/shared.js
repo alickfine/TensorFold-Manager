@@ -13,7 +13,16 @@ export function escapeHtml(value) {
 export function displayValue(value, suffix = '') {
   if (value === null || value === undefined) return t('未采集');
   if (typeof value === 'boolean') return value ? t('是') : t('否');
+  if (typeof value === 'number') return `${formatNumber(value)}${suffix}`;
   return `${value}${suffix}`;
+}
+
+export function formatNumber(value) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return String(value);
+  return new Intl.NumberFormat('en-US', {
+    useGrouping:false,
+    maximumFractionDigits:2,
+  }).format(value);
 }
 
 export function formatBytes(bytes) {
@@ -33,6 +42,9 @@ export function formatBytes(bytes) {
 export const h = {
   heading(title, description, actions = '') {
     return `<div class="tf-heading"><div><div class="tf-eyebrow">LOCAL INFERENCE WORKSPACE</div><h1>${escapeHtml(t(title))}</h1><div class="tf-sub">${escapeHtml(t(description))}</div></div><div class="tf-actions">${actions}</div></div>`;
+  },
+  compactHeading(title, description, actions = '') {
+    return `<div class="tf-heading tf-heading-compact"><div><h1>${escapeHtml(t(title))}</h1><div class="tf-sub">${escapeHtml(t(description))}</div></div><div class="tf-actions">${actions}</div></div>`;
   },
   card(title, content, action = '', translateTitle = true) {
     return `<section class="tf-card"><div class="tf-row"><h2>${escapeHtml(translateTitle ? t(title) : title)}</h2>${action}</div>${content}</section>`;

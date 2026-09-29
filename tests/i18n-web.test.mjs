@@ -17,18 +17,14 @@ import { renderStats } from '../web/views/stats.js';
 import { renderCache } from '../web/views/cache.js';
 import { renderModels } from '../web/views/models.js';
 import { renderDownloads } from '../web/views/downloads.js';
-import { renderModelConfig } from '../web/views/model-config.js';
-import { renderModelTools, syncQuantizationForm } from '../web/views/model-tools.js';
+import { renderModelConfigDialog } from '../web/views/model-config.js';
 import { renderEngineConfig } from '../web/views/engine-config.js';
 import { renderServer } from '../web/views/server.js';
 import { renderApi } from '../web/views/api-integration.js';
-import { renderAuth } from '../web/views/auth.js';
 import { renderUpdates } from '../web/views/updates.js';
 import { renderLogs } from '../web/views/logs.js';
 import { renderBenchmark } from '../web/views/benchmark.js';
-import { renderAccuracy } from '../web/views/accuracy.js';
 import { renderChat } from '../web/views/chat.js';
-import { renderCapabilities } from '../web/views/capabilities.js';
 
 globalThis.location ??= { origin:'http://127.0.0.1:43123' };
 
@@ -82,32 +78,6 @@ test('language rerender preserves unsaved values without persisting form content
   assert.equal(freshControls[3].selectionEnd, 4);
 });
 
-test('quantization restore rebuilds dependent choices for the restored source model', () => {
-  setLocale('en', { storage:null, document:null, webkit:null });
-  const target = { innerHTML:'', value:'', disabled:false };
-  const submit = { disabled:false };
-  const reason = { textContent:'' };
-  const form = {
-    elements:{ model:{ value:'model-b' }, target, bits:{ value:'' }, group_size:{ value:'' } },
-    querySelector:(selector) => selector === 'button[type="submit"]' ? submit : reason,
-  };
-  const tools = { quantization:{ models:[
-    { model:'model-a', choices:[{ bits:4, group_size:64 }] },
-    { model:'model-b', choices:[{ bits:4, group_size:32 }, { bits:3, group_size:16 }] },
-  ] } };
-
-  syncQuantizationForm(form, tools, '4:32');
-
-  assert.match(target.innerHTML, /4:32/);
-  assert.doesNotMatch(target.innerHTML, /4:64/);
-  assert.equal(target.value, '4:32');
-  assert.equal(form.elements.bits.value, 4);
-  assert.equal(form.elements.group_size.value, 32);
-  assert.equal(target.disabled, false);
-  assert.equal(submit.disabled, false);
-  assert.match(reason.textContent, /verification/);
-});
-
 test('English local validation and protocol fallback errors are translated without changing backend messages', async () => {
   setLocale('en', { storage:null, document:null, webkit:null });
 
@@ -125,7 +95,7 @@ test('English local validation and protocol fallback errors are translated witho
 });
 
 function bilingualState(overrides = {}) {
-  const model = { id:'/Models/Qwen', name:'Qwen', repo:'org/qwen', installed:true, supported:true, size_bytes:1024 };
+  const model = { id:'/Models/Qwen', name:'Qwen', repo:'org/qwen', installed:true, supported:true, startable:true, size_bytes:1024 };
   return {
     page:'overview',
     snapshot:{
@@ -150,24 +120,26 @@ function bilingualState(overrides = {}) {
   };
 }
 
-test('all 17 pages render explicit English UI without leftover Chinese UI copy', () => {
+test('all shipped pages and the model dialog render explicit English UI without leftover Chinese UI copy', () => {
   setLocale('en', { storage:null, document:null, webkit:null });
   const state = bilingualState();
   const pages = [
     ['Overview', renderOverview], ['Statistics', renderStats], ['Cache Management', renderCache],
-    ['Model Library', renderModels], ['Model Downloader', renderDownloads], ['Model Configuration', renderModelConfig],
-    ['Quantization', renderModelTools], ['Inference Engine Configuration', renderEngineConfig],
-    ['Server', renderServer], ['API', renderApi], ['Authentication', renderAuth],
+    ['Model Library', renderModels], ['Model Downloader', renderDownloads], ['Inference Engine Configuration', renderEngineConfig],
+    ['Server', renderServer], ['API', renderApi],
     ['Versions', renderUpdates], ['Logs', renderLogs], ['Benchmark', renderBenchmark],
-    ['Reference Answer Tests', renderAccuracy], ['Built-in Chat', renderChat], ['Capability Matrix', renderCapabilities],
+    ['Built-in Chat', renderChat],
   ];
   const untranslated = [];
   for (const [heading, renderer] of pages) {
     const output = renderer(state);
-    assert.match(output, /class="tf-heading"/, `${heading} must render a page heading`);
+    assert.match(output, /class="tf-heading(?:\s[^"]*)?"/, `${heading} must render a page heading`);
     const matches = output.match(/[\u3400-\u9fff][^<>]*/g) ?? [];
     if (matches.length) untranslated.push([heading, ...new Set(matches)]);
   }
+  const dialog = renderModelConfigDialog(state, state.snapshot.models[0].id);
+  const dialogMatches = dialog.match(/[\u3400-\u9fff][^<>]*/g) ?? [];
+  if (dialogMatches.length) untranslated.push(['Model Configuration Dialog', ...new Set(dialogMatches)]);
   assert.deepEqual(untranslated, []);
 });
 
@@ -199,8 +171,9 @@ test('English catalog covers populated service, job, result, credential, and upl
     accuracy:{ cases:[{ id:'case', name:'Case', prompt:'Question', expected:'Answer', match:'contains', max_tokens:8 }], results:[{ id:'result', status:'completed', completed:1, total:1, passed:1, agreement_rate:1, model:'Qwen', engine_version:'v1', results:[{ case:{ name:'Case', expected:'Answer' }, output:'Answer', passed:true, metrics:{ output_tokens:1 } }] }] },
   };
   state.chat = { options:{}, streaming:true, controller:{ marker:'must-survive' }, messages:[{ role:'user', content:'Hello' }, { role:'assistant', content:'Hi', reasoning:'Reasoning', tool_calls:[{ function:{ name:'lookup', arguments:'{}' } }], metrics:{ elapsed_seconds:1, completion_tokens:1, tokens_per_second:1 } }] };
-  const renderers = [renderOverview, renderStats, renderCache, renderModels, renderDownloads, renderModelConfig, renderModelTools, renderEngineConfig, renderServer, renderApi, renderAuth, renderUpdates, renderLogs, renderBenchmark, renderAccuracy, renderChat, renderCapabilities];
+  const renderers = [renderOverview, renderStats, renderCache, renderModels, renderDownloads, renderEngineConfig, renderServer, renderApi, renderUpdates, renderLogs, renderBenchmark, renderChat];
   const untranslated = renderers.flatMap((renderer) => renderer(state).match(/[\u3400-\u9fff][^<>]*/g) ?? []);
+  untranslated.push(...(renderModelConfigDialog(state, state.snapshot.models[0].id).match(/[\u3400-\u9fff][^<>]*/g) ?? []));
   assert.deepEqual([...new Set(untranslated)], []);
   assert.equal(state.chat.controller.marker, 'must-survive');
 });
@@ -219,7 +192,7 @@ test('English rendering never translates raw model, profile, chat, log, path, or
     },
     chat:{ ...state.chat, messages:[{ role:'user', content:'运行总览' }, { role:'assistant', content:'保存', reasoning:'用户原文' }] },
   };
-  const output = [renderModels(collisionState), renderModelConfig(collisionState), renderLogs(collisionState), renderChat(collisionState)].join('\n');
+  const output = [renderModels(collisionState), renderModelConfigDialog(collisionState, collisionModel.id), renderLogs(collisionState), renderChat(collisionState)].join('\n');
   for (const raw of ['运行总览', '保存', '/Models/运行总览', '用户原文']) assert.match(output, new RegExp(raw));
   assert.match(output, /Model Library/);
   assert.match(output, /<h1>Chat<\/h1>/);

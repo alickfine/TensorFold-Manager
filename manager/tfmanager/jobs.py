@@ -14,6 +14,10 @@ class Job:
     def save(self,**values):
         with self.condition:
             self.row.update(values,updated_at=time.time());self.owner.store.put('job',self.row,self.id)
+    def begin_atomic(self):
+        with self.condition:
+            self.checkpoint()
+            self.save(atomic=True)
     def checkpoint(self):
         with self.condition:
             while self.paused and not self.cancelled:self.condition.wait(.5)
@@ -38,7 +42,7 @@ class Jobs:
         row={'id':uuid.uuid4().hex,'kind':kind,'params':params,'status':'queued','created_at':time.time(),'updated_at':time.time(),'progress':None,'error':None,'result':None}
         self.store.put('job',row,row['id']);self._start(row);return self.get(row['id'])
     def _start(self,row):
-        job=Job(self,row);self.live[job.id]=job;job.save(status='queued',error=None)
+        job=Job(self,row);self.live[job.id]=job;job.save(status='queued',error=None,atomic=False)
         def run():
             try:
                 job.save(status='running',error=None);result=self.runners[row['kind']](job);job.checkpoint();job.save(status='completed',result=result)
@@ -56,7 +60,9 @@ class Jobs:
             elif action=='cancel':
                 if row['kind'] in ('activate','rollback'):raise APIError('An atomic engine switch cannot be cancelled','invalid_state',409)
                 if job and job.thread.is_alive():
-                    with job.condition:job.cancelled=True;job.paused=False;job.condition.notify_all()
+                    with job.condition:
+                        if job.row.get('atomic'):raise APIError('An atomic engine switch cannot be cancelled','invalid_state',409)
+                        job.cancelled=True;job.paused=False;job.condition.notify_all()
                 elif row['status'] not in ('completed','cancelled'):
                     row['status']='cancelled';self.store.put('job',row,id)
             elif action in ('resume','retry'):
@@ -71,6 +77,8 @@ class Jobs:
     def shutdown(self):
         self.closing=True
         for job in list(self.live.values()):
-            if job.thread.is_alive() and job.row['kind'] not in ('activate','rollback'):
-                with job.condition:job.cancelled=True;job.paused=False;job.condition.notify_all()
+            if job.thread.is_alive():
+                with job.condition:
+                    if job.row['kind'] in ('activate','rollback') or job.row.get('atomic'):continue
+                    job.cancelled=True;job.paused=False;job.condition.notify_all()
         for job in list(self.live.values()):job.thread.join(timeout=35)

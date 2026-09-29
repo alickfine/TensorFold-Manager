@@ -31,7 +31,7 @@ with pathlib.Path(CAPTURE).open('a') as stream:
 if q['bits']!=4 or q['group_size'] not in (32,64):
  print("Gemma 4 kernels read MLX 4-bit weights in groups of 32 or 64",file=sys.stderr)
  sys.exit(1)
-print('quantization MLX 4-bit; runs on Apple Silicon (MLX)')
+print('quantization MLX 4-bit\\nruns on Apple Silicon (MLX)')
 '''.replace('CAPTURE',repr(str(capture))))
         self.engine.executable=lambda:[sys.executable,'-I','-B',str(script)]
         self.engine.store=self.store

@@ -1,7 +1,7 @@
 import { api, getAdminToken, getBootstrapLanguage } from './api.js';
 import { exportTextFile } from './export.js';
-import { parseChatOptions, chatRequest } from './chat-options.js';
-import { serviceSwitchRequest, engineStopRequest, engineDetachRequest, credentialRequest, credentialDeleteRequest, quantizeRequest, uploadPrepareRequest, uploadConfirmRequest, downloadRequest, optionalCredentialStatus, shouldPollLivePage, isPollEditingTarget } from './contracts.js';
+import { parseChatOptions, prepareChatTurn, chatRequest } from './chat-options.js';
+import { serviceSwitchRequest, engineStopRequest, engineDetachRequest, catalogDownloadRequest, shouldPollLivePage, isPollEditingTarget, assertChatCanSubmit, isChatSubmitKey } from './contracts.js';
 import { formValues, escapeHtml, capability } from './views/shared.js';
 import { serializeSettings, partitionProfileConfig } from './views/settings.js';
 import { renderOverview } from './views/overview.js';
@@ -10,39 +10,34 @@ import { renderStats } from './views/stats.js';
 import { renderCache } from './views/cache.js';
 import { renderModels } from './views/models.js';
 import { renderDownloads } from './views/downloads.js';
-import { renderModelConfig } from './views/model-config.js';
-import { renderModelTools, syncQuantizationForm } from './views/model-tools.js';
+import { renderModelConfigDialog } from './views/model-config.js';
 import { renderEngineConfig } from './views/engine-config.js';
 import { renderServer } from './views/server.js';
 import { renderApi } from './views/api-integration.js';
-import { renderAuth } from './views/auth.js';
 import { renderUpdates } from './views/updates.js';
 import { renderLogs } from './views/logs.js';
-import { renderBenchmark } from './views/benchmark.js';
-import { renderAccuracy } from './views/accuracy.js';
+import { renderBenchmark, benchmarkRequest } from './views/benchmark.js';
 import { renderChat } from './views/chat.js';
-import { renderCapabilities } from './views/capabilities.js';
 import { getLocale, initializeLocale, setLocale, t, translateDocument } from './i18n.js';
 import { captureFormDraft, restoreFormDraft } from './form-draft.js';
+import { dispatchDocumentClick } from './click-routing.js';
 
 const PAGE_LABELS = {
   overview:'运行总览', stats:'统计与用量', cache:'缓存管理', models:'模型库', downloads:'模型下载器',
-  'model-config':'模型配置', 'model-tools':'量化与上传', 'engine-config':'推理框架配置', server:'服务器与目录',
-  api:'API 与集成', auth:'认证与密钥', updates:'版本与更新', logs:'运行日志', benchmark:'基准测试',
-  accuracy:'参考答案测试', chat:'内置聊天', capabilities:'功能适配表',
+  'engine-config':'推理框架配置', server:'服务器与目录', api:'API 与集成', updates:'版本与更新',
+  logs:'运行日志', benchmark:'基准测试', chat:'内置聊天',
 };
 
 const renderers = {
   overview:renderOverview, stats:renderStats, cache:renderCache, models:renderModels, downloads:renderDownloads,
-  'model-config':renderModelConfig, 'model-tools':renderModelTools, 'engine-config':renderEngineConfig, server:renderServer,
-  api:renderApi, auth:renderAuth, updates:renderUpdates, logs:renderLogs, benchmark:renderBenchmark,
-  accuracy:renderAccuracy, chat:renderChat, capabilities:renderCapabilities,
+  'engine-config':renderEngineConfig, server:renderServer, api:renderApi, updates:renderUpdates,
+  logs:renderLogs, benchmark:renderBenchmark, chat:renderChat,
 };
 
 const state = {
   page:'overview', routeQuery:new URLSearchParams(), snapshot:null, pageData:{}, loading:true, lastUpdated:null,
   filters:{ statsModel:'', statsRange:'24h', logLevel:'', logQuery:'', logLimit:'500' },
-  chat:{ messages:[], options:{}, streaming:false, controller:null },
+  chat:{ messages:[], options:{}, streaming:false, controller:null }, modelConfigTarget:'',
 };
 
 const pageElement = document.querySelector('#page');
@@ -62,6 +57,7 @@ function toast(message, error = false) {
 }
 
 function showModal(title, body) {
+  document.querySelector('#modal').dataset.title = title;
   document.querySelector('#modal-title').textContent = t(title);
   document.querySelector('#modal-body').innerHTML = body;
   document.querySelector('#modal').hidden = false;
@@ -69,7 +65,19 @@ function showModal(title, body) {
 
 function closeModal() {
   document.querySelector('#modal').hidden = true;
+  delete document.querySelector('#modal').dataset.title;
   document.querySelector('#modal-body').replaceChildren();
+  state.modelConfigTarget = '';
+}
+
+function refreshModelConfigModal({ preserveDraft = false } = {}) {
+  const modal = document.querySelector('#modal');
+  if (modal.hidden || modal.dataset.title !== '模型配置' || !state.modelConfigTarget) return;
+  const body = document.querySelector('#modal-body');
+  const draft = preserveDraft ? captureFormDraft(body) : [];
+  document.querySelector('#modal-title').textContent = t('模型配置');
+  body.innerHTML = renderModelConfigDialog(state, state.modelConfigTarget);
+  if (preserveDraft) restoreFormDraft(body, draft);
 }
 
 function routeFromHash() {
@@ -99,25 +107,28 @@ function updateChrome() {
   const led = document.querySelector('#side-led');
   led.className = `tf-led ${engine.state === 'ready' ? '' : engine.state === 'failed' ? 'red' : 'amber'}`;
   document.querySelector('#poll-status').textContent = state.lastUpdated ? t('更新于 {time}', { time:state.lastUpdated.toLocaleTimeString(getLocale()) }) : '';
-  document.querySelectorAll('[data-page]').forEach((button) => button.classList.toggle('active', button.dataset.page === state.page));
+  document.querySelectorAll('button[data-page]').forEach((button) => button.classList.toggle('active', button.dataset.page === state.page));
 }
 
 function renderCurrent() {
   updateChrome();
   const renderer = renderers[state.page];
+  pageElement.dataset.view = state.page;
   pageElement.innerHTML = renderer(state);
   pageElement.focus({ preventScroll:true });
 }
 
 function applyLanguage(locale) {
   const draft = captureFormDraft(pageElement);
-  const quantizationTarget = draft.find((item) => item.name === 'target')?.value ?? '';
+  const modalBody = document.querySelector('#modal-body');
+  const modalDraft = captureFormDraft(modalBody);
   if (!setLocale(locale)) return false;
   translateDocument();
   if (state.snapshot) {
     renderCurrent();
     restoreFormDraft(pageElement, draft);
-    syncQuantizationForm(pageElement.querySelector('[data-form="tool-quantize"]'), state.pageData.tools, quantizationTarget);
+    refreshModelConfigModal();
+    restoreFormDraft(modalBody, modalDraft);
   }
   return true;
 }
@@ -149,35 +160,24 @@ async function loadPageData(page = state.page, { render = true } = {}) {
   } else if (page === 'cache') {
     state.pageData.cache = await api.request('/api/cache');
   } else if (page === 'downloads') {
-    const [catalog, jobs, credentials] = await Promise.all([api.request('/api/downloads/catalog'), api.request('/api/jobs'), optionalCredentialStatus(path => api.request(path), state.pageData.credentials)]);
+    const [catalog, jobs] = await Promise.all([api.request('/api/downloads/catalog'), api.request('/api/jobs')]);
     state.pageData.catalog = catalog;
     state.pageData.jobs = jobs;
-    state.pageData.credentials = credentials;
-  } else if (page === 'model-tools') {
-    const [tools, credentials, jobs] = await Promise.all([api.request('/api/tools'), optionalCredentialStatus(path => api.request(path), state.pageData.credentials), api.request('/api/jobs')]);
-    state.pageData.tools = tools;
-    state.pageData.credentials = credentials;
-    state.pageData.jobs = jobs;
-  } else if (page === 'model-config') {
+  } else if (page === 'models') {
     state.pageData.profiles = await api.request('/api/profiles');
-  } else if (page === 'auth') {
+  } else if (page === 'api') {
     state.pageData.keys = await api.request('/api/keys');
   } else if (page === 'updates') {
     state.pageData.updates = await api.request('/api/updates');
   } else if (page === 'logs') {
     const params = new URLSearchParams({ level:state.filters.logLevel, query:state.filters.logQuery, limit:state.filters.logLimit });
     state.pageData.logs = await api.request(`/api/logs?${params}`);
-  } else if (page === 'accuracy') {
-    state.pageData.accuracy = await api.request('/api/accuracy');
   } else if (page === 'benchmark') {
     state.pageData.benchmark = await api.request('/api/benchmark/results');
   } else if (page === 'chat') {
     const history = await api.request('/api/chat/history');
     state.chat.messages = history.messages ?? [];
     state.chat.options = state.chat.messages.findLast(message => message.options)?.options ?? state.chat.options;
-  } else if (page === 'capabilities') {
-    const result = await api.request('/api/capabilities');
-    state.snapshot.capabilities = result.capabilities ?? result;
   }
   if (render) renderCurrent();
 }
@@ -216,15 +216,6 @@ async function saveText(path, filename) {
 }
 
 async function handleAction(action, value, element) {
-  if (action === 'accuracy-run') return run('参考测试队列已创建', () => api.request('/api/accuracy/run', {method:'POST',body:{}}));
-  if (action === 'accuracy-delete') {
-    if (confirm(t('删除这个参考测试题目？已有结果保留。'))) return run('题目已删除', () => api.request(`/api/accuracy/cases/${encodeURIComponent(value)}`, {method:'DELETE'}));
-    return;
-  }
-  if (action === 'accuracy-reset') {
-    if (confirm(t('清空全部参考测试结果？题目保留。'))) return run('结果已清空', () => api.request('/api/accuracy/reset', {method:'POST',body:{confirm:true}}));
-    return;
-  }
   if (action === 'logs-export') {
     const records = state.pageData.logs?.logs ?? [];
     const result = await exportTextFile({name:'tensorfold-logs.json',content:JSON.stringify(records,null,2)});
@@ -252,7 +243,13 @@ async function handleAction(action, value, element) {
   if (action === 'engine-restart') return engineAction('restart', value);
   if (action === 'model-default') return run('默认模型已保存', () => api.request('/api/settings', { method:'PUT', body:{ selected_model:value } }));
   if (action === 'models-scan') return run('模型扫描完成', () => api.request('/api/models/scan', { method:'POST', body:{} }));
+  if (action === 'models-discover') return run('全盘模型扫描任务已创建', () => api.request('/api/models/discover', { method:'POST', body:{} }));
   if (action === 'model-validate') return run('兼容性预检通过；这是 CLI 兼容性证据，尚未加载模型', () => api.request('/api/models/validate', { method:'POST', body:{ model:value } }));
+  if (action === 'model-config-open') {
+    state.modelConfigTarget = value;
+    if (!state.pageData.profiles) state.pageData.profiles = await api.request('/api/profiles');
+    return showModal('模型配置', renderModelConfigDialog(state, value));
+  }
   if (action === 'job-action') {
     const separator = value.lastIndexOf(':');
     const id = value.slice(0, separator);
@@ -261,7 +258,11 @@ async function handleAction(action, value, element) {
     return run(t('任务操作已提交：{verb}', { verb }), () => api.request(`/api/jobs/${encodeURIComponent(id)}/${verb}`, { method:'POST', body:{} }));
   }
   if (action === 'profile-delete') {
-    if (confirm(t('删除这个配置档？'))) return run('配置档已删除', () => api.request(`/api/profiles/${encodeURIComponent(value)}`, { method:'DELETE' }));
+    if (confirm(t('删除这个配置档？'))) {
+      const result = await run('配置档已删除', () => api.request(`/api/profiles/${encodeURIComponent(value)}`, { method:'DELETE' }));
+      refreshModelConfigModal();
+      return result;
+    }
     return;
   }
   if (action === 'profile-export') {
@@ -276,17 +277,19 @@ async function handleAction(action, value, element) {
     const profiles = state.pageData.profiles?.profiles ?? state.snapshot?.profiles ?? [];
     const profile = profiles.find((item) => item.id === value);
     if (!profile) throw new Error(t('配置档不存在'));
-    const requested = state.routeQuery.get('model');
+    const requested = state.modelConfigTarget || state.routeQuery.get('model');
     const models = state.snapshot?.models ?? [];
     const target = models.find((model) => model.id === requested)?.id ?? models.find((model) => model.id === state.snapshot?.settings?.selected_model || model.repo === state.snapshot?.settings?.selected_model)?.id;
     if (!target) throw new Error(t('请先明确选择配置档的应用目标模型'));
     const { settings, modelConfig } = partitionProfileConfig(profile.config ?? {});
     if (profile.config?.selected_model && profile.config.selected_model !== target && !confirm(t('配置档记录的默认模型为：\n{profileModel}\n\n本次明确应用到当前模型：\n{target}\n\n继续吗？', { profileModel:profile.config.selected_model, target }))) return;
-    return run('配置档已应用；运行中参数等待重启生效', async () => {
+    const result = await run('配置档已应用；运行中参数等待重启生效', async () => {
       if (Object.keys(modelConfig).length) await api.request('/api/models/config', { method:'PUT', body:{ model:target, config:modelConfig } });
       await api.request('/api/settings', { method:'PUT', body:{ ...settings, selected_model:target } });
       return {};
     });
+    closeModal();
+    return result;
   }
   if (action === 'cache-clear') {
     if (confirm(t('清理后端确认归属的受管快照？'))) return run('缓存清理完成', () => api.request('/api/cache/clear', { method:'POST', body:{ confirm:true } }));
@@ -309,6 +312,13 @@ async function handleAction(action, value, element) {
     return;
   }
   if (action === 'update-check') return run('更新检查完成', () => api.request('/api/updates/check', { method:'POST', body:{} }));
+  if (action === 'update-upgrade') {
+    const body = {};
+    if (value) body.version = value;
+    const model = state.snapshot?.engine?.model ?? state.snapshot?.settings?.selected_model;
+    if (model) body.model = model;
+    return run('引擎升级任务已创建', () => api.request('/api/updates/upgrade', { method:'POST', body }));
+  }
   if (action === 'update-install') return run('候选安装任务已创建', () => api.request('/api/updates/install', { method:'POST', body:{ version:value } }));
   if (action === 'update-activate') {
     if (confirm(t('排空请求并激活已验证的候选版本？'))) return run('候选激活流程已提交', () => api.request('/api/updates/activate', { method:'POST', body:{} }));
@@ -319,25 +329,6 @@ async function handleAction(action, value, element) {
     return;
   }
   if (action === 'engine-install') return run('官方引擎安装任务已创建', () => api.request('/api/engine/install', { method:'POST', body:{} }));
-  if (action === 'tool-install') return run('模型工具安装任务已创建', () => api.request('/api/tools/install', { method:'POST', body:{} }));
-  if (action === 'credential-delete') {
-    if (!confirm(t('删除这个 App 凭据？后续对应来源任务将不能使用认证访问。'))) return;
-    const request = credentialDeleteRequest(value);
-    return run('凭据已删除', () => api.request(request.path, request.options));
-  }
-  if (action === 'upload-confirm') {
-    const plan = state.pageData.uploadPlan;
-    if (!plan || plan.plan_id !== value) throw new Error(t('上传预览已失效，请重新准备'));
-    const message = plan.visibility === 'public' && !plan.existing
-      ? t('确认新建公开仓库 {repo} 并公开发布预览中的 {count} 个文件？', { repo:plan.repo, count:plan.files?.length ?? 0 })
-      : t('确认上传预览中的 {count} 个文件到 {repo}（实际可见性：{visibility}）？', { count:plan.files?.length ?? 0, repo:plan.repo, visibility:plan.visibility });
-    if (!confirm(message)) return;
-    const request = uploadConfirmRequest(value);
-    const result = await run('上传任务已创建', () => api.request(request.path, request.options));
-    state.pageData.uploadPlan = null;
-    renderCurrent();
-    return result;
-  }
   if (action === 'logs-filter') return loadPageData('logs');
   if (action === 'chat-abort') {
     state.chat.controller?.abort();
@@ -354,13 +345,6 @@ async function handleAction(action, value, element) {
     await run('已新建对话', () => api.request('/api/chat/history', { method:'POST', body:{ messages:[] } }), { refresh:false });
     renderCurrent();
   }
-  if (action === 'catalog-select') {
-    const item = JSON.parse(value);
-    for (const [name, fieldValue] of Object.entries(item)) {
-      const field = document.querySelector(`[data-form="download-create"] [name="${CSS.escape(name)}"]`);
-      if (field && fieldValue != null) field.value = fieldValue;
-    }
-  }
 }
 
 async function persistChat() {
@@ -368,20 +352,16 @@ async function persistChat() {
 }
 
 async function sendChat(message) {
+  assertChatCanSubmit(state.chat.streaming);
   const streamCapability = capability(state.snapshot?.capabilities, 'streaming');
   const chatCapability = capability(state.snapshot?.capabilities, 'chat');
   if (!streamCapability.enabled || !chatCapability.enabled) throw new Error(!chatCapability.enabled ? chatCapability.reason : streamCapability.reason);
-  state.chat.messages.push({ role:'user', content:message }, { role:'assistant', content:'' });
+  const { options, assistant, messages } = prepareChatTurn(state.chat, message, state.snapshot?.settings);
+  state.chat.messages = messages;
   state.chat.streaming = true;
   state.chat.controller = new AbortController();
   renderCurrent();
-  const assistant = state.chat.messages.at(-1);
-  const options = parseChatOptions(state.chat.options,state.snapshot?.settings);
-  assistant.options = options;
-  assistant.reasoning = '';
-  assistant.tool_calls = [];
   const started = performance.now();
-  assistant.status = 'generating';
   try {
     await api.streamChat(chatRequest(state.snapshot?.engine?.model,state.chat.messages.slice(0,-1),options), {
       signal:state.chat.controller.signal,
@@ -422,25 +402,31 @@ async function sendChat(message) {
     assistant.metrics = {...assistant.metrics,elapsed_seconds:(performance.now()-started)/1000};
     state.chat.streaming = false;
     state.chat.controller = null;
-    await persistChat();
-    renderCurrent();
+    try {
+      await persistChat();
+    } finally {
+      renderCurrent();
+    }
   }
 }
 
 async function handleForm(form) {
   const action = form.dataset.form;
   const values = formValues(form);
-  if (action === 'accuracy-add') return run('参考题目已添加', () => api.request('/api/accuracy/cases',{method:'POST',body:{...values,max_tokens:Number(values.max_tokens)}}));
   if (action === 'chat-settings') { state.chat.options = parseChatOptions(values,state.snapshot?.settings); toast(t('生成设置已应用')); return; }
   if (action === 'settings-save') return run('设置已保存', () => api.request('/api/settings', { method:'PUT', body:serializeSettings(values) }));
   if (action === 'model-config-save') {
     const model = values.model;
     const config = serializeSettings(values);
-    return run('模型配置已保存', () => api.request('/api/models/config', { method:'PUT', body:{ model, config } }));
+    const result = await run('模型配置已保存', () => api.request('/api/models/config', { method:'PUT', body:{ model, config } }));
+    closeModal();
+    return result;
   }
   if (action === 'profile-create') {
     const model = state.snapshot?.models?.find((item) => item.id === values.model);
-    return run('配置档已保存', () => api.request('/api/profiles', { method:'POST', body:{ name:values.name, model:values.model, config:model?.config ?? {} } }));
+    const result = await run('配置档已保存', () => api.request('/api/profiles', { method:'POST', body:{ name:values.name, model:values.model, config:model?.config ?? {} } }));
+    refreshModelConfigModal();
+    return result;
   }
   if (action === 'profile-import') {
     let parsed;
@@ -448,15 +434,12 @@ async function handleForm(form) {
     const profile = parsed?.profile ?? parsed;
     if (!profile || typeof profile.name !== 'string' || !profile.name.trim()) throw new Error(t('配置档缺少名称'));
     const { settings } = partitionProfileConfig(profile.config ?? {});
-    return run('配置档已导入', () => api.request('/api/profiles', { method:'POST', body:{ name:profile.name.trim(), config:settings } }));
+    const result = await run('配置档已导入', () => api.request('/api/profiles', { method:'POST', body:{ name:profile.name.trim(), config:settings } }));
+    refreshModelConfigModal();
+    return result;
   }
   if (action === 'download-create') {
-    const defaultDirectory = state.pageData.catalog?.default_directory;
-    if (values.directory !== defaultDirectory) {
-      if (!confirm(t('允许 TensorFold Manager 写入这个模型目录？\n{directory}\n\n该授权只用于下载任务，不会删除外部权重。', { directory:values.directory }))) return;
-      await api.request('/api/downloads/scope', { method:'POST', body:{ directory:values.directory, confirm:true } });
-    }
-    const request = downloadRequest(values);
+    const request = catalogDownloadRequest(state.pageData.catalog, values.catalog_model);
     return run('下载任务已创建', () => api.request(request.path, request.options));
   }
   if (action === 'stats-filter') {
@@ -476,51 +459,27 @@ async function handleForm(form) {
     showModal('请立即保存 API Key', plaintext ? `<p class="tf-note warn">${t('关闭后无法再次查看。')}</p><textarea readonly>${escapeHtml(plaintext)}</textarea>` : `<p class="tf-note warn">${t('服务未返回明文密钥，请撤销该记录后重试。')}</p>`);
     return;
   }
-  if (action === 'benchmark-run') return run('基准任务已提交', () => api.request('/api/benchmark', { method:'POST', body:{ prompt:values.prompt, max_tokens:Number(values.max_tokens), runs:Number(values.runs) } }));
+  if (action === 'benchmark-run') return run('基准任务已提交', () => api.request('/api/benchmark', { method:'POST', body:benchmarkRequest(values.tier, values) }));
   if (action === 'service-switch') {
     if (!confirm(t('停止所选已识别服务，等待端点和内存释放，再启动目标模型 {model}？确认快照最多有效 30 秒；超时不会强杀。', { model:values.model }))) return;
     const request = serviceSwitchRequest(values.snapshot_id, values.model);
     return run('停止后切换任务已创建', () => api.request(request.path, request.options));
   }
-  if (action === 'credential-save') {
-    const request = credentialRequest(values.provider, values.token);
-    return run('凭据已交给系统凭据助手；页面只保留已配置状态', () => api.request(request.path, request.options));
-  }
-  if (action === 'tool-quantize') {
-    const gate = capability(state.snapshot?.capabilities, 'quantize');
-    if (!gate.enabled) throw new Error(gate.reason);
-    const request = quantizeRequest(values);
-    return run('量化任务已创建', () => api.request(request.path, request.options));
-  }
-  if (action === 'tool-upload-prepare') {
-    const gate = capability(state.snapshot?.capabilities, 'upload');
-    if (!gate.enabled) throw new Error(gate.reason);
-    const request = uploadPrepareRequest(values);
-    state.pageData.uploadPlan = await run('上传预览已准备；尚未上传', () => api.request(request.path, request.options), { refresh:false });
-    renderCurrent();
-    return;
-  }
   if (action === 'chat-send') return sendChat(values.message.trim());
 }
 
 document.addEventListener('click', (event) => {
-  const pageButton = event.target.closest('[data-page]');
-  if (pageButton) {
-    navigate(pageButton.dataset.page);
-    return;
-  }
-  const button = event.target.closest('[data-action]');
-  if (!button || button.disabled || !button.dataset.action) return;
-  event.preventDefault();
-  handleAction(button.dataset.action, button.dataset.value ?? '', button).catch(() => {});
+  dispatchDocumentClick(event, { navigate, handleAction });
 });
 
 for (const type of ['input', 'change']) pageElement.addEventListener(type, (event) => {
   if (isPollEditingTarget(event.target)) pageDirty = true;
-  const form = event.target.closest('[data-form="tool-quantize"]');
-  if (type === 'change' && form && ['model', 'target'].includes(event.target.name)) {
-    syncQuantizationForm(form, state.pageData.tools, event.target.name === 'model' ? '' : form.elements.target.value);
-  }
+});
+
+pageElement.addEventListener('keydown', (event) => {
+  if (event.target?.id !== 'chat-input' || !isChatSubmitKey(event, { streaming:state.chat.streaming })) return;
+  event.preventDefault();
+  event.target.form?.requestSubmit();
 });
 
 document.addEventListener('submit', (event) => {

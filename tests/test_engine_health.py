@@ -25,6 +25,35 @@ class HealthTests(unittest.TestCase):
    with self.engine.request():pass
   self.assertIsNone(state.get('health_detail'))
   self.assertIn('identity',state.get('health_error',''))
+ def test_transient_health_timeout_blocks_requests_and_recovers_next_sample(self):
+  from unittest.mock import Mock,patch
+  from tfmanager.state import APIError
+  self.engine.start(str(self.model));wait_state(self.engine,'ready')
+  timeout=Mock();timeout.request.side_effect=TimeoutError('temporary health timeout')
+  self.engine._health_checked=0
+  with patch.object(self.engine,'connection',return_value=timeout):
+   state=self.engine.status()
+   self.assertEqual(state['state'],'ready')
+   self.assertFalse(state['health'])
+   self.assertIsNone(state['health_detail'])
+   with self.assertRaises(APIError):
+    with self.engine.request():pass
+  self.engine._health_checked=0
+  recovered=self.engine.status()
+  self.assertEqual(recovered['state'],'ready')
+  self.assertTrue(recovered['health'])
+  self.assertIsNone(recovered['health_error'])
+  with self.engine.request():pass
+ def test_socket_ownership_probe_timeout_recovers_next_sample(self):
+  import subprocess
+  from unittest.mock import Mock,patch
+  self.engine.start(str(self.model));wait_state(self.engine,'ready')
+  slow=Mock();slow.request.side_effect=subprocess.TimeoutExpired('lsof',.5)
+  self.engine._health_checked=0
+  with patch.object(self.engine,'connection',return_value=slow):
+   self.assertEqual(self.engine.status()['state'],'ready')
+  self.engine._health_checked=0
+  self.assertTrue(self.engine.status()['health'])
  def test_stopped_model_does_not_retain_live_memory_measurement(self):
   self.engine.start(str(self.model));wait_state(self.engine,'ready');self.engine.stop()
   state=self.engine.status();self.assertIsNone(state.get('health_detail'))

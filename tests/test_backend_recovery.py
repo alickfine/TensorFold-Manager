@@ -57,6 +57,105 @@ class RecoveryTests(unittest.TestCase):
   self.assertEqual(self.store.get('engine_active')['version'],'v0.0.1')
   self.assertEqual(self.engine.status()['state'],'ready')
   result,_=completion(self.engine,self.store,{'messages':[{'role':'user','content':'still running'}]});self.assertEqual(result['choices'][0]['message']['content'],'ok')
+ def test_failed_candidate_with_different_model_restores_original_model(self):
+  import shutil
+  target=self.model.parent/'another-model';shutil.copytree(self.model,target)
+  self.engine.start(str(self.model));wait_state(self.engine,'ready')
+  jobs=Jobs(self.store);self.addCleanup(jobs.shutdown);updates=Updates(self.store,jobs,self.engine)
+  self.store.put('engine_active',{'version':'old','python':'fixture-old'})
+  self.store.put('engine_staged',{'version':'new','python':'fixture-new'})
+  original=self.engine.start_transition;seen=[]
+  def start(model,guard,**kwargs):
+   seen.append((self.store.get('engine_active')['version'],model))
+   if self.store.get('engine_active')['version']=='new':raise APIError('candidate rejected')
+   return original(model,guard,**kwargs)
+  with patch.object(self.engine,'start_transition',side_effect=start):
+   with self.assertRaisesRegex(APIError,'previous engine API restored'):
+    updates.run_activate(Job(jobs,{'id':'different-model','params':{'model':str(target)}}))
+  self.assertEqual(seen,[('new',str(target)),('old',str(self.model.resolve()))])
+  self.assertEqual(self.engine.active_model_id,str(self.model.resolve()))
+ def test_external_service_in_fresh_capacity_snapshot_never_stops_current(self):
+  self.engine.start(str(self.model));before=wait_state(self.engine,'ready')
+  jobs=Jobs(self.store);self.addCleanup(jobs.shutdown);updates=Updates(self.store,jobs,self.engine)
+  self.store.put('engine_active',{'version':'old','python':'fixture-old'});self.store.put('engine_staged',{'version':'new','python':'fixture-new'})
+  report={'allowed':True,'snapshot':{'services':[{'pid':999}]}}
+  with patch.object(self.engine,'preflight_switch',return_value=report),patch.object(self.engine,'stop') as stop:
+   with self.assertRaisesRegex(APIError,'External service appeared'):updates.run_activate(Job(jobs,{'id':'fresh-external','params':{}}))
+   stop.assert_not_called()
+  self.assertEqual(self.engine.status()['pid'],before['pid'])
+ def test_incompatible_candidate_is_rejected_before_stopping(self):
+  self.engine.start(str(self.model));before=wait_state(self.engine,'ready')
+  jobs=Jobs(self.store);self.addCleanup(jobs.shutdown);updates=Updates(self.store,jobs,self.engine)
+  self.store.put('engine_active',{'version':'old','python':'fixture-old'})
+  self.store.put('engine_staged',{'version':'new','python':'fixture-new'})
+  with patch.object(self.engine,'build_command',side_effect=APIError('candidate reader unsupported')),patch.object(self.engine,'stop') as stop:
+   with self.assertRaisesRegex(APIError,'reader'):updates.run_activate(Job(jobs,{'id':'incompatible','params':{}}))
+   stop.assert_not_called()
+  self.assertEqual(self.engine.status()['pid'],before['pid'])
+ def test_local_variant_upgrade_refreshes_validation_and_callback_failure_is_nonfatal(self):
+  config=json.loads((self.model/'config.json').read_text());config['_name_or_path']='local/custom-checkpoint';(self.model/'config.json').write_text(json.dumps(config))
+  self.store.put('engine_active',{'version':'old','python':'fixture-old'})
+  self.engine.validation_identity=lambda:{'version':self.store.get('engine_active')['version']}
+  self.models.engine_identity=self.engine.validation_identity
+  self.engine.validate_model(str(self.model));self.engine.start(str(self.model));wait_state(self.engine,'ready')
+  jobs=Jobs(self.store);self.addCleanup(jobs.shutdown);updates=Updates(self.store,jobs,self.engine,on_change=lambda:(_ for _ in ()).throw(RuntimeError('refresh unavailable')))
+  self.store.put('engine_staged',{'version':'new','python':'fixture-new'})
+  result=updates.run_activate(Job(jobs,{'id':'local-variant','params':{}}))
+  self.assertTrue(result['active']['api_verified']);self.assertEqual(self.store.get('engine_active')['version'],'new')
+  self.assertTrue(self.models.describe(self.model)['startable'])
+ def test_recovery_restores_actual_parameters_and_preserves_pending_edits(self):
+  self.engine.start(str(self.model));wait_state(self.engine,'ready');original_parameters=self.engine.running_parameters.copy()
+  self.store.settings_update({'temperature':.3})
+  self.models.configure({'model':str(self.model),'config':{'context':2048}})
+  pending=self.store.settings();pending_config=self.store.get('model_config',str(self.model.resolve()))
+  jobs=Jobs(self.store);self.addCleanup(jobs.shutdown);updates=Updates(self.store,jobs,self.engine)
+  self.store.put('engine_active',{'version':'old','python':'fixture-old'});self.store.put('engine_staged',{'version':'new','python':'fixture-new'})
+  original=self.engine.start_transition
+  def start(model,guard,**kwargs):
+   if self.store.get('engine_active')['version']=='new':raise APIError('candidate load failed')
+   return original(model,guard,**kwargs)
+  with patch.object(self.engine,'start_transition',side_effect=start):
+   with self.assertRaisesRegex(APIError,'previous engine API restored'):updates.run_activate(Job(jobs,{'id':'pending','params':{}}))
+  self.assertEqual(self.engine.running_parameters,original_parameters)
+  self.assertEqual(self.store.settings(),pending);self.assertEqual(self.store.get('model_config',str(self.model.resolve())),pending_config)
+  self.assertTrue(self.engine.status()['pending'])
+ def test_edits_saved_during_failed_upgrade_are_preserved(self):
+  self.engine.start(str(self.model));wait_state(self.engine,'ready')
+  old_parameters=self.engine.running_parameters.copy()
+  jobs=Jobs(self.store);self.addCleanup(jobs.shutdown);updates=Updates(self.store,jobs,self.engine)
+  self.store.put('engine_active',{'version':'old','python':'fixture-old'});self.store.put('engine_staged',{'version':'new','python':'fixture-new'})
+  original=self.engine.start_transition;new_port=freeport();seen=[]
+  def start(model,guard,**kwargs):
+   if self.store.get('engine_active')['version']=='new':
+    self.store.settings_update({'gateway_port':new_port,'temperature':.22})
+    seen.append(kwargs['prepared'][2]['temperature'])
+    raise APIError('load rejected after saved edits')
+   return original(model,guard,**kwargs)
+  with patch.object(self.engine,'start_transition',side_effect=start):
+   with self.assertRaisesRegex(APIError,'previous engine API restored'):updates.run_activate(Job(jobs,{'id':'edits-during-upgrade','params':{}}))
+  self.assertEqual(seen,[old_parameters['temperature']]);self.assertEqual(self.engine.running_parameters,old_parameters)
+  self.assertEqual(self.store.settings()['gateway_port'],new_port);self.assertEqual(self.store.settings()['temperature'],.22)
+ def test_failed_upgrade_of_stopped_engine_does_not_load_previous_weights(self):
+  jobs=Jobs(self.store);self.addCleanup(jobs.shutdown);updates=Updates(self.store,jobs,self.engine)
+  self.store.settings_update({'selected_model':str(self.model)})
+  self.store.put('engine_active',{'version':'old','python':'fixture-old'});self.store.put('engine_staged',{'version':'new','python':'fixture-new'})
+  with patch.object(self.engine,'start_transition',side_effect=APIError('candidate load failed')) as start:
+   with self.assertRaises(APIError):updates.run_activate(Job(jobs,{'id':'stopped-upgrade','params':{}}))
+   self.assertEqual(start.call_count,1)
+  self.assertEqual(self.store.get('engine_active')['version'],'old');self.assertEqual(self.engine.status()['state'],'stopped')
+ def test_upgrade_job_installs_then_activates_and_refuses_external_service(self):
+  jobs=Jobs(self.store);self.addCleanup(jobs.shutdown);updates=Updates(self.store,jobs,self.engine)
+  self.assertIn('engine_upgrade',jobs.runners)
+  job=Job(jobs,{'id':'upgrade-flow','params':{'version':'v0.0.2','model':str(self.model)}})
+  from unittest.mock import Mock
+  candidate={'version':'v0.0.2','python':'fixture-new'}
+  with patch.object(updates,'run_install',return_value=candidate) as install,patch.object(updates,'_switch',return_value={'active':candidate}) as switch:
+   result=updates.run_upgrade(job)
+   self.assertEqual(result['active'],candidate);install.assert_called_once_with(job);switch.assert_called_once_with(candidate,job)
+  external={'pid':99,'kind':'tensorfold'}
+  with patch.object(self.engine.resources,'snapshot',return_value={'services':[external]}),patch.object(self.engine,'stop') as stop,patch.object(updates,'run_install') as install:
+   with self.assertRaisesRegex(APIError,'external'):updates.run_upgrade(job)
+   install.assert_not_called();stop.assert_not_called()
  def test_drain_timeout_keeps_previous_environment_running(self):
   self.engine.start(str(self.model));wait_state(self.engine,'ready')
   with self.engine.request():

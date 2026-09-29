@@ -5,25 +5,21 @@ import { renderOverview } from '../web/views/overview.js';
 import { renderChat } from '../web/views/chat.js';
 import { renderBenchmark } from '../web/views/benchmark.js';
 import * as downloadsView from '../web/views/downloads.js';
-import { renderModelTools } from '../web/views/model-tools.js';
 import { renderEngineConfig } from '../web/views/engine-config.js';
 import { renderStats } from '../web/views/stats.js';
 import { renderCache } from '../web/views/cache.js';
-import { renderAccuracy } from '../web/views/accuracy.js';
 import { serializeSettings } from '../web/views/settings.js';
 import { readFileSync } from 'node:fs';
 import { renderModels } from '../web/views/models.js';
-import { renderModelConfig } from '../web/views/model-config.js';
+import { renderModelConfigDialog } from '../web/views/model-config.js';
 import { renderServer } from '../web/views/server.js';
 import { renderApi } from '../web/views/api-integration.js';
-import { renderAuth } from '../web/views/auth.js';
 import { renderUpdates } from '../web/views/updates.js';
 import { renderLogs } from '../web/views/logs.js';
-import { renderCapabilities } from '../web/views/capabilities.js';
 
 globalThis.location ??= { origin:'http://127.0.0.1:43123' };
 
-const model = { id:'/Models/Qwen', name:'Qwen', repo:'org/qwen', installed:true, supported:true };
+const model = { id:'/Models/Qwen', name:'Qwen', repo:'org/qwen', installed:true, supported:true, startable:true };
 const baseSnapshot = {
   update:{ active:{ version:'v1' } },
   settings:{ selected_model:model.id, max_tokens:256 },
@@ -148,60 +144,25 @@ test('attached verified services remain usable for chat and benchmark', () => {
   assert.doesNotMatch(models, /data-action="engine-start" data-value="\/Models\/Other"/);
 });
 
-test('tools page uses runtime status, password-only credentials, affine quantization, and upload preview', () => {
-  const output = renderModelTools({
-    snapshot:{ ...baseSnapshot, jobs:[{ id:'install-1', kind:'tool_install', status:'running', params:{}, progress:{ phase:'install_pinned_packages' } }] },
-    pageData:{
-      tools:{ active:null, pins:{ 'mlx-lm':'backend-version', 'huggingface-hub':'backend-hub' } },
-      credentials:{ providers:{
-        'hf-download':{ provider:'hf-download', configured:true },
-        'hf-upload':{ provider:'hf-upload', configured:false },
-        'modelscope-download':{ provider:'modelscope-download', configured:false },
-      } },
-      uploadPlan:{ plan_id:'plan-1', repo:'owner/model', visibility:'public', existing:false, size_bytes:4096, files:[{ path:'config.json', size_bytes:4096, sha256:'a'.repeat(64) }] },
-    },
-  });
-  assert.match(output, /backend-version/);
-  assert.match(output, /install_pinned_packages/);
-  assert.match(output, /type="password"/);
-  assert.match(output, /已配置/);
-  assert.doesNotMatch(output, /private-example-token/);
-  assert.match(output, /name="group_size"/);
-  assert.match(output, /value="affine"/);
-  assert.match(output, /实际可见性/);
-  assert.match(output, /新建公开仓库/);
-  assert.match(output, /data-action="upload-confirm"/);
-});
-
-test('capability table treats installed-but-not-ready tools as unavailable', () => {
-  const output = renderCapabilities({ snapshot:{ capabilities:{ quantize:{ supported:true, ready:false, reason:'Install tools first' } } } });
-  assert.match(output, /不可用/);
-  assert.match(output, /Install tools first/);
-});
-
-test('download page supports scoped official credentials and labels immutable identity honestly', () => {
+test('download page limits choices to backend catalog sources and labels immutable identity honestly', () => {
   const output = downloadsView.renderDownloads({
     snapshot:{ ...baseSnapshot, jobs:[] },
     pageData:{
-      catalog:{ sources:[
-        { id:'huggingface', credentials_supported:true },
-        { id:'hf-mirror', third_party:true, credentials_supported:false },
-        { id:'modelscope', credentials_supported:true },
-      ], default_directory:'/Managed/models', models:[] },
-      credentials:{ providers:{ 'hf-download':{ configured:true }, 'modelscope-download':{ configured:false } } },
+      catalog:{ default_directory:'/Managed/models', models:[{ repo:'org/qwen', name:'Qwen', supported:true, source:'huggingface', download_sources:['huggingface','hf-mirror'] }] },
       jobs:{ jobs:[{ id:'d1', kind:'download', status:'completed', params:{ source:'modelscope', revision:'master' }, result:{ revision:'abc', revision_kind:'file_manifest_sha256' } }] },
     },
   });
-  assert.match(output, /name="use_credentials"/);
-  assert.match(output, /官方来源/);
-  assert.match(output, /默认 master/);
+  assert.match(output, /name="catalog_model"/);
+  assert.match(output, /huggingface:org\/qwen/);
+  assert.match(output, /hf-mirror:org\/qwen/);
+  assert.doesNotMatch(output, /name="repo"|name="revision"|name="directory"/);
   assert.match(output, /文件树快照/);
   assert.equal(typeof downloadsView.revisionKindLabel, 'function');
   assert.equal(downloadsView.revisionKindLabel('repository_commit'), '仓库提交');
   assert.equal(downloadsView.revisionKindLabel('file_manifest_sha256'), '文件树快照');
 });
 
-test('advanced options serialize with strict types and show runtime support reasons', () => {
+test('model advanced options serialize with strict types while framework page stays service-only', () => {
   assert.deepEqual(serializeSettings({
     drafter:'none', drafter_bits:'4', mtp_drafts:'3', no_drafts:'true', checkpoint_slots:'8',
     spill_gib:'2.5', max_snapshots:'5', reasoning_effort:'xhigh', thinking_budget:'128', name:'qwen-local',
@@ -212,11 +173,14 @@ test('advanced options serialize with strict types and show runtime support reas
     mtp_confidence:null,
   });
   const output = renderEngineConfig({ snapshot:{ ...baseSnapshot, settings:{ ...baseSnapshot.settings, drafter:'none' } } });
+  const dialog = renderModelConfigDialog({ snapshot:{ ...baseSnapshot, settings:{ ...baseSnapshot.settings, drafter:'none' } }, pageData:{ profiles:{ profiles:[] } }, routeQuery:new URLSearchParams() }, model.id);
   for (const name of ['drafter','drafter_bits','mtp_drafts','no_drafts','checkpoint_slots','spill_gib','max_snapshots','reasoning_effort','thinking_budget','name','mtp_confidence']) {
-    assert.match(output, new RegExp(`name="${name}"`));
+    if (['checkpoint_slots','spill_gib','max_snapshots'].includes(name)) assert.match(output, new RegExp(`name="${name}"`));
+    else assert.match(dialog, new RegExp(`name="${name}"`));
   }
-  assert.match(output, /CUDA-only/);
-  assert.match(output, /启动前由已安装引擎 CLI 验证/);
+  assert.match(dialog, /CUDA-only/);
+  assert.match(dialog, /启动前由已安装引擎 CLI 验证/);
+  for (const name of ['context','max_tokens','temperature','top_p','top_k','thinking','drafter','mtp_drafts']) assert.doesNotMatch(output, new RegExp(`name="${name}"`));
 });
 
 test('stats and cache display backend aggregates, byte memory values, sources, parameters and attached read-only limits', () => {
@@ -252,7 +216,7 @@ test('stats and cache display backend aggregates, byte memory values, sources, p
   assert.match(emptyAndZero, /Cache[\s\S]*?未采集/);
 });
 
-test('benchmark and accuracy queues expose actual status, parameters, partial results, pause resume and cancel', () => {
+test('benchmark queue exposes actual status, parameters, partial results and cancellation', () => {
   const snapshot = {
     ...baseSnapshot,
     engine:{ state:'attached', control_owner:'external' },
@@ -268,15 +232,9 @@ test('benchmark and accuracy queues expose actual status, parameters, partial re
     results:[{ status:200, output_tokens:3 }],
   }] } } });
   assert.match(benchmark, /cancelled/);
-  assert.match(benchmark, /部分结果/);
+  assert.match(benchmark, /已完成/);
   assert.match(benchmark, /32768/);
   assert.match(benchmark, /b-running:cancel/);
-
-  const accuracy = renderAccuracy({ snapshot, pageData:{ accuracy:{ cases:[{ id:'c', name:'n', prompt:'p', expected:'e', match:'exact', max_tokens:8 }], results:[] } } });
-  assert.match(accuracy, /a-running:pause/);
-  assert.match(accuracy, /a-running:cancel/);
-  assert.match(accuracy, /a-paused:resume/);
-  assert.match(accuracy, /suite/);
 });
 
 test('pure request builders preserve exact backend paths and bodies for click contracts', async () => {
@@ -305,15 +263,15 @@ test('pure request builders preserve exact backend paths and bodies for click co
 
 test('poll policy refreshes live routes without replacing focused editors or streaming chat', async () => {
   const contracts = await import('../web/contracts.js');
-  const livePages = ['overview', 'models', 'downloads', 'model-tools', 'updates', 'stats', 'cache', 'logs', 'benchmark', 'accuracy', 'server'];
+  const livePages = ['overview', 'models', 'downloads', 'updates', 'stats', 'cache', 'logs', 'benchmark', 'server', 'api'];
   for (const page of livePages) {
     assert.equal(contracts.shouldPollLivePage(page, { editing:false, streaming:false }), true, `${page} should refresh while idle`);
   }
-  for (const page of ['chat', 'auth', 'api', 'engine-config', 'model-config', 'capabilities']) {
+  for (const page of ['chat', 'engine-config', 'model-config', 'model-tools', 'accuracy', 'auth', 'capabilities']) {
     assert.equal(contracts.shouldPollLivePage(page, { editing:false, streaming:false }), false, `${page} should not be replaced by polling`);
   }
   assert.equal(contracts.shouldPollLivePage('benchmark', { editing:true, streaming:false }), false);
-  assert.equal(contracts.shouldPollLivePage('accuracy', { editing:false, streaming:true }), false);
+  assert.equal(contracts.shouldPollLivePage('chat', { editing:false, streaming:true }), false);
 
   const outsideForm = (tagName, extra = {}) => ({ tagName, closest:() => null, ...extra });
   for (const tag of ['INPUT', 'SELECT', 'TEXTAREA']) assert.equal(contracts.isPollEditingTarget(outsideForm(tag)), true);
@@ -328,18 +286,12 @@ test('poll policy refreshes live routes without replacing focused editors or str
   assert.match(pollSource, /await loadPageData\(polledPage, \{ render:false \}\)[\s\S]*renderCurrent\(\)/, 'live route data loads before rendering');
 });
 
-test('dirty edits remain protected after blur and target formats come from model preflight', async () => {
+test('dirty edits remain protected after blur on every editable live page', async () => {
   const { shouldPollLivePage } = await import('../web/contracts.js');
-  for (const page of ['server','overview','downloads','model-tools']) {
+  for (const page of ['server','overview','downloads','api']) {
     assert.equal(shouldPollLivePage(page, { editing:false, dirty:true }), false);
     assert.equal(shouldPollLivePage(page, { editing:false, dirty:false }), true);
   }
-  const { quantizationChoices, quantizationOptions } = await import('../web/views/model-tools.js');
-  const tools = { quantization:{ models:[{ model:'gemma', choices:[{bits:4,group_size:32,mode:'affine'},{bits:4,group_size:64,mode:'affine'}] }] } };
-  const output = quantizationOptions(quantizationChoices(tools,'gemma'));
-  assert.match(output,/4:32/);assert.match(output,/4:64/);
-  assert.doesNotMatch(output,/3 bit|128/);
-  assert.deepEqual(quantizationChoices(tools,'unknown'),[]);
   const source = readFileSync(new URL('../web/app.js',import.meta.url),'utf8');
   assert.match(source,/pageElement.addEventListener\(type/);
   assert.match(source,/dirty:pageDirty/g);
@@ -356,9 +308,8 @@ test('every shipped page renders and every visible action or form has an applica
   };
   const pages = {
     overview:renderOverview, stats:renderStats, cache, models:renderModels, downloads:downloadsView.renderDownloads,
-    'model-config':renderModelConfig, 'model-tools':renderModelTools, 'engine-config':renderEngineConfig,
-    server:renderServer, api:renderApi, auth:renderAuth, updates:renderUpdates, logs:renderLogs,
-    benchmark:renderBenchmark, accuracy:renderAccuracy, chat:renderChat, capabilities:renderCapabilities,
+    'engine-config':renderEngineConfig, server:renderServer, api:renderApi, updates:renderUpdates,
+    logs:renderLogs, benchmark:renderBenchmark, chat:renderChat,
   };
   const appSource = readFileSync(new URL('../web/app.js', import.meta.url), 'utf8');
   const indexSource = readFileSync(new URL('../web/index.html', import.meta.url), 'utf8');
@@ -377,6 +328,7 @@ test('every shipped page renders and every visible action or form has an applica
   for (const action of actions) assert.match(appSource, new RegExp(`action === ['"]${action}['"]`), `click action ${action} must be handled`);
   for (const form of forms) assert.match(appSource, new RegExp(`action === ['"]${form}['"]`), `form ${form} must be handled`);
   assert.doesNotMatch(indexSource, /class="tf-nav"[^>]*disabled/, 'navigation must not strand a page behind a permanent disabled state');
+  for (const removed of ['model-config','model-tools','auth','accuracy','capabilities']) assert.doesNotMatch(indexSource, new RegExp(`data-page="${removed}"`));
 });
 
 test('document head leaves frame embedding policy to the HTTP header and avoids a favicon 404', () => {

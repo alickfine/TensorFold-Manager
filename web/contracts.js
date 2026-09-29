@@ -3,8 +3,8 @@ import { t } from './i18n.js';
 const exactRepo = /^[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const providers = new Set(['hf-download', 'hf-upload', 'modelscope-download']);
 const livePollPages = new Set([
-  'overview', 'models', 'downloads', 'model-tools', 'updates',
-  'stats', 'cache', 'logs', 'benchmark', 'accuracy', 'server',
+  'overview', 'models', 'downloads', 'updates',
+  'stats', 'cache', 'logs', 'benchmark', 'server', 'api',
 ]);
 
 export function shouldPollLivePage(page, { editing = false, dirty = false, streaming = false } = {}) {
@@ -16,6 +16,14 @@ export function isPollEditingTarget(element) {
   const tagName = String(element.tagName ?? '').toLowerCase();
   if (['input', 'select', 'textarea'].includes(tagName) || element.isContentEditable === true) return true;
   return Boolean(element.closest?.('form, [contenteditable]:not([contenteditable="false"])'));
+}
+
+export function assertChatCanSubmit(streaming) {
+  if (streaming === true) throw new Error(t('当前生成尚未结束'));
+}
+
+export function isChatSubmitKey(event, { streaming = false } = {}) {
+  return streaming !== true && event?.key === 'Enter' && event.shiftKey !== true && event.isComposing !== true;
 }
 
 function post(path, body = {}) {
@@ -79,6 +87,25 @@ export function downloadRequest(values) {
     source,
     revision,
     directory:values.directory,
+    use_credentials:useCredentials,
+  });
+}
+
+export function catalogDownloadRequest(catalog = {}, selection = '', { useCredentials = false } = {}) {
+  const models = Array.isArray(catalog.models) ? catalog.models : [];
+  const separator = selection.indexOf(':');
+  const source = separator > 0 ? selection.slice(0, separator) : '';
+  const repo = separator > 0 ? selection.slice(separator + 1) : '';
+  const item = models.find((model) => model.repo === repo);
+  const sources = item?.download_sources ?? [item?.source ?? 'huggingface'];
+  if (!item || item.supported !== true || !sources.includes(source) || !['huggingface', 'hf-mirror', 'modelscope'].includes(source)) {
+    throw new TypeError(t('请选择目录中的受支持模型'));
+  }
+  return downloadRequest({
+    repo:item.repo,
+    source,
+    revision:item.revision ?? '',
+    directory:catalog.default_directory,
     use_credentials:useCredentials,
   });
 }

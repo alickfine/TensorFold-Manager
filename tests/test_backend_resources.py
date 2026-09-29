@@ -50,7 +50,10 @@ class ResourceTests(unittest.TestCase):
   flags['snapshot-dir']='relative/cache';self.assertFalse(self.gate.preflight_start(self.model,settings)['allowed']);flags['snapshot-dir']=str(self.store.snapshots)
   flags['context']='2048';self.assertIsNone(self.gate.preflight_start(self.model,settings)['attachment']);flags['context']='1024'
   lease=self.gate.acquire_start(self.model,settings);self.addCleanup(lease.release)
-  self.assertTrue(self.gate.verify_attachment(service));self.observer.services[0]=service|{'start_time':'later'};self.assertFalse(self.gate.verify_attachment(service))
+  self.assertTrue(self.gate.verify_attachment(service))
+  self.observer.services[0]=service|{'health':None}
+  self.assertTrue(self.gate.verify_attachment(service),'Transport health unavailable must not erase stable process identity')
+  self.observer.services[0]=service|{'start_time':'later'};self.assertFalse(self.gate.verify_attachment(service))
  def test_memory_parser_uses_pressure_available_and_swap_not_rss(self):
   stats='Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free: 10.\nPages inactive: 20.\nPages speculative: 5.'
   memory=parse_memory(str(1024*1024),stats,'System-wide memory free percentage: 60%','1','vm.swapusage: total = 10.00M used = 2.00M free = 8.00M')

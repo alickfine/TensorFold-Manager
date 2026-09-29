@@ -84,6 +84,7 @@ final class ManagerApp: NSObject, NSApplicationDelegate, WKNavigationDelegate, W
             if !FileManager.default.fileExists(atPath: runtime.appendingPathComponent("bin/python3").path) {
                 let stage = runtimes.appendingPathComponent("staging-" + UUID().uuidString)
                 try FileManager.default.copyItem(at: contents.appendingPathComponent("Frameworks/PythonRuntime.framework/Resources/runtime"), to: stage)
+                try RuntimeIntegrity.sealDirectories(stage)
                 do { try FileManager.default.moveItem(at: stage, to: runtime) }
                 catch { try? FileManager.default.removeItem(at: stage); if !FileManager.default.fileExists(atPath: runtime.path) { throw error } }
             }
@@ -107,7 +108,7 @@ final class ManagerApp: NSObject, NSApplicationDelegate, WKNavigationDelegate, W
                 "TFM_RUNTIME_PYTHON": runtime.appendingPathComponent("bin/python3").path,
                 "TFM_UV": contents.appendingPathComponent("Helpers/uv").path,
                 "TFM_KEYCHAIN_HELPER": contents.appendingPathComponent("Helpers/CredentialStore").path,
-                "TFM_APP_VERSION": provenance["app_version"] as? String ?? "0.1.0-alpha.2"]
+                "TFM_APP_VERSION": provenance["app_version"] as? String ?? "0.1.0-alpha.3"]
             process.standardInput = input
             process.standardOutput = output
             process.standardError = errors

@@ -128,3 +128,21 @@ try data.write(to: path)
 try data.write(to: fixtureRoot.appendingPathComponent("unlisted.py"))
 XCTAssertThrowsError(try RuntimeIntegrity.verify(fixtureRoot, manifest: manifest))
 print("PASS: credential scope and full runtime integrity checks")
+
+let sealedRoot = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+let sealedChild = sealedRoot.appendingPathComponent("lib")
+try FileManager.default.createDirectory(at: sealedChild, withIntermediateDirectories: true)
+let sealedFile = sealedChild.appendingPathComponent("library.py")
+try data.write(to: sealedFile)
+try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: sealedFile.path)
+try RuntimeIntegrity.sealDirectories(sealedRoot)
+for directory in [sealedRoot, sealedChild] {
+    let mode = (try FileManager.default.attributesOfItem(atPath: directory.path)[.posixPermissions] as! NSNumber).intValue
+    XCTAssertEqual(mode & 0o222, 0)
+}
+XCTAssertThrowsError(try FileManager.default.createDirectory(at: sealedChild.appendingPathComponent("__pycache__"), withIntermediateDirectories: false))
+let sealedManifest = try JSONSerialization.data(withJSONObject: ["lib/library.py": ["sha256": digest, "mode": 420]])
+try RuntimeIntegrity.verify(sealedRoot, manifest: sealedManifest)
+for directory in [sealedRoot, sealedChild] { try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: directory.path) }
+try FileManager.default.removeItem(at: sealedRoot)
+print("PASS: runtime directories reject bytecode cache writes without weakening manifest verification")

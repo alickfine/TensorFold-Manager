@@ -48,3 +48,24 @@ An OS heavy-task lease covers inference, conversion, switching, activation and r
 - [alpha.2 CI](https://github.com/alickfine/TensorFold-Manager/actions/runs/36513259885) completed successfully: 149 Python / 48 Web tests, native checks, build and publication.
 - The DMG downloaded from the [alpha.2 Release](https://github.com/alickfine/TensorFold-Manager/releases/tag/v0.1.0-alpha.2) matched its checksum file and GitHub digest: `a080d5a66ade9c6c2b22371d94a23d0dfb2a19e7c9c762957ce20fd359ae5789`.
 - The public App was mounted read-only, copied, unmounted and launched. Manager/Web source bytes and version matched the tested source; strict signature checks passed. Chinese/English page and native-menu switching worked. The preference was restored to Chinese; normal quit removed the manager process and closed port 65085.
+
+## alpha.3 repair acceptance (2026-09-29)
+
+Two independent agents handled investigation/review and Web fixes; the coordinator integrated backend/native changes.
+
+- Python 3.12.9: 175 tests passed. Web: 64 passed. Native bootstrap/language, full manifest integrity and directory write protection checks passed.
+- The actual native App opened existing data with 12 retained navigation items and no duplicate three-light header. Library buttons were uniform; model settings opened in a dialog. Unsaved Temperature=0.73 survived Chinese-to-English switching and was discarded on close.
+- Installed Gemma/Qwen/GLM compatibility was checked using the actual TensorFold CLI and MLX reader, without loading weights. Detection does not prove inference or weight provenance.
+- Existing installer logs and chat history remained visible. Generation is explicitly disabled while stopped; old conversations are not new-release inference evidence.
+- Actual startup reproduced an old runtime with unmanifested pyc files. A new runtime namespace copies clean App resources and removes directory write bits while preserving old runtimes/engines and strict integrity checking. The source of the prior mutation is unproven; it is not attributed to uv.
+- Actual uv venv creation, offline local fixture wheel installation/import and plain imports without -B left every manifest entry, mode and link unchanged, with no additional files. This is runtime isolation evidence, not a TensorFold upgrade acceptance.
+- Real HTTP fixture-engine regressions cover candidate completion, pre-stop rejection, original model/running-parameter recovery, concurrent pending edits and recovery to a stopped state without unwanted model loads.
+- Regressions cover first-install access, actual gateway binding/pending settings, partial scan limits, duplicate chat submissions/error recovery and inherited model settings.
+
+Full large-model downloads, new-release GLM loading and a live GLM upgrade were not performed in this pass. The build is ad hoc signed, without Developer ID signing or Apple notarization. Previous heavy-model acceptance does not prove these new-release flows.
+
+- [Branch CI](https://github.com/alickfine/TensorFold-Manager/actions/runs/36578444335) passed. Its downloaded DMG matched SHA256SUMS; strict signature, version and manager/Web byte equality checks passed.
+- Actual CI App discovery completed: 200000 directories, five model locations, four registered directories and 596 skipped entries. The directory_limit and partial result are displayed explicitly; this is not a complete whole-disk scan. Permission errors no longer abort it. Actual CLI detection completed and the library expanded from five to nine entries.
+- The long-history chat composer stays visible with generation parameters collapsed or expanded; the parameter panel scrolls independently. The actual scan button dispatched its job; page navigation worked.
+- Actual uv offline fixture-wheel installation, plain imports without -B and full manifest verification preserved the CI App runtime. Normal quit/relaunch succeeded and retained Chinese, without starting an inference service.
+- Final QA additionally found unrelated jobs in the downloader and an incorrect mirror label; both were repaired and passed render regressions; final package checks continue. alpha.3 publication is not yet claimed.

@@ -10,7 +10,8 @@ if len(sys.argv)>2 and sys.argv[1]=='info':
  marker=Path(sys.argv[2])/'reject-info'
  if marker.exists():
   print(marker.read_text(),file=sys.stderr);sys.exit(2)
- print('compatible fixture model');sys.exit()
+ backend=Path(sys.argv[2])/'fixture-readers'
+ print('runs on      '+(backend.read_text() if backend.exists() else 'Apple Silicon (MLX)'));sys.exit()
 parser=argparse.ArgumentParser(); parser.add_argument('serve'); parser.add_argument('model'); parser.add_argument('--port',type=int); parser.add_argument('--name',default='fixture'); args,_=parser.parse_known_args()
 if 'fail-model' in args.model: sys.exit(7)
 class Handler(BaseHTTPRequestHandler):

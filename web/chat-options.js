@@ -24,6 +24,16 @@ export function parseChatOptions(values = {}, defaults = {}) {
   return result;
 }
 
+export function prepareChatTurn(chat, message, defaults = {}) {
+  const options = parseChatOptions(chat?.options, defaults);
+  const assistant = { role:'assistant', content:'', options, reasoning:'', tool_calls:[], status:'generating' };
+  return {
+    options,
+    assistant,
+    messages:[...(chat?.messages ?? []), { role:'user', content:message }, assistant],
+  };
+}
+
 export function chatRequest(model, messages, options) {
   const {system_prompt,tools_json,...parameters} = options;
   const history = messages.filter(message => message.role !== 'system').map(({role,content,tool_calls,tool_call_id}) => ({role,content,...(tool_calls ? {tool_calls} : {}),...(tool_call_id ? {tool_call_id} : {})}));
