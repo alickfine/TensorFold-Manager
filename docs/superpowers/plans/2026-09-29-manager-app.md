@@ -108,3 +108,15 @@ Startup Python module tfmanager.server --data-dir PATH --web-dir PATH --port 0 a
 - 独立审查的两项 P2 已由主线程修复并回归；后续 agent 用量限制已披露。实际转换进一步发现 scales dtype 必须 bfloat16，已修复并验证真实推理。
 - 公开 v0.1.0-alpha.1 的 DMG / SHA256 已发布，实际下载、摘要核对、安装、聊天、退出和签名验收通过。完整证据与限制见 docs/acceptance.md。
 - 未操作用户既有外部服务、未写入真实 provider token、未真实上传模型。用户安装验收等待反馈，Developer ID / 公证未提供。
+
+## Iteration: bilingual alpha.2
+
+User requested bilingual GitHub documentation and a Chinese/English language switch in the released App. Approved implementation scope:
+
+- Chinese README with an English counterpart; bilingual release notes.
+- Web workspace shell and all 17 pages, fixed UI messages, accessible locale selector and remembered preference.
+- Native menus and confirmation/startup/quit dialogs; language bridge accepts only `zh-CN` / `en` from the existing trusted main frame.
+- Preserve raw model names, paths, logs, conversation text and unsaved form values during language changes.
+- Verify locale catalogs, bridge boundaries, preference persistence and actual packaged App. Run existing backend/Web/native regression gates, publish a new alpha DMG rather than replacing alpha.1.
+
+Implementation ownership: Web agent owns web/ and Web tests; native agent owns macos/ and native tests; root owns documentation, packaging, integration, acceptance and publication. Existing service/memory/auth boundaries remain required.

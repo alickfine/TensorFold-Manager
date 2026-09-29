@@ -1,5 +1,6 @@
 import { h, escapeHtml, formatBytes } from './shared.js';
 import { renderResources, renderServiceControls } from './resources.js';
+import { getLocale, t } from '../i18n.js';
 
 function formatTimestamp(value) {
   if (value === null || value === undefined || value === '') return value;
@@ -7,7 +8,7 @@ function formatTimestamp(value) {
   const parsed = Number.isFinite(numeric)
     ? new Date(Math.abs(numeric) < 1e12 ? numeric * 1000 : numeric)
     : new Date(value);
-  return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString();
+  return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString(getLocale());
 }
 
 export function chooseLaunchModel(snapshot = {}) {
@@ -18,8 +19,8 @@ export function chooseLaunchModel(snapshot = {}) {
 }
 
 export function getLaunchGate(snapshot = {}, selected = '') {
-  if (!snapshot.update?.active) return { allowed:false, reason:'请先安装 TensorFold 引擎' };
-  if (!selected) return { allowed:false, reason:'请先安装并选择受支持模型' };
+  if (!snapshot.update?.active) return { allowed:false, reason:t('请先安装 TensorFold 引擎') };
+  if (!selected) return { allowed:false, reason:t('请先安装并选择受支持模型') };
   return { allowed:true, reason:'' };
 }
 
@@ -47,13 +48,13 @@ export function renderOverview(state) {
     : forceRequired
       ? h.button('强制停止自有服务', 'engine-force-stop', '', 'danger')
       : ownedCanStop
-        ? h.button('停止服务', 'engine-stop', '', 'danger', engine.state === 'stopping' ? '停止请求处理中' : '')
+        ? h.button('停止服务', 'engine-stop', '', 'danger', engine.state === 'stopping' ? t('停止请求处理中') : '')
         : h.button('启动服务', 'engine-start', selected, 'primary', launchGate.reason);
   const restart = isOwned && (isReady || (engine.state === 'failed' && childExitConfirmed))
     ? h.button('重启', 'engine-restart', selected, '', !launchGate.allowed ? launchGate.reason : '')
     : '';
   return h.heading('运行总览', '从服务状态到每次生成，查看本机推理工作台的真实状态。', `<div class="tf-actions">${installLink}${restart}${engineAction}</div>`)
-    + h.card(`推理服务 · ${engine.state ?? '未知'}`, `<div class="tf-chips">${h.tag(engine.model, 'blue')}${h.tag(engine.health, isReady ? 'green' : 'amber')}${h.tag(engine.version)}</div><div class="tf-grid three"><div>${h.kv('进程 PID', engine.pid)}${h.kv('启动时间', formatTimestamp(engine.started_at))}</div><div>${h.kv('运行模型', engine.model)}${h.kv('运行时版本', engine.version)}</div><div>${h.kv('待应用配置', engine.pending)}${h.kv('错误', engine.error)}</div></div>${unsupportedCount ? h.note(`另有 ${unsupportedCount} 个已扫描模型未通过 TensorFold 支持目录门禁，已从启动候选中排除。`, true) : ''}`, launchModel.options.length ? `<label class="sr-only" for="overview-model">启动模型</label><select id="overview-model" data-role="engine-model">${launchModel.options.map((model) => `<option value="${escapeHtml(model.id)}"${model.id === selected ? ' selected' : ''}>${escapeHtml(model.name ?? model.id)}</option>`).join('')}</select>` : '')
+    + h.card(t('推理服务 · {state}', { state:engine.state ?? t('未知') }), `<div class="tf-chips">${h.tag(engine.model, 'blue')}${h.tag(engine.health, isReady ? 'green' : 'amber')}${h.tag(engine.version)}</div><div class="tf-grid three"><div>${h.kv('进程 PID', engine.pid)}${h.kv('启动时间', formatTimestamp(engine.started_at))}</div><div>${h.kv('运行模型', engine.model)}${h.kv('运行时版本', engine.version)}</div><div>${h.kv('待应用配置', engine.pending)}${h.kv('错误', engine.error)}</div></div>${unsupportedCount ? h.note(t('另有 {count} 个已扫描模型未通过 TensorFold 支持目录门禁，已从启动候选中排除。', { count:unsupportedCount }), true) : ''}`, launchModel.options.length ? `<label class="sr-only" for="overview-model">${t('启动模型')}</label><select id="overview-model" data-role="engine-model">${launchModel.options.map((model) => `<option value="${escapeHtml(model.id)}"${model.id === selected ? ' selected' : ''}>${escapeHtml(model.name ?? model.id)}</option>`).join('')}</select>` : '')
     + `<div class="tf-metrics">${h.metric('累计请求', stats.total?.requests ?? stats.requests, '网关实际记录')}${h.metric('模型数量', snapshot.models?.length, '已扫描目录')}${h.metric('主机内存', formatBytes(system.memory_total_bytes), '系统采集')}${h.metric('引擎内存', formatBytes(engineFootprint), '上游 health 实际采样')}</div>`
     + renderResources(snapshot.resources)
     + renderServiceControls(state.pageData.services, snapshot.models, snapshot.jobs, engine)

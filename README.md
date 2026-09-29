@@ -1,8 +1,10 @@
 # TensorFold Manager
 
+**简体中文** | [English](README.en.md)
+
 独立 macOS App 中的 Web 管理工作台，面向 [TensorFold](https://github.com/ashhart/TensorFold)。参考本机 oMLX 的可适配管理功能，自主设计界面与管理层。
 
-**当前版本：0.1.0-alpha.1，Apple Silicon 测试版。** 安装包位于 [GitHub Releases](https://github.com/alickfine/TensorFold-Manager/releases)。真实验证和限制见 [验收记录](docs/acceptance.md)。Ad hoc 签名，未 Apple 公证。
+**Apple Silicon 测试版，最新版本见 Releases。** 安装包位于 [GitHub Releases](https://github.com/alickfine/TensorFold-Manager/releases)。真实验证和限制见 [验收记录](docs/acceptance.md)。Ad hoc 签名，未 Apple 公证。
 
 ## 最终交付：GitHub Releases 中的 DMG
 
@@ -24,6 +26,8 @@
 5. 使用“内置聊天”、统计、缓存、日志、基准和参考答案测试。关闭 App 会正常停止它创建的引擎。
 
 正式工作台包含 17 个菜单。上游没有稳定接口的能力会显示不可用原因，运行指标只显示实际采集值。量化需安装独立模型工具；目标格式由当前主引擎预检，转换输出使用独立受管目录，源权重保持只读。
+
+界面右上角可选择 **简体中文 / English**，App 会记住语言。模型名称、路径、日志和用户聊天内容保留原文。
 
 ## 原型预览
 
@@ -99,7 +103,7 @@ Superpowers 负责规划与实施流程，grill-me 审核升级和交付决策�
 
 ```sh
 python3.12 -B -m unittest discover -s tests
-node --test tests/web.test.mjs
+node --test tests/*.test.mjs
 swiftc macos/Bootstrap.swift macos/CredentialRequest.swift macos/tests/main.swift -o /tmp/tfm-native-tests
 /tmp/tfm-native-tests
 ```

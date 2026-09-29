@@ -1,5 +1,12 @@
+import { t } from './i18n.js';
+
 const MANAGEMENT_PATH = /^\/api(?:\/|$)/;
 let bootstrapPromise;
+let bootstrapLanguage = null;
+
+export function getBootstrapLanguage() {
+  return bootstrapLanguage;
+}
 
 export class ApiError extends Error {
   constructor(message, { code = 'api_error', status = 0, details = null } = {}) {
@@ -22,7 +29,7 @@ export async function parseApiError(response) {
   return new ApiError(
     typeof protocolError?.message === 'string' && protocolError.message
       ? protocolError.message
-      : `请求失败（HTTP ${response.status}）`,
+      : t('请求失败（HTTP {status}）', { status:response.status }),
     {
       code: typeof protocolError?.code === 'string' ? protocolError.code : 'http_error',
       status: response.status,
@@ -46,10 +53,13 @@ export async function resolveBootstrapToken({
   if (handler?.postMessage) {
     const reply = await handler.postMessage({});
     if (typeof reply?.token !== 'string' || !reply.token || typeof reply?.instance_id !== 'string') {
-      throw new ApiError('原生认证握手返回无效', { code: 'bootstrap_invalid' });
+      throw new ApiError(t('原生认证握手返回无效'), { code: 'bootstrap_invalid' });
     }
+    bootstrapLanguage = reply.language === 'zh-CN' || reply.language === 'en' ? reply.language : null;
     return reply.token;
   }
+
+  bootstrapLanguage = null;
 
   const params = new URLSearchParams(location?.search ?? '');
   const host = location?.hostname;
@@ -101,7 +111,7 @@ export function createApiClient({ getToken = getAdminToken, fetchImpl = globalTh
     if (response.status === 204) return {};
     const contentType = response.headers.get('content-type') ?? '';
     if (!contentType.includes('application/json')) {
-      throw new ApiError('服务返回了非 JSON 响应', { code: 'invalid_response', status: response.status });
+      throw new ApiError(t('服务返回了非 JSON 响应'), { code: 'invalid_response', status: response.status });
     }
     return response.json();
   }
@@ -120,7 +130,7 @@ export function createApiClient({ getToken = getAdminToken, fetchImpl = globalTh
       headers: { Accept: 'text/event-stream' },
     });
     if (!response.ok) throw await parseApiError(response);
-    if (!response.body) throw new ApiError('服务未返回流式响应', { code: 'stream_missing' });
+    if (!response.body) throw new ApiError(t('服务未返回流式响应'), { code: 'stream_missing' });
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let pending = '';
@@ -147,9 +157,9 @@ export function createApiClient({ getToken = getAdminToken, fetchImpl = globalTh
         try {
           event = JSON.parse(data);
         } catch {
-          throw new ApiError('流式响应包含无效 JSON', { code: 'invalid_stream' });
+          throw new ApiError(t('流式响应包含无效 JSON'), { code: 'invalid_stream' });
         }
-        if (event.error) throw new ApiError(event.error.message ?? '推理流返回错误', {code:'upstream_error'});
+        if (event.error) throw new ApiError(event.error.message ?? t('推理流返回错误'), {code:'upstream_error'});
         const value = event?.choices?.[0]?.delta ?? {};
         if (typeof value.reasoning_content === 'string') onReasoning?.(value.reasoning_content);
         if (Array.isArray(value.tool_calls)) onToolCalls?.(value.tool_calls);
@@ -163,7 +173,7 @@ export function createApiClient({ getToken = getAdminToken, fetchImpl = globalTh
       if (done) break;
     }
     if (!sawDone) {
-      throw new ApiError('流式响应在完成标记前中断，已保留收到的部分内容', { code:'stream_interrupted' });
+      throw new ApiError(t('流式响应在完成标记前中断，已保留收到的部分内容'), { code:'stream_interrupted' });
     }
     return result;
   }
