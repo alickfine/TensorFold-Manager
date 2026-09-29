@@ -1,0 +1,138 @@
+#!/usr/bin/env python3
+"""Build a relocatable arm64 test App and DMG using Apple tools.
+
+Pass a uv-managed python-build-standalone install, never a system framework.
+Developer ID builds require SIGNING_IDENTITY; ad hoc is explicitly labelled.
+"""
+from __future__ import annotations
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import plistlib
+import shutil
+import subprocess
+
+ROOT = Path(__file__).resolve().parents[1]
+VERSION = '0.1.0-alpha.1'
+ALLOWED = {'.py', '.js', '.mjs', '.css', '.html', '.json', '.toml', '.md'}
+
+
+def validate_runtime(runtime: Path) -> Path:
+    runtime = runtime.resolve()
+    python = runtime / 'bin/python3'
+    if not python.is_file() or not os.access(python, os.X_OK):
+        raise ValueError('Runtime must contain executable bin/python3')
+    for path in runtime.rglob('*'):
+        if path.is_symlink() and not path.resolve().is_relative_to(runtime):
+            raise ValueError('Runtime contains an external symlink: ' + str(path.relative_to(runtime)))
+    if not python.resolve().is_relative_to(runtime):
+        raise ValueError('Runtime python resolves outside the bundled runtime')
+    result = subprocess.check_output([str(python), '-I', '-c', 'import sys; print(sys.version_info[:3])'], text=True).strip()
+    if result != '(3, 12, 9)':
+        raise ValueError('Expected standalone Python 3.12.9')
+    return runtime
+
+
+def copy_source(source: Path, target: Path) -> None:
+    target.mkdir(parents=True, exist_ok=True)
+    for path in sorted(source.iterdir()):
+        if path.name.startswith('.') or path.name == '__pycache__' or path.is_symlink():
+            continue
+        if path.is_dir():
+            copy_source(path, target / path.name)
+        elif path.suffix in ALLOWED and path.name not in {'credentials.json', 'settings.json', 'state.json'}:
+            shutil.copy2(path, target / path.name)
+
+
+def sha(path: Path) -> str:
+    return hashlib.file_digest(path.open('rb'), 'sha256').hexdigest()
+
+
+def run(*args: str) -> None:
+    subprocess.run(args, check=True)
+
+
+def macho(path: Path) -> bool:
+    if not path.is_file() or path.is_symlink():
+        return False
+    with path.open('rb') as source:
+        return source.read(4) in {b'\xcf\xfa\xed\xfe', b'\xce\xfa\xed\xfe', b'\xca\xfe\xba\xbe', b'\xfe\xed\xfa\xcf'}
+
+
+def build(runtime: Path, uv: Path, output: Path, dmg: bool = True) -> Path:
+    runtime = validate_runtime(runtime)
+    if not uv.is_file(): raise ValueError('uv executable required')
+    if subprocess.check_output([str(uv.resolve()), '--version'], text=True).split()[1] != '0.9.5':
+        raise ValueError('Expected pinned uv 0.9.5')
+    output.mkdir(parents=True, exist_ok=True)
+    app = output / 'TensorFold Manager.app'
+    if app.exists():
+        raise ValueError('Output already exists; choose a fresh build directory')
+    contents = app / 'Contents'
+    resources = contents / 'Resources'
+    frameworks = contents / 'Frameworks'
+    helpers = contents / 'Helpers'
+    (contents / 'MacOS').mkdir(parents=True)
+    resources.mkdir()
+    helpers.mkdir()
+    frameworks.mkdir()
+    shutil.copytree(runtime, frameworks / 'PythonRuntime', symlinks=True,
+                    ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
+    shutil.copy2(uv, helpers / 'uv')
+    copy_source(ROOT / 'manager', resources / 'manager')
+    copy_source(ROOT / 'web', resources / 'web')
+    shutil.copy2(ROOT / 'scripts/sidecar-launch.py', resources / 'sidecar-launch.py')
+    signing = os.environ.get('SIGNING_IDENTITY', '-')
+    info = plistlib.loads((ROOT / 'macos/Info.plist').read_bytes())
+    info['CFBundleShortVersionString'] = VERSION
+    (contents / 'Info.plist').write_bytes(plistlib.dumps(info))
+    provenance = {
+        'app_version': VERSION, 'python_version': '3.12.9', 'uv_version': '0.9.5',
+        'python_source': 'https://github.com/astral-sh/python-build-standalone',
+        'uv_source': 'https://github.com/astral-sh/uv/releases/tag/0.9.5',
+        'python_binary_sha256': sha(runtime / 'bin/python3'),
+        'python_library_sha256': sha(runtime / 'lib/libpython3.12.dylib'),
+        'uv_sha256': sha(uv),
+        'runtime_fingerprint': hashlib.sha256((sha(runtime / 'bin/python3') + sha(runtime / 'lib/libpython3.12.dylib')).encode()).hexdigest(),
+        'signing': 'ad hoc / not notarized' if signing == '-' else 'Developer ID / notarization separate',
+        'tested_macos': '27.0', 'deployment_target': '14.0',
+    }
+    (resources / 'provenance.json').write_text(json.dumps(provenance, indent=2) + '\n')
+    run('/usr/bin/swiftc', '-swift-version', '5', '-target', 'arm64-apple-macosx14.0',
+        '-O', '-framework', 'Cocoa', '-framework', 'WebKit', '-framework', 'Security',
+        str(ROOT / 'macos/Bootstrap.swift'), str(ROOT / 'macos/main.swift'), '-o', str(contents / 'MacOS/TensorFoldManager'))
+    for path in sorted(contents.rglob('*'), key=lambda p: len(p.parts), reverse=True):
+        if macho(path):
+            args = ['/usr/bin/codesign', '--force', '--sign', signing]
+            if signing != '-':
+                args += ['--options', 'runtime', '--timestamp']
+                if path.name.startswith('python3'):
+                    args += ['--entitlements', str(ROOT / 'macos/python.entitlements')]
+            run(*args, str(path))
+    run('/usr/bin/codesign', '--force', '--sign', signing, str(app))
+    run('/usr/bin/codesign', '--verify', '--deep', '--strict', str(app))
+    if dmg:
+        stage = output / 'dmg-content'
+        stage.mkdir()
+        shutil.copytree(app, stage / app.name, symlinks=True)
+        (stage / 'Applications').symlink_to('/Applications')
+        (stage / 'README.txt').write_text('TensorFold Manager ' + VERSION + '\n\nDrag the App to Applications.\n\n'
+            + provenance['signing'] + '\nFirst engine installation requires internet access. Models are separate.\n')
+        installer = output / f'TensorFold-Manager-{VERSION}-macOS-arm64.dmg'
+        run('/usr/bin/hdiutil', 'create', '-volname', 'TensorFold Manager', '-srcfolder', str(stage),
+            '-ov', '-format', 'UDZO', str(installer))
+        run('/usr/bin/codesign', '--force', '--sign', signing, str(installer))
+        (output / 'SHA256SUMS.txt').write_text(f'{sha(installer)}  {installer.name}\n')
+    return app
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--runtime', type=Path, required=True)
+    parser.add_argument('--uv', type=Path, required=True)
+    parser.add_argument('--output', type=Path, default=ROOT / 'dist' / VERSION)
+    parser.add_argument('--no-dmg', action='store_true')
+    args = parser.parse_args()
+    print(build(args.runtime, args.uv, args.output, not args.no_dmg))
