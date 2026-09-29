@@ -29,3 +29,10 @@
 扫描目录只读；默认下载写入App专属models根，用户显式选定新目标才写。下载任务私有暂存/manifest，不覆盖已有模型，拒绝穿越和符号链接逃逸；取消只停下载保留可续传文件。清缓存仅App创建且有归属manifest的snapshot根，引擎停止时进行；不能按可编辑路径直接递归删除。来源凭据不跟随跨域重定向。
 
 bundle Python/uv绝对路径启动，清理PYTHONHOME/PYTHONPATH和继承的token环境；管理token不传引擎/uv/download。普通UI不能保存任意engine_python路径，现有本机环境仅用显式开发模式 TFM_ALLOW_EXTERNAL_ENGINE=1。安装包固定Python3.12.9和uv0.9.5，记录官方来源与摘要；实际签名/公证标注，测试DMG不能宣称通过Gatekeeper。
+
+## 桌面审查补充
+正式App使用受限 WKScriptMessageHandlerWithReply `bootstrap`，仅主frame、精确管理origin可获得运行期token；Web ES module闭包保存，不进入URL/DOM/storage。fragment bootstrap只用于明确开发模式浏览器测试，立即删除且不持久化。
+握手增加protocol=1、event=ready、port、pid、instance_id、bootstrap_nonce；stdout只该行，其余stderr。Swift30秒期限验证pid/nonce，再认证读取state并核对instance_id。后台接收 --parent-pipe EOF进行退出。
+Python放Contents/Frameworks/PythonRuntime，uv在Contents/Helpers；初次运行将自包含Python复制至App专属runtime指纹目录，venv基于此稳定路径而非App包路径，App改名/升级不破坏旧槽。无预创建venv打入DMG；uv禁止自行下载解释器。Python3.12.9/uv0.9.5来源指纹记录。
+选择独立升级路径：未来Developer ID签名时仅Python helper允许disable-library-validation以加载可信固定版本MLX扩展，主App不放宽。首轮ad hoc测试包准确披露。逐一签bundle原生代码，再主App、DMG，--deep只验证。
+新增POST /api/admin/shutdown；Swift .terminateLater等待Python退出。引擎由supervisor子进程执行，主管理异常死亡通过管道EOF触发supervisor清理自己的Popen进程组；不从持久PID自动杀服务。
