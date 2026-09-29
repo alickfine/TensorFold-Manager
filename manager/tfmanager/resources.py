@@ -183,7 +183,7 @@ def estimate_model(path,settings,kind='inference'):
         except (ValueError,KeyError,TypeError,OSError):missing.append('complete_weight_index')
     size=sum(p.stat().st_size for p in weights if p.is_file());parts['weight_file_bytes']=size
     model_type=text.get('model_type') or config.get('model_type')
-    if not isinstance(model_type,str) or not model_type.startswith(('qwen','gemma','llama','mistral')):missing.append('supported_memory_architecture')
+    if not isinstance(model_type,str) or not model_type.startswith(('qwen','gemma','llama','mistral','glm5_next','nemotron_h')):missing.append('supported_memory_architecture')
     if kind=='quantize':
         bits=[]
         def walk(value):
@@ -197,24 +197,70 @@ def estimate_model(path,settings,kind='inference'):
             value=text.get(key,default)
             if type(value) is not int or value<=0:missing.append(key);return 1
             return value
-        layers=number('num_hidden_layers');heads=number('num_attention_heads');kv=number('num_key_value_heads');hidden=number('hidden_size');dim=number('head_dim',hidden//heads if hidden%heads==0 else None);intermediate=number('intermediate_size',hidden*4)
+        layers=number('num_hidden_layers');hidden=number('hidden_size');intermediate=number('intermediate_size',hidden*4)
         context=settings.get('context');parallel=settings.get('parallel')
         if type(context) is not int or context<=0:missing.append('bounded_context');context=1
-        if parallel=='auto':parallel=8 # Actual MLX auto maximum, conservatively reserve every lane.
+        if parallel=='auto':parallel=8 # Upstream cli._parallel caps auto at eight lanes.
         try:parallel=int(parallel)
         except (TypeError,ValueError):missing.append('bounded_parallel');parallel=1
         if parallel<1 or parallel>128:missing.append('bounded_parallel');parallel=1
-        full=layers;recurrent=0;types=text.get('layer_types')
-        if types is not None:
-            if not isinstance(types,list) or len(types)!=layers or any(t not in ('full_attention','sliding_attention','linear_attention') for t in types):missing.append('known_layer_types')
-            else:full=sum(t!='linear_attention' for t in types);recurrent=layers-full
-        elif model_type in ('qwen3_5','qwen3_5_text','qwen3_5_moe') and text.get('full_attention_interval'):
-            interval=number('full_attention_interval');full=math.ceil(layers/interval);recurrent=layers-full
-        state=0
-        if recurrent:
-            kh=number('linear_num_key_heads');vh=number('linear_num_value_heads');kd=number('linear_key_head_dim');vd=number('linear_value_head_dim');conv=number('linear_conv_kernel_dim')
-            state=recurrent*parallel*(vh*kd*vd*4+(2*kh*kd+vh*vd)*conv*4)
-        parts.update(resident_weight_bytes=math.ceil(size*1.35),kv_bytes=full*kv*dim*2*2*context*parallel,recurrent_state_bytes=state,activation_bytes=max(2*GIB,intermediate*min(context,8192)*parallel*16),workspace_bytes=3*GIB)
+        state=0;kv_bytes=0;capacity=math.ceil(context/2048)*2048
+        if model_type in ('gemma4','gemma4_text'):
+            types=text.get('layer_types',[])
+            if not isinstance(types,list) or len(types)!=layers or any(t not in ('sliding_attention','full_attention') for t in types):missing.append('gemma_layer_types');types=[]
+            sliding=types.count('sliding_attention');full=types.count('full_attention')
+            kv=number('num_key_value_heads');dim=number('head_dim');global_dim=number('global_head_dim')
+            global_kv=number('num_global_key_value_heads') if text.get('attention_k_eq_v') is True and text.get('num_global_key_value_heads') is not None else kv
+            window=number('sliding_window')
+            # RingKVCache holds window+128 rows with two spares; global cache grows with context.
+            kv_bytes=(sliding*kv*dim*(window+128)+full*global_kv*global_dim*context)*4*parallel
+            parts['sliding_prefill_kv_bytes']=sliding*kv*dim*min(context,8192)*4*parallel
+        elif model_type in ('glm5_next','glm5_next_text'):
+            # TensorFold glm5_next/caches.py stores latent + index keys/gates + pooled index.
+            types=text.get('layer_types',[])
+            if not isinstance(types,list) or len(types)!=layers or any(t not in ('linear_attention','deepseek_sparse_attention') for t in types):missing.append('glm_layer_types');types=[]
+            full=types.count('deepseek_sparse_attention');recurrent=types.count('linear_attention')
+            latent=number('kv_lora_rank');index=number('index_head_dim');pool=number('index_kpool')
+            linear=text.get('linear_attn_config',{})
+            def linear_number(key):
+                value=linear.get(key) if isinstance(linear,dict) else None
+                if type(value) is not int or value<=0:missing.append('linear_attn_config.'+key);return 1
+                return value
+            heads=linear_number('num_heads');dim=linear_number('head_dim');conv=linear_number('short_conv_kernel_size')
+            # Include the draft attention cache when embedded MTP is enabled.
+            mtp=0 if settings.get('no_drafts') or settings.get('mtp_drafts')==0 else number('num_nextn_predict_layers')
+            kv_bytes=math.ceil((full+mtp)*(latent+2*index+index/pool)*2*context*parallel)
+            state=2*recurrent*parallel*(heads*dim*dim*4+3*heads*dim*conv*4)
+            capacity=math.ceil(context/256)*256
+        else:
+            heads=number('num_attention_heads');kv=number('num_key_value_heads');dim=number('head_dim',hidden//heads if hidden%heads==0 else None)
+            # Gemma has separate global and sliding head shapes. Full context at both maxima is an upper bound.
+            if str(model_type).startswith('gemma'):
+                if text.get('global_head_dim') is not None:dim=max(dim,number('global_head_dim'))
+                if text.get('num_global_key_value_heads') is not None:kv=max(kv,number('num_global_key_value_heads'))
+            full=layers;recurrent=0;types=text.get('layer_types')
+            if model_type=='nemotron_h':
+                pattern=text.get('hybrid_override_pattern')
+                if pattern is None and isinstance(text.get('layers_block_type'),list):pattern=[{'mamba':'M','attention':'*','moe':'E','mlp':'-'}.get(t,'?') for t in text['layers_block_type']]
+                if isinstance(pattern,str):pattern=list(pattern)
+                if not isinstance(pattern,list) or len(pattern)!=layers or any(t not in ('M','*','E','-') for t in pattern):missing.append('nemotron_hybrid_pattern');pattern=[]
+                full=pattern.count('*');recurrent=pattern.count('M')
+                mh=number('mamba_num_heads');md=number('mamba_head_dim');ssm=number('ssm_state_size');conv=number('conv_kernel');groups=number('n_groups')
+                state=2*recurrent*parallel*(mh*md*ssm*4+conv*(mh*md+2*groups*ssm)*4)
+                if not settings.get('no_drafts') and settings.get('mtp_drafts')!=0 and (path/'mtp-4bit.safetensors').is_file():full+=1
+            else:
+                if types is not None:
+                    if not isinstance(types,list) or len(types)!=layers or any(t not in ('full_attention','sliding_attention','linear_attention') for t in types):missing.append('known_layer_types')
+                    else:full=sum(t!='linear_attention' for t in types);recurrent=layers-full
+                elif model_type in ('qwen3_5','qwen3_5_text','qwen3_5_moe') and text.get('full_attention_interval'):
+                    interval=number('full_attention_interval');full=math.ceil(layers/interval);recurrent=layers-full
+                if recurrent:
+                    kh=number('linear_num_key_heads');vh=number('linear_num_value_heads');kd=number('linear_key_head_dim');vd=number('linear_value_head_dim');conv=number('linear_conv_kernel_dim')
+                    state=2*recurrent*parallel*(vh*kd*vd*4+(2*kh*kd+vh*vd)*conv*4)
+            kv_bytes=full*kv*dim*2*2*context*parallel
+        # Current + spare + growth/predecessor: reserve three rounded capacities at allocation boundaries.
+        headroom=math.ceil(kv_bytes*(3*capacity/context-1))
+        parts.update(resident_weight_bytes=math.ceil(size*1.35),kv_bytes=kv_bytes,kv_allocation_headroom_bytes=headroom,recurrent_state_bytes=state,activation_bytes=max(2*GIB,intermediate*min(context,8192)*parallel*16),workspace_bytes=3*GIB)
         for key in ('prompt_cache_gib','mlx_cache_gib'):
             value=settings.get(key)
             if not isinstance(value,(int,float)) or isinstance(value,bool) or not math.isfinite(value) or value<0:missing.append(key)
@@ -227,7 +273,7 @@ def estimate_model(path,settings,kind='inference'):
                 if draft['missing']:missing.append('drafter_memory_architecture')
                 else:parts['drafter_bytes']=draft['required_bytes']
     required=sum(value for key,value in parts.items() if key!='weight_file_bytes') if not missing else None
-    return {'required_bytes':required,'components':parts,'missing':list(dict.fromkeys(missing)),'method':'conservative-v1','kind':kind,'model_path':str(path),'architecture':model_type,'notes':['Weight residency, bf16 KV, explicit hybrid state, full configured context/lanes and cache caps reserved.','This is a conservative admission estimate, not a measured peak or RSS.']}
+    return {'required_bytes':required,'components':parts,'missing':list(dict.fromkeys(missing)),'method':'conservative-v2','kind':kind,'model_path':str(path),'architecture':model_type,'notes':['Weight residency, bf16 KV, explicit hybrid state, full configured context/lanes and cache caps reserved.','This is a conservative admission estimate, not a measured peak or RSS.']}
 
 class Lease:
     def __init__(self,path,fd,report):self.path=path;self.fd=fd;self.report=report;self.released=False

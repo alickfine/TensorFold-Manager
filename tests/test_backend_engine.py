@@ -110,3 +110,28 @@ class ResourceLifecycleTests(unittest.TestCase):
   response,_=completion(attached,self.store,{'messages':[{'role':'user','content':'hello'}]});self.assertTrue(response['choices'])
   with self.assertRaisesRegex(APIError,'read-only'):attached.stop()
   attached.detach();self.assertEqual(self.engine.status()['state'],'ready')
+
+class DraftIsolationTests(unittest.TestCase):
+ setUp=EngineTests.setUp
+ def test_nemotron_mtp_source_is_explicitly_budgeted_or_disabled(self):
+  from unittest.mock import patch
+  with patch.dict(os.environ,{'TF_NEMOTRON_MTP':'/unexpected/user/cache/mtp.safetensors'}):
+   self.engine.start(str(self.model));wait_state(self.engine,'ready')
+   self.assertEqual(self.engine.verify_api(self.store.settings()['engine_port'])['fixture_mtp_source'],'0');self.engine.stop()
+   draft=self.model/'mtp-4bit.safetensors';draft.write_bytes(b'fixture-draft')
+   self.engine.start(str(self.model));wait_state(self.engine,'ready')
+   self.assertEqual(self.engine.verify_api(self.store.settings()['engine_port'])['fixture_mtp_source'],str(draft.resolve()))
+
+class SupervisorLeaseTests(unittest.TestCase):
+ setUp=EngineTests.setUp
+ def test_engine_retains_lease_if_supervisor_dies_until_natural_exit(self):
+  (self.model/'fixture-exit-after').write_text('2')
+  self.engine.start(str(self.model));wait_state(self.engine,'ready')
+  supervisor=self.engine.proc;supervisor.kill();supervisor.wait(timeout=2)
+  if self.engine.reader:self.engine.reader.join(timeout=2)
+  with self.assertRaises(APIError):self.engine.resources.acquire_quantize(self.model,{})
+  for _ in range(100):
+   try:
+    lease=self.engine.resources.acquire_quantize(self.model,{});lease.release();break
+   except APIError:time.sleep(.03)
+  else:self.fail('Naturally exited fixture did not release inherited lease')

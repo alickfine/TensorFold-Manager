@@ -3,6 +3,7 @@ import json
 import os
 import queue
 import signal
+import stat
 import subprocess
 import sys
 import threading
@@ -10,7 +11,11 @@ import time
 
 def main():
     config=json.loads(sys.stdin.readline())
-    child=subprocess.Popen(config['argv'],env=config['env'],stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,start_new_session=True,bufsize=1)
+    lease_fd=config.get('lease_fd')
+    if type(lease_fd) is not int or lease_fd<3:raise ValueError('An inherited resource lease is required')
+    info=os.fstat(lease_fd)
+    if not stat.S_ISREG(info.st_mode) or info.st_uid!=os.getuid():raise ValueError('Invalid resource lease descriptor')
+    child=subprocess.Popen(config['argv'],env=config['env'],stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,start_new_session=True,bufsize=1,pass_fds=(lease_fd,))
     events=queue.Queue()
     def emit(data):
         try: print(json.dumps(data),flush=True)

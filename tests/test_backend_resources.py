@@ -89,3 +89,18 @@ class ResourceTests(unittest.TestCase):
    with self.assertRaises(APIError):self.gate.acquire_quantize(self.model,{})
   finally:child.stdin.close();child.wait(timeout=3)
   with self.gate.acquire_quantize(self.model,{}):pass
+ def test_glm_mla_and_kda_budget_uses_explicit_layout(self):
+  text={'model_type':'glm5_next_text','num_hidden_layers':4,'hidden_size':4096,'intermediate_size':12288,'layer_types':['linear_attention']*3+['deepseek_sparse_attention'],'kv_lora_rank':512,'index_head_dim':128,'index_kpool':4,'linear_attn_config':{'num_heads':64,'head_dim':128,'short_conv_kernel_size':4},'num_nextn_predict_layers':1,'head_dim':0}
+  (self.model/'config.json').write_text(json.dumps({'model_type':'glm5_next','text_config':text}))
+  result=estimate_model(self.model,self.settings);self.assertFalse(result['missing']);self.assertGreater(result['components']['recurrent_state_bytes'],0)
+  self.assertEqual(result['components']['kv_bytes'],2*(512+128*2+128/4)*2*1024)
+ def test_nemotron_pattern_and_mamba_state_budget(self):
+  text=self.config|{'model_type':'nemotron_h','hybrid_override_pattern':['M','*','E','M'],'mamba_num_heads':8,'mamba_head_dim':16,'ssm_state_size':32,'conv_kernel':4,'n_groups':2}
+  (self.model/'config.json').write_text(json.dumps(text))
+  result=estimate_model(self.model,self.settings);self.assertFalse(result['missing']);self.assertGreater(result['components']['recurrent_state_bytes'],0)
+  del text['ssm_state_size'];(self.model/'config.json').write_text(json.dumps(text));self.assertIn('ssm_state_size',estimate_model(self.model,self.settings)['missing'])
+ def test_gemma_mixed_head_layout_uses_conservative_global_bound(self):
+  text=self.config|{'model_type':'gemma4_text','head_dim':256,'global_head_dim':512,'num_key_value_heads':8,'num_global_key_value_heads':2,'layer_types':['sliding_attention']*3+['full_attention'],'sliding_window':1024,'attention_k_eq_v':True}
+  (self.model/'config.json').write_text(json.dumps(text))
+  result=estimate_model(self.model,self.settings);self.assertFalse(result['missing']);self.assertEqual(result['components']['kv_bytes'],(2*512*1024+3*8*256*(1024+128))*4)
+  self.assertGreaterEqual(result['components']['kv_allocation_headroom_bytes'],result['components']['kv_bytes'])

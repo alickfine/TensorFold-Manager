@@ -128,10 +128,14 @@ class Engine:
                 if not report['allowed'] or report['attachment']:raise ResourceBlocked(report,'Resources changed during CLI preflight; retry with fresh evidence')
                 lease.report=report
                 env=clean_env();env.update(TENSORFOLD_NO_UPDATE_CHECK='1',HF_HUB_OFFLINE='1',TRANSFORMERS_OFFLINE='1',HF_HUB_DISABLE_IMPLICIT_TOKEN='1',HF_HOME=str(self.store.root/'hf-runtime'),TENSORFOLD_MEMORY_LIMIT_GB=str(lease.memory_limit_bytes/GIB))
+                # Nemotron's upstream fallback searches ~/.cache/tensorfold outside HF_HOME.
+                # Pin MTP to a budgeted sibling or explicitly disable it; never adopt hidden draft weights.
+                mtp=Path(row['path'])/'mtp-4bit.safetensors'
+                env['TF_NEMOTRON_MTP']=str(mtp) if mtp.is_file() and not effective.get('no_drafts') and effective.get('mtp_drafts')!=0 else '0'
                 supervisor=[sys.executable,'-B',str(Path(__file__).with_name('supervisor.py'))]
                 self.proc=subprocess.Popen(supervisor,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True,bufsize=1,env=clean_env(),start_new_session=True,pass_fds=(lease.fd,))
                 self.lease=lease
-                self.proc.stdin.write(json.dumps({'argv':argv,'env':env,'stop_timeout':self.stop_timeout})+'\n');self.proc.stdin.flush()
+                self.proc.stdin.write(json.dumps({'argv':argv,'env':env,'stop_timeout':self.stop_timeout,'lease_fd':lease.fd})+'\n');self.proc.stdin.flush()
                 with self.lock:
                     self.running_parameters=effective.copy();self.running_settings=settings;self.active_model_id=row['id'];self.running_model_config=self.store.get('model_config',row['id'],{});self.draining=False
                     self.data.update(control_owner='manager',state='starting',pid=None,model=row['repo'] or row['id'],version=probe['version'],served_name=effective.get('name') or row['repo'] or row['name'],health=False,error=None,started_at=time.time(),resource_admission=lease.report)
