@@ -9,3 +9,5 @@ build/
 dist/
 *.dmg
 *.sqlite*
+
+.playwright-cli/
