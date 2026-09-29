@@ -1,0 +1,407 @@
+import { api } from './api.js';
+import { exportTextFile } from './export.js';
+import { formValues, escapeHtml, capability } from './views/shared.js';
+import { serializeSettings } from './views/settings.js';
+import { renderOverview } from './views/overview.js';
+import { renderStats } from './views/stats.js';
+import { renderCache } from './views/cache.js';
+import { renderModels } from './views/models.js';
+import { renderDownloads } from './views/downloads.js';
+import { renderModelConfig } from './views/model-config.js';
+import { renderModelTools } from './views/model-tools.js';
+import { renderEngineConfig } from './views/engine-config.js';
+import { renderServer } from './views/server.js';
+import { renderApi } from './views/api-integration.js';
+import { renderAuth } from './views/auth.js';
+import { renderUpdates } from './views/updates.js';
+import { renderLogs } from './views/logs.js';
+import { renderBenchmark } from './views/benchmark.js';
+import { renderChat } from './views/chat.js';
+import { renderCapabilities } from './views/capabilities.js';
+
+const PAGE_LABELS = {
+  overview:'运行总览', stats:'统计与用量', cache:'缓存管理', models:'模型库', downloads:'模型下载器',
+  'model-config':'模型配置', 'model-tools':'量化与上传', 'engine-config':'推理框架配置', server:'服务器与目录',
+  api:'API 与集成', auth:'认证与密钥', updates:'版本与更新', logs:'运行日志', benchmark:'基准测试',
+  chat:'内置聊天', capabilities:'功能适配表',
+};
+
+const renderers = {
+  overview:renderOverview, stats:renderStats, cache:renderCache, models:renderModels, downloads:renderDownloads,
+  'model-config':renderModelConfig, 'model-tools':renderModelTools, 'engine-config':renderEngineConfig, server:renderServer,
+  api:renderApi, auth:renderAuth, updates:renderUpdates, logs:renderLogs, benchmark:renderBenchmark,
+  chat:renderChat, capabilities:renderCapabilities,
+};
+
+const state = {
+  page:'overview', routeQuery:new URLSearchParams(), snapshot:null, pageData:{}, loading:true, lastUpdated:null,
+  filters:{ statsModel:'', statsRange:'24h', logLevel:'', logQuery:'', logLimit:'500' },
+  chat:{ messages:[], streaming:false, controller:null },
+};
+
+const pageElement = document.querySelector('#page');
+const toastElement = document.querySelector('#toast');
+let toastTimer;
+
+function toast(message, error = false) {
+  toastElement.textContent = message;
+  toastElement.classList.toggle('error-panel', error);
+  toastElement.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { toastElement.hidden = true; }, 4000);
+}
+
+function showModal(title, body) {
+  document.querySelector('#modal-title').textContent = title;
+  document.querySelector('#modal-body').innerHTML = body;
+  document.querySelector('#modal').hidden = false;
+}
+
+function closeModal() {
+  document.querySelector('#modal').hidden = true;
+  document.querySelector('#modal-body').replaceChildren();
+}
+
+function routeFromHash() {
+  const raw = location.hash.replace(/^#/, '');
+  const [candidate, query = ''] = raw.split('?');
+  state.page = renderers[candidate] ? candidate : 'overview';
+  state.routeQuery = new URLSearchParams(query);
+}
+
+function navigate(target) {
+  const [candidate] = String(target).split('?');
+  if (!renderers[candidate]) return;
+  location.hash = target;
+}
+
+function updateChrome() {
+  const engine = state.snapshot?.engine ?? {};
+  const jobs = state.snapshot?.jobs ?? [];
+  const activeJobs = jobs.filter((job) => !['complete', 'completed', 'cancelled', 'failed'].includes(job.state ?? job.status)).length;
+  document.querySelector('#breadcrumbs').textContent = `工作台 / ${PAGE_LABELS[state.page]}`;
+  document.querySelector('#task-count').textContent = String(activeJobs);
+  document.querySelector('#instance-meta').textContent = state.snapshot?.instance_id ? `实例 ${state.snapshot.instance_id}` : '实例未采集';
+  document.querySelector('#app-version').textContent = `App ${state.snapshot?.app_version ?? '版本未采集'}`;
+  document.querySelector('#side-status').textContent = engine.state ?? '未连接';
+  document.querySelector('#footer-state').textContent = `管理界面在线 · 推理服务 ${engine.state ?? '未知'}`;
+  const led = document.querySelector('#side-led');
+  led.className = `tf-led ${engine.state === 'ready' ? '' : engine.state === 'failed' ? 'red' : 'amber'}`;
+  document.querySelector('#poll-status').textContent = state.lastUpdated ? `更新于 ${state.lastUpdated.toLocaleTimeString()}` : '';
+  document.querySelectorAll('[data-page]').forEach((button) => button.classList.toggle('active', button.dataset.page === state.page));
+}
+
+function renderCurrent() {
+  updateChrome();
+  const renderer = renderers[state.page];
+  pageElement.innerHTML = renderer(state);
+  pageElement.focus({ preventScroll:true });
+}
+
+function renderFatal(error) {
+  pageElement.innerHTML = `<section class="tf-card error-panel"><h1>无法连接管理服务</h1><p>${escapeHtml(error.message)}</p><p class="tf-sub">请从 TensorFold Manager App 启动页面。浏览器开发测试需要显式 loopback dev 模式。</p></section>`;
+  document.querySelector('#side-status').textContent = '连接失败';
+  document.querySelector('#side-led').className = 'tf-led red';
+}
+
+async function refreshSnapshot({ render = true } = {}) {
+  state.snapshot = await api.request('/api/state');
+  state.lastUpdated = new Date();
+  if (render) renderCurrent(); else updateChrome();
+}
+
+async function loadPageData(page = state.page, { render = true } = {}) {
+  if (page === 'stats') {
+    const params = new URLSearchParams({ range:state.filters.statsRange });
+    if (state.filters.statsModel) params.set('model', state.filters.statsModel);
+    state.pageData.stats = await api.request(`/api/stats?${params}`);
+  } else if (page === 'cache') {
+    state.pageData.cache = await api.request('/api/cache');
+  } else if (page === 'downloads') {
+    const [catalog, jobs] = await Promise.all([api.request('/api/downloads/catalog'), api.request('/api/jobs')]);
+    state.pageData.catalog = catalog;
+    state.pageData.jobs = jobs;
+  } else if (page === 'model-config') {
+    state.pageData.profiles = await api.request('/api/profiles');
+  } else if (page === 'auth') {
+    state.pageData.keys = await api.request('/api/keys');
+  } else if (page === 'updates') {
+    state.pageData.updates = await api.request('/api/updates');
+  } else if (page === 'logs') {
+    const params = new URLSearchParams({ level:state.filters.logLevel, query:state.filters.logQuery, limit:state.filters.logLimit });
+    state.pageData.logs = await api.request(`/api/logs?${params}`);
+  } else if (page === 'benchmark') {
+    state.pageData.benchmark = await api.request('/api/benchmark/results');
+  } else if (page === 'chat') {
+    const history = await api.request('/api/chat/history');
+    state.chat.messages = history.messages ?? [];
+  } else if (page === 'capabilities') {
+    const result = await api.request('/api/capabilities');
+    state.snapshot.capabilities = result.capabilities ?? result;
+  }
+  if (render) renderCurrent();
+}
+
+async function refreshAll() {
+  await refreshSnapshot({ render:false });
+  await loadPageData(state.page, { render:false });
+  renderCurrent();
+}
+
+async function run(label, operation, { refresh = true } = {}) {
+  try {
+    const result = await operation();
+    if (refresh) await refreshAll();
+    toast(label);
+    return result;
+  } catch (error) {
+    toast(error.message ?? String(error), true);
+    throw error;
+  }
+}
+
+async function engineAction(action, explicitModel = '') {
+  const selected = document.querySelector('[data-role="engine-model"]')?.value || explicitModel || state.snapshot?.settings?.selected_model;
+  if ((action === 'start' || action === 'restart') && !selected) throw new Error('请先选择模型');
+  const path = `/api/engine/${action}`;
+  const body = action === 'stop' ? { force:false } : { model:selected };
+  await run(action === 'stop' ? '已提交停止请求' : action === 'restart' ? '已提交重启请求' : '已提交启动请求', () => api.request(path, { method:'POST', body }));
+}
+
+async function saveText(path, filename) {
+  const blob = await api.download(path);
+  return exportTextFile({ name:filename, content:await blob.text() });
+}
+
+async function handleAction(action, value, element) {
+  if (action === 'refresh') return refreshAll();
+  if (action === 'goto') return navigate(value);
+  if (action === 'load-page') return loadPageData(value || state.page);
+  if (action === 'modal-close') return closeModal();
+  if (action === 'engine-start') return engineAction('start', value);
+  if (action === 'engine-stop') {
+    if (confirm('停止 TensorFold 推理服务？在途请求将按后端排空策略处理。')) return engineAction('stop');
+    return;
+  }
+  if (action === 'engine-restart') return engineAction('restart', value);
+  if (action === 'model-default') return run('默认模型已保存', () => api.request('/api/settings', { method:'PUT', body:{ selected_model:value } }));
+  if (action === 'models-scan') return run('模型扫描完成', () => api.request('/api/models/scan', { method:'POST', body:{} }));
+  if (action === 'job-action') {
+    const separator = value.lastIndexOf(':');
+    const id = value.slice(0, separator);
+    const verb = value.slice(separator + 1);
+    if (verb === 'cancel' && !confirm('取消任务并保留可续传文件？')) return;
+    return run(`任务操作已提交：${verb}`, () => api.request(`/api/jobs/${encodeURIComponent(id)}/${verb}`, { method:'POST', body:{} }));
+  }
+  if (action === 'profile-delete') {
+    if (confirm('删除这个配置档？')) return run('配置档已删除', () => api.request(`/api/profiles/${encodeURIComponent(value)}`, { method:'DELETE' }));
+    return;
+  }
+  if (action === 'cache-clear') {
+    if (confirm('清理后端确认归属的受管快照？')) return run('缓存清理完成', () => api.request('/api/cache/clear', { method:'POST', body:{ confirm:true } }));
+    return;
+  }
+  if (action === 'stats-export') {
+    const params = new URLSearchParams({ range:state.filters.statsRange });
+    if (state.filters.statsModel) params.set('model', state.filters.statsModel);
+    try {
+      const result = await saveText(`/api/stats/export?${params}`, 'tensorfold-stats.csv');
+      if (result.saved) toast('CSV 已保存');
+    } catch (error) {
+      toast(error.message ?? String(error), true);
+    }
+    return;
+  }
+  if (action === 'key-toggle') return run('密钥状态已更新', () => api.request(`/api/keys/${encodeURIComponent(value)}/toggle`, { method:'POST', body:{} }));
+  if (action === 'key-delete') {
+    if (confirm('撤销这个 API Key？现有客户端将立即无法继续使用。')) return run('密钥已撤销', () => api.request(`/api/keys/${encodeURIComponent(value)}`, { method:'DELETE' }));
+    return;
+  }
+  if (action === 'update-check') return run('更新检查完成', () => api.request('/api/updates/check', { method:'POST', body:{} }));
+  if (action === 'update-install') return run('候选安装任务已创建', () => api.request('/api/updates/install', { method:'POST', body:{ version:value } }));
+  if (action === 'update-activate') {
+    if (confirm('排空请求并激活已验证的候选版本？')) return run('候选激活流程已提交', () => api.request('/api/updates/activate', { method:'POST', body:{} }));
+    return;
+  }
+  if (action === 'update-rollback') {
+    if (confirm('回退到上一个已验证版本？')) return run('回退流程已提交', () => api.request('/api/updates/rollback', { method:'POST', body:{} }));
+    return;
+  }
+  if (action === 'engine-install') return run('官方引擎安装任务已创建', () => api.request('/api/engine/install', { method:'POST', body:{} }));
+  if (action === 'logs-filter') return loadPageData('logs');
+  if (action === 'chat-abort') {
+    state.chat.controller?.abort();
+    return;
+  }
+  if (action === 'chat-new') {
+    state.chat.controller?.abort();
+    state.chat.messages = [];
+    await run('已新建对话', () => api.request('/api/chat/history', { method:'POST', body:{ messages:[] } }), { refresh:false });
+    renderCurrent();
+  }
+  if (action === 'catalog-select') {
+    const item = JSON.parse(value);
+    for (const [name, fieldValue] of Object.entries(item)) {
+      const field = document.querySelector(`[data-form="download-create"] [name="${CSS.escape(name)}"]`);
+      if (field && fieldValue != null) field.value = fieldValue;
+    }
+  }
+}
+
+async function persistChat() {
+  await api.request('/api/chat/history', { method:'POST', body:{ messages:state.chat.messages } });
+}
+
+async function sendChat(message) {
+  const streamCapability = capability(state.snapshot?.capabilities, 'streaming');
+  const chatCapability = capability(state.snapshot?.capabilities, 'chat');
+  if (!streamCapability.enabled || !chatCapability.enabled) throw new Error(!chatCapability.enabled ? chatCapability.reason : streamCapability.reason);
+  state.chat.messages.push({ role:'user', content:message }, { role:'assistant', content:'' });
+  state.chat.streaming = true;
+  state.chat.controller = new AbortController();
+  renderCurrent();
+  const assistant = state.chat.messages.at(-1);
+  try {
+    await api.streamChat({
+      model:state.snapshot?.engine?.model,
+      messages:state.chat.messages.slice(0, -1),
+      temperature:state.snapshot?.settings?.temperature,
+      top_p:state.snapshot?.settings?.top_p,
+      max_tokens:state.snapshot?.settings?.max_tokens,
+    }, {
+      signal:state.chat.controller.signal,
+      onDelta(delta) {
+        assistant.content += delta;
+        const body = document.querySelector('#chat-messages .tf-message:last-child .tf-message-body');
+        if (body) body.textContent = assistant.content;
+        const box = document.querySelector('#chat-messages');
+        if (box) box.scrollTop = box.scrollHeight;
+      },
+    });
+  } catch (error) {
+    if (error.name !== 'AbortError') {
+      if (!assistant.content) state.chat.messages.pop();
+      throw error;
+    }
+    assistant.content ||= '生成已取消。';
+  } finally {
+    state.chat.streaming = false;
+    state.chat.controller = null;
+    await persistChat();
+    renderCurrent();
+  }
+}
+
+async function handleForm(form) {
+  const action = form.dataset.form;
+  const values = formValues(form);
+  if (action === 'settings-save') return run('设置已保存', () => api.request('/api/settings', { method:'PUT', body:serializeSettings(values) }));
+  if (action === 'model-config-save') {
+    const model = values.model;
+    const config = serializeSettings(values);
+    return run('模型配置已保存', () => api.request('/api/models/config', { method:'PUT', body:{ model, config } }));
+  }
+  if (action === 'profile-create') {
+    const model = state.snapshot?.models?.find((item) => item.id === values.model);
+    return run('配置档已保存', () => api.request('/api/profiles', { method:'POST', body:{ name:values.name, model:values.model, config:model?.config ?? {} } }));
+  }
+  if (action === 'download-create') {
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*$/.test(values.repo) || values.repo.includes('..')) {
+      throw new Error('仓库必须是精确的 owner/model 标识');
+    }
+    if (values.source === 'modelscope' && !/^[0-9a-f]{40,64}$/i.test(values.revision)) {
+      throw new Error('ModelScope 必须填写 40–64 位不可变 commit SHA；不能使用 main 或猜测映射');
+    }
+    const defaultDirectory = state.pageData.catalog?.default_directory;
+    if (values.directory !== defaultDirectory) {
+      if (!confirm(`允许 TensorFold Manager 写入这个模型目录？\n${values.directory}\n\n该授权只用于下载任务，不会删除外部权重。`)) return;
+      await api.request('/api/downloads/scope', { method:'POST', body:{ directory:values.directory, confirm:true } });
+    }
+    return run('下载任务已创建', () => api.request('/api/downloads', { method:'POST', body:values }));
+  }
+  if (action === 'stats-filter') {
+    state.filters.statsModel = values.model;
+    state.filters.statsRange = values.range;
+    return loadPageData('stats');
+  }
+  if (action === 'logs-filter') {
+    state.filters.logLevel = values.level;
+    state.filters.logQuery = values.query;
+    state.filters.logLimit = values.limit;
+    return loadPageData('logs');
+  }
+  if (action === 'key-create') {
+    const result = await run('密钥已创建，只展示这一次', () => api.request('/api/keys', { method:'POST', body:{ name:values.name, expires_days:Number(values.expires_days) } }));
+    const plaintext = result.key ?? result.token ?? result.api_key;
+    showModal('请立即保存 API Key', plaintext ? `<p class="tf-note warn">关闭后无法再次查看。</p><textarea readonly>${escapeHtml(plaintext)}</textarea>` : '<p class="tf-note warn">服务未返回明文密钥，请撤销该记录后重试。</p>');
+    return;
+  }
+  if (action === 'benchmark-run') return run('基准任务已提交', () => api.request('/api/benchmark', { method:'POST', body:{ prompt:values.prompt, max_tokens:Number(values.max_tokens), runs:Number(values.runs) } }));
+  if (action === 'tool-quantize') {
+    const gate = capability(state.snapshot?.capabilities, 'quantize');
+    if (!gate.enabled) throw new Error(gate.reason);
+    return run('量化任务已创建', () => api.request('/api/tools/quantize', { method:'POST', body:{ ...values, bits:Number(values.bits) } }));
+  }
+  if (action === 'tool-upload') {
+    const gate = capability(state.snapshot?.capabilities, 'upload');
+    if (!gate.enabled) throw new Error(gate.reason);
+    if (values.visibility === 'public' && !confirm('确认创建公开仓库上传任务？该操作可能向外发布模型文件。')) return;
+    return run('上传任务已创建', () => api.request('/api/tools/upload', { method:'POST', body:values }));
+  }
+  if (action === 'chat-send') return sendChat(values.message.trim());
+}
+
+document.addEventListener('click', (event) => {
+  const pageButton = event.target.closest('[data-page]');
+  if (pageButton) {
+    navigate(pageButton.dataset.page);
+    return;
+  }
+  const button = event.target.closest('[data-action]');
+  if (!button || button.disabled || !button.dataset.action) return;
+  event.preventDefault();
+  handleAction(button.dataset.action, button.dataset.value ?? '', button).catch(() => {});
+});
+
+document.addEventListener('submit', (event) => {
+  const form = event.target.closest('[data-form]');
+  if (!form) return;
+  event.preventDefault();
+  handleForm(form).catch((error) => toast(error.message ?? String(error), true));
+});
+
+window.addEventListener('hashchange', async () => {
+  routeFromHash();
+  try {
+    await loadPageData(state.page, { render:false });
+    renderCurrent();
+  } catch (error) {
+    toast(error.message ?? String(error), true);
+    renderCurrent();
+  }
+});
+
+async function initialize() {
+  routeFromHash();
+  try {
+    await refreshSnapshot({ render:false });
+    await loadPageData(state.page, { render:false });
+    renderCurrent();
+    setInterval(async () => {
+      try {
+        const editing = document.activeElement?.closest?.('form');
+        await refreshSnapshot({ render:false });
+        if (!editing && !state.chat.streaming && ['overview', 'models', 'downloads', 'updates'].includes(state.page)) {
+          if (state.page === 'downloads') await loadPageData('downloads', { render:false });
+          renderCurrent();
+        }
+      } catch (error) {
+        document.querySelector('#poll-status').textContent = `刷新失败：${error.message}`;
+      }
+    }, 3000);
+  } catch (error) {
+    renderFatal(error);
+  }
+}
+
+initialize();

@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'">
+  <title>TensorFold Manager</title>
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <div class="tf-titlebar">
+    <span class="tf-lights" aria-hidden="true"><i></i><i></i><i></i></span>
+    TensorFold Manager
+    <span id="instance-meta" class="tf-title-meta">正在连接管理服务</span>
+  </div>
+  <div class="tf-layout">
+    <aside>
+      <div class="tf-brand"><b>TF</b><span>TensorFold<small>MANAGER</small></span></div>
+      <nav id="navigation" aria-label="主导航">
+        <div class="tf-nav-group">运行</div>
+        <button class="tf-nav" data-page="overview"><span>◫</span>运行总览</button>
+        <button class="tf-nav" data-page="stats"><span>▥</span>统计与用量</button>
+        <button class="tf-nav" data-page="cache"><span>▤</span>缓存管理</button>
+        <div class="tf-nav-group">模型</div>
+        <button class="tf-nav" data-page="models"><span>▦</span>模型库</button>
+        <button class="tf-nav" data-page="downloads"><span>↓</span>模型下载器</button>
+        <button class="tf-nav" data-page="model-config"><span>⚒</span>模型配置</button>
+        <button class="tf-nav" data-page="model-tools"><span>◇</span>量化与上传</button>
+        <div class="tf-nav-group">服务</div>
+        <button class="tf-nav" data-page="engine-config"><span>⚙</span>推理框架配置</button>
+        <button class="tf-nav" data-page="server"><span>▣</span>服务器与目录</button>
+        <button class="tf-nav" data-page="api"><span>⌘</span>API 与集成</button>
+        <button class="tf-nav" data-page="auth"><span>♧</span>认证与密钥</button>
+        <button class="tf-nav" data-page="updates"><span>↻</span>版本与更新</button>
+        <div class="tf-nav-group">工具</div>
+        <button class="tf-nav" data-page="logs"><span>≋</span>运行日志</button>
+        <button class="tf-nav" data-page="benchmark"><span>◷</span>基准测试</button>
+        <button class="tf-nav" data-page="chat"><span>□</span>内置聊天</button>
+        <button class="tf-nav" data-page="capabilities"><span>⊞</span>功能适配表</button>
+      </nav>
+      <div class="tf-side-bottom">
+        <div><i id="side-led" class="tf-led muted"></i><span id="side-status">未连接</span></div>
+        <small id="app-version">App 版本未采集</small>
+      </div>
+    </aside>
+    <div class="tf-workspace">
+      <header>
+        <span id="breadcrumbs">工作台 / 运行总览</span>
+        <div class="tf-header-right">
+          <span id="poll-status" aria-live="polite"></span>
+          <button data-action="refresh">刷新</button>
+          <button data-page="downloads">任务 <span id="task-count">0</span></button>
+        </div>
+      </header>
+      <main id="page" tabindex="-1"><div class="tf-loading">正在建立安全连接…</div></main>
+      <footer><span>TensorFold Manager</span><span id="footer-state">管理服务连接中</span></footer>
+    </div>
+  </div>
+  <div id="toast" role="status" aria-live="polite" hidden></div>
+  <div id="modal" class="tf-overlay" role="dialog" aria-modal="true" aria-labelledby="modal-title" hidden>
+    <div class="tf-dialog">
+      <div class="tf-row"><h2 id="modal-title"></h2><button data-action="modal-close" aria-label="关闭">×</button></div>
+      <div id="modal-body"></div>
+      <div id="modal-actions" class="tf-dialog-actions"><button data-action="modal-close">关闭</button></div>
+    </div>
+  </div>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
