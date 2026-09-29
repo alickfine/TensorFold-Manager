@@ -11,6 +11,13 @@ class BundleSafetyTests(unittest.TestCase):
         spec.loader.exec_module(module)
         return module
 
+    def test_release_version_rejects_paths_and_honors_tag(self):
+        build = self.builder()
+        self.assertEqual(build.get_version('v0.2.0-beta.3'), '0.2.0-beta.3')
+        for value in ('../release', '0.1.0/../../file', '$(whoami)'):
+            with self.assertRaises(ValueError):
+                build.get_version(value)
+
     def test_missing_runtime_rejected_before_build(self):
         with tempfile.TemporaryDirectory() as name:
             with self.assertRaises(ValueError):

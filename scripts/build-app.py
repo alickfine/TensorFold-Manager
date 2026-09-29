@@ -11,12 +11,20 @@ import json
 import os
 from pathlib import Path
 import plistlib
+import re
 import shutil
 import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
 VERSION = '0.1.0-alpha.1'
 ALLOWED = {'.py', '.js', '.mjs', '.css', '.html', '.json', '.toml', '.md'}
+
+
+def get_version(value: str = VERSION) -> str:
+    value = value.removeprefix('v')
+    if not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?', value):
+        raise ValueError('Invalid release version')
+    return value
 
 
 def validate_runtime(runtime: Path) -> Path:
@@ -61,7 +69,8 @@ def macho(path: Path) -> bool:
         return source.read(4) in {b'\xcf\xfa\xed\xfe', b'\xce\xfa\xed\xfe', b'\xca\xfe\xba\xbe', b'\xfe\xed\xfa\xcf'}
 
 
-def build(runtime: Path, uv: Path, output: Path, dmg: bool = True) -> Path:
+def build(runtime: Path, uv: Path, output: Path, dmg: bool = True, version: str = VERSION) -> Path:
+    version = get_version(version)
     runtime = validate_runtime(runtime)
     if not uv.is_file(): raise ValueError('uv executable required')
     if subprocess.check_output([str(uv.resolve()), '--version'], text=True).split()[1] != '0.9.5':
@@ -86,10 +95,10 @@ def build(runtime: Path, uv: Path, output: Path, dmg: bool = True) -> Path:
     shutil.copy2(ROOT / 'scripts/sidecar-launch.py', resources / 'sidecar-launch.py')
     signing = os.environ.get('SIGNING_IDENTITY', '-')
     info = plistlib.loads((ROOT / 'macos/Info.plist').read_bytes())
-    info['CFBundleShortVersionString'] = VERSION
+    info['CFBundleShortVersionString'] = version
     (contents / 'Info.plist').write_bytes(plistlib.dumps(info))
     provenance = {
-        'app_version': VERSION, 'python_version': '3.12.9', 'uv_version': '0.9.5',
+        'app_version': version, 'python_version': '3.12.9', 'uv_version': '0.9.5',
         'python_source': 'https://github.com/astral-sh/python-build-standalone',
         'uv_source': 'https://github.com/astral-sh/uv/releases/tag/0.9.5',
         'python_binary_sha256': sha(runtime / 'bin/python3'),
@@ -118,9 +127,9 @@ def build(runtime: Path, uv: Path, output: Path, dmg: bool = True) -> Path:
         stage.mkdir()
         shutil.copytree(app, stage / app.name, symlinks=True)
         (stage / 'Applications').symlink_to('/Applications')
-        (stage / 'README.txt').write_text('TensorFold Manager ' + VERSION + '\n\nDrag the App to Applications.\n\n'
+        (stage / 'README.txt').write_text('TensorFold Manager ' + version + '\n\nDrag the App to Applications.\n\n'
             + provenance['signing'] + '\nFirst engine installation requires internet access. Models are separate.\n')
-        installer = output / f'TensorFold-Manager-{VERSION}-macOS-arm64.dmg'
+        installer = output / f'TensorFold-Manager-{version}-macOS-arm64.dmg'
         run('/usr/bin/hdiutil', 'create', '-volname', 'TensorFold Manager', '-srcfolder', str(stage),
             '-ov', '-format', 'UDZO', str(installer))
         run('/usr/bin/codesign', '--force', '--sign', signing, str(installer))
@@ -134,5 +143,6 @@ if __name__ == '__main__':
     parser.add_argument('--uv', type=Path, required=True)
     parser.add_argument('--output', type=Path, default=ROOT / 'dist' / VERSION)
     parser.add_argument('--no-dmg', action='store_true')
+    parser.add_argument('--version', default=os.environ.get('TFM_BUILD_VERSION', VERSION))
     args = parser.parse_args()
-    print(build(args.runtime, args.uv, args.output, not args.no_dmg))
+    print(build(args.runtime, args.uv, args.output, not args.no_dmg, args.version))
