@@ -24,7 +24,7 @@ jobs:
         run: |
           runtime=$(./uv-aarch64-apple-darwin/uv python find 3.12.9)
           "$runtime" -m unittest discover -s tests
-          node --test tests/web.test.mjs
+          node --test tests/*.test.mjs
           swiftc macos/Bootstrap.swift macos/CredentialRequest.swift macos/tests/main.swift -o /tmp/bootstrap-tests
           /tmp/bootstrap-tests
       - name: Build ad hoc test DMG
