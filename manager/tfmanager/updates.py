@@ -93,7 +93,7 @@ class Updates:
             self.store.put('engine_recovery',{'active':previous,'settings':old_settings,'model':model})
             self.store.put('engine_active',candidate)
             try:
-                job.progress(phase='validating_candidate');self.engine.start(model);self.engine.await_ready()
+                job.progress(phase='validating_candidate');self.engine.start(model,allow_attach=False);self.engine.await_ready()
                 # Health alone does not prove inference compatibility. Perform a tiny actual completion.
                 from .gateway import completion
                 response,_=completion(self.engine,self.store,{'model':self.engine.status().get('served_name') or self.engine.status()['model'],'messages':[{'role':'user','content':'Reply OK'}],'max_tokens':1,'temperature':0},record=True)
@@ -108,7 +108,7 @@ class Updates:
                 else:self.store.delete('engine_active','default')
                 self.store.settings_update(old_settings)
                 if previous:
-                    job.progress(phase='recovering_previous');self.engine.start(model);self.engine.await_ready()
+                    job.progress(phase='recovering_previous');self.engine.start(model,allow_attach=False);self.engine.await_ready()
                     from .gateway import completion
                     completion(self.engine,self.store,{'model':self.engine.status().get('served_name') or self.engine.status()['model'],'messages':[{'role':'user','content':'Reply OK'}],'max_tokens':1},record=True)
                     self.store.put('update_recovery',{'at':time.time(),'api_verified':True,'error':str(error)})

@@ -50,7 +50,7 @@ class Jobs:
         with self.lock:
             row=self.get(id);job=self.live.get(id)
             if action=='pause':
-                if row['kind']!='download' and row['kind']!='test':raise APIError('This task cannot safely pause','unsupported_capability',409)
+                if row['kind'] not in ('download','test','accuracy'):raise APIError('This task cannot safely pause','unsupported_capability',409)
                 if not job or row['status']!='running':raise APIError('Job is not running','invalid_state',409)
                 with job.condition:job.paused=True;job.save(status='paused')
             elif action=='cancel':

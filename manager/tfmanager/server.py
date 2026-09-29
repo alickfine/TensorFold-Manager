@@ -24,26 +24,42 @@ from .jobs import Jobs
 from .downloads import Downloads
 from .updates import Updates
 from .gateway import proxy,completion
+from .resources import ResourceGate
+from .accuracy import Accuracy
+from .credentials import Credentials
+from .tools import Tools
 
 class Server(ThreadingHTTPServer):
     daemon_threads=True;allow_reuse_address=True
 
 class Application:
-    def __init__(self,data_dir,web_dir,token,engine_command=None):
+    def __init__(self,data_dir,web_dir,token,engine_command=None,resource_factory=ResourceGate):
         if not token:raise ValueError('Admin token required')
         self.app_version=os.environ.get('TFM_APP_VERSION') or __version__
-        self.token=token;self.instance_id=secrets.token_hex(16);self.web_dir=Path(web_dir).resolve();self.store=Store(data_dir)
-        self.models=Models(self.store);self.engine=Engine(self.store,self.models,command=engine_command);self.jobs=Jobs(self.store)
+        self.token=token;self.instance_id=secrets.token_hex(16);self.web_dir=Path(web_dir).resolve()
+        self.state_lease=ResourceGate.lock_data(data_dir)
+        try:
+            self.store=Store(data_dir);self.resources=resource_factory(self.store)
+            self.models=Models(self.store);self.engine=Engine(self.store,self.models,command=engine_command,resources=self.resources);self.jobs=Jobs(self.store)
+            self.credentials=Credentials();self.tools=Tools(self.store,self.jobs,self.engine,self.models,self.credentials,resources=self.resources)
+            self.accuracy=Accuracy(self.store,self.jobs,self.engine)
+        except Exception:
+            if hasattr(self,'store'):self.store.close()
+            self.state_lease.release();raise
         self.downloads=Downloads(self.store,self.jobs);self.updates=Updates(self.store,self.jobs,self.engine)
         self.jobs.register('benchmark',self.benchmark)
-        self.http=None;self.gateway=None;self.gateway_error=None;self.closed=threading.Event();self.shutdown_lock=threading.Lock();self.update_thread=None
+        self.http=None;self.gateway=None;self.gateway_error=None;self.closed=threading.Event();self.shutdown_lock=threading.Lock();self.update_thread=None;self.update_stop=threading.Event()
     def start(self,port=0,check_updates=True):
         self.models.scan();self.http=Server(('127.0.0.1',port),self.handler(False));threading.Thread(target=self.http.serve_forever,daemon=True).start()
         try:
             self.gateway=Server(('127.0.0.1',self.store.settings()['gateway_port']),self.handler(True));threading.Thread(target=self.gateway.serve_forever,daemon=True).start()
         except OSError as exc:self.gateway_error=f'Gateway port conflict: {exc}';self.store.log('error',self.gateway_error)
         if check_updates:
-            self.update_thread=threading.Thread(target=self.updates.check,daemon=True);self.update_thread.start()
+            self.update_thread=threading.Thread(target=self._update_loop,daemon=True);self.update_thread.start()
+    def _update_loop(self):
+        while not self.update_stop.is_set():
+            self.updates.check()
+            if self.update_stop.wait(24*60*60):return
     def system(self):
         try:memory=os.sysconf('SC_PHYS_PAGES')*os.sysconf('SC_PAGE_SIZE')
         except (ValueError,OSError):memory=None
@@ -57,9 +73,13 @@ class Application:
             'ane':'No verified upstream ANE execution capability.','omlx_kernels':'oMLX-specific kernels and cache policies are not TensorFold APIs.',
             'accuracy_queue':'No reference dataset or scoring adapter configured.'}.items()}
         for name in ('chat','streaming','benchmark','downloads','profiles','keys','cache','updates'):result[name]={'supported':True,'reason':None}
+        installed=bool(self.tools.status()['active'])
+        for name in ('quantize','upload'):result[name]={'supported':True,'ready':installed,'requires_install':not installed,'reason':None if installed else 'Install the pinned MLX tools environment first'}
+        result['accuracy']={'supported':True,'scoring':'reference_text_agreement','reason':None}
+        result['accuracy_queue']=result['accuracy']
         return result
     def state(self):
-        return {'app_version':self.app_version,'instance_id':self.instance_id,'settings':self.store.settings(),'engine':self.engine.status(),'system':self.system(),'models':self.models.rows,'stats':self.store.stats(),'jobs':self.jobs.list(),'keys':self.store.keys(),'capabilities':self.capabilities(),'update':self.updates.status(),'profiles':self.store.profiles(),'gateway':{'port':self.gateway.server_port if self.gateway else None,'error':self.gateway_error,'pending':bool(self.gateway and self.gateway.server_port!=self.store.settings()['gateway_port'])}}
+        return {'app_version':self.app_version,'instance_id':self.instance_id,'settings':self.store.settings(),'engine':self.engine.status(),'resources':self.resources.snapshot(),'system':self.system(),'models':self.models.rows,'stats':self.store.stats(),'jobs':self.jobs.list(),'keys':self.store.keys(),'capabilities':self.capabilities(),'update':self.updates.status(),'profiles':self.store.profiles(),'gateway':{'port':self.gateway.server_port if self.gateway else None,'error':self.gateway_error,'pending':bool(self.gateway and self.gateway.server_port!=self.store.settings()['gateway_port'])}}
     def cache(self):
         root=self.store.snapshots;owned=not root.is_symlink() and root.resolve()==self.store.root/'snapshots' and (root/'.tfmanager-owned').is_file() and not (root/'.tfmanager-owned').is_symlink()
         files=[p for p in root.rglob('*') if p.is_file() and p.name!='.tfmanager-owned' and not p.is_symlink()] if owned else []
@@ -94,13 +114,15 @@ class Application:
         if not self.shutdown_lock.acquire(blocking=False):return
         try:
             if self.closed.is_set():return
-            self.jobs.shutdown()
-            try:self.engine.stop()
+            self.update_stop.set();self.jobs.shutdown()
+            try:
+                if self.engine.attachment:self.engine.detach()
+                else:self.engine.stop()
             except APIError as exc:self.store.log('error',str(exc));return
             for server in (self.http,self.gateway):
                 if server:server.shutdown();server.server_close()
             if self.update_thread:self.update_thread.join(timeout=32)
-            self.store.close();self.closed.set()
+            self.store.close();self.state_lease.release();self.closed.set()
         finally:self.shutdown_lock.release()
     def handler(self,gateway):
         app=self
@@ -150,6 +172,10 @@ class Application:
                 result=None
                 if method=='GET':
                     if path=='/api/state':result=app.state()
+                    elif path=='/api/resources':result=app.resources.snapshot(fresh=True)
+                    elif path=='/api/accuracy':result=app.accuracy.status()
+                    elif path=='/api/tools':result=app.tools.status()
+                    elif path=='/api/credentials':result={'providers':{p:app.credentials.status(p) for p in ('hf-download','hf-upload','modelscope-download')}}
                     elif path=='/api/models':result={'models':app.models.rows}
                     elif path=='/api/profiles':result={'profiles':app.store.profiles()}
                     elif path=='/api/keys':result={'keys':app.store.keys()}
@@ -167,10 +193,20 @@ class Application:
                         for row in rows:writer.writerow({k:("'"+v if isinstance(v,str) and v.startswith(('=','+','-','@')) else json.dumps(v,ensure_ascii=False) if isinstance(v,(dict,list)) else v) for k,v in row.items()})
                         self.respond(out.getvalue().encode('utf-8-sig'),content_type='text/csv; charset=utf-8');return
                 elif method=='PUT':
-                    if path=='/api/settings':result={'settings':app.store.settings_update(data),'pending':app.engine.status()['pending']}
+                    if path.startswith('/api/credentials/'):
+                        app.credentials.set(path.rsplit('/',1)[1],data.get('token'));result=app.credentials.status(path.rsplit('/',1)[1])
+                    elif path=='/api/settings':result={'settings':app.store.settings_update(data),'pending':app.engine.status()['pending']}
                     elif path=='/api/models/config':result={'config':app.models.configure(data)}
                 elif method=='POST':
                     if path=='/api/engine/start':result=app.engine.start(data.get('model') or app.store.settings()['selected_model'])
+                    elif path=='/api/engine/detach':result=app.engine.detach()
+                    elif path=='/api/accuracy/cases':result=app.accuracy.add(data)
+                    elif path=='/api/accuracy/run':result=app.accuracy.start(data)
+                    elif path=='/api/accuracy/reset':result=app.accuracy.reset(data)
+                    elif path=='/api/tools/install':result=app.tools.install(data)
+                    elif path=='/api/tools/quantize':result=app.tools.quantize(data)
+                    elif path=='/api/tools/uploads/prepare':result=app.tools.upload_prepare(data)
+                    elif path=='/api/tools/uploads/confirm':result=app.tools.upload_confirm(data)
                     elif path=='/api/engine/stop':result=app.engine.stop(force=data.get('force') is True)
                     elif path=='/api/engine/restart':result=app.engine.restart(data.get('model'))
                     elif path=='/api/models/scan':result={'models':app.models.scan()}
@@ -198,7 +234,10 @@ class Application:
                     elif path=='/api/admin/shutdown':
                         self.respond({'shutting_down':True});threading.Thread(target=app.shutdown,daemon=True).start();return
                 elif method=='DELETE':
-                    if path.startswith('/api/profiles/'):app.store.profile_delete(path.rsplit('/',1)[1]);result={'profiles':app.store.profiles()}
+                    if path.startswith('/api/credentials/'):
+                        app.credentials.delete(path.rsplit('/',1)[1]);result=app.credentials.status(path.rsplit('/',1)[1])
+                    elif path.startswith('/api/accuracy/cases/'):result=app.accuracy.remove(path.rsplit('/',1)[1])
+                    elif path.startswith('/api/profiles/'):app.store.profile_delete(path.rsplit('/',1)[1]);result={'profiles':app.store.profiles()}
                     elif path.startswith('/api/keys/'):app.store.key_delete(path.rsplit('/',1)[1]);result={'keys':app.store.keys()}
                 if result is None:raise APIError('Endpoint not found','not_found',404)
                 self.respond(result)

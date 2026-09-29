@@ -2,6 +2,7 @@ import json,os,socket,sys,tempfile,time,unittest
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'manager'))
 from tfmanager.state import Store,APIError
+from fixtures.resources import FixtureGate
 try:
  from tfmanager.engine import Engine
  from tfmanager.models import Models
@@ -24,7 +25,7 @@ class EngineTests(unittest.TestCase):
   self.models=Models(self.store)
   self.model=Path(self.tmp.name)/'models'/'Vontra--Qwen3.8-27B-MLX-4bit'; self.model.mkdir(parents=True)
   (self.model/'config.json').write_text(json.dumps({'model_type':'qwen3_5','_name_or_path':'Vontra/Qwen3.8-27B-MLX-4bit'})); (self.model/'model.safetensors').write_bytes(b'fixture')
-  self.engine=Engine(self.store,self.models,command=[sys.executable,str(FIXTURE)],startup_timeout=3,stop_timeout=2); self.addCleanup(lambda:self.engine.stop(force=True))
+  self.engine=Engine(self.store,self.models,command=[sys.executable,str(FIXTURE)],startup_timeout=3,stop_timeout=2,resources=FixtureGate(self.store)); self.addCleanup(lambda:self.engine.stop(force=True))
  def test_start_ready_pending_and_stop_owned_child(self):
   self.engine.start(str(self.model)); state=wait_state(self.engine,'ready'); self.assertIsInstance(state['pid'],int)
   self.store.settings_update({'temperature':.2}); self.assertTrue(self.engine.status()['pending'])
@@ -76,3 +77,36 @@ class LocalVariantTests(unittest.TestCase):
   (self.model/'reject-info').write_text('Unsupported quantization')
   with self.assertRaisesRegex(APIError,'Unsupported quantization'):self.engine.validate_model(str(self.model))
   self.assertIsNone(self.store.get('model_validation',str(self.model)))
+
+class ResourceLifecycleTests(unittest.TestCase):
+ setUp=EngineTests.setUp
+ def test_same_model_configuration_start_is_idempotent(self):
+  self.engine.start(str(self.model));first=wait_state(self.engine,'ready')
+  again=self.engine.start(str(self.model));self.assertEqual(first['pid'],again['pid']);self.assertEqual(again['state'],'ready')
+  self.store.settings_update({'selected_model':str(self.model)})
+  self.assertEqual(self.engine.start(str(self.model))['pid'],first['pid'])
+  self.models.configure({'model':str(self.model),'config':{'temperature':0.3}})
+  with self.assertRaisesRegex(APIError,'Stop the current engine'):self.engine.start(str(self.model))
+  self.assertEqual(first['pid'],self.engine.status()['pid'])
+ def test_empty_safetensor_never_installed_or_validated(self):
+  (self.model/'model.safetensors').write_bytes(b'')
+  self.assertFalse(self.models.describe(self.model)['installed'])
+  with self.assertRaises(APIError):self.engine.validate_model(str(self.model))
+  (self.model/'model.safetensors.index.json').write_text(json.dumps({'weight_map':{'x':'model.safetensors'}}))
+  self.assertFalse(self.models.describe(self.model)['installed'])
+ def test_attached_proxy_is_read_only_and_detach_leaves_external_process(self):
+  from tfmanager.resources import ResourceGate
+  from test_backend_resources import Observer
+  from tfmanager.gateway import completion
+  self.engine.start(str(self.model));wait_state(self.engine,'ready')
+  observer=Observer();settings=self.store.settings();flags={k.replace('_','-'):str(settings[k]) for k in ('context','max_tokens','temperature','top_p','top_k','parallel','prompt_cache_gib','mlx_cache_gib')}
+  flags.update(host='127.0.0.1',port=str(settings['engine_port']),thinking=settings['thinking'],name='fixture',**{'snapshot-dir':str(self.store.snapshots)})
+  observer.services=[{'pid':self.engine.status()['pid'],'uid':os.getuid(),'kind':'tensorfold','start_time':'fixture','command_signature':'fixture','model_path':str(self.model.resolve()),'flags':flags,'identity_complete':True,'listening_ports':[settings['engine_port']],'health':{'status':'ok'},'model_ids':['fixture']}]
+  gate=ResourceGate(self.store,observer=observer,lock_dir=self.store.root/'attached-fixture-locks')
+  gate.estimate=lambda *args,**kwargs:{'required_bytes':None,'missing':['fixture'],'components':{}}
+  attached=Engine(self.store,self.models,resources=gate);self.addCleanup(attached.detach)
+  self.assertEqual(attached.start(str(self.model))['control_owner'],'external')
+  self.assertEqual(attached.status()['state'],'attached');self.assertIsNone(attached.proc)
+  response,_=completion(attached,self.store,{'messages':[{'role':'user','content':'hello'}]});self.assertTrue(response['choices'])
+  with self.assertRaisesRegex(APIError,'read-only'):attached.stop()
+  attached.detach();self.assertEqual(self.engine.status()['state'],'ready')

@@ -32,12 +32,12 @@ class Models:
             except (OSError,ValueError):pass
         match=next((r for r in CATALOG if r['repo']==repo or ('models--'+r['repo'].replace('/','--')) in names),None)
         # Follow HF blob links for read-only size/completeness only; never write or delete these files.
-        weights=list(path.glob('*.safetensors')); installed=bool(weights)
+        weights=list(path.glob('*.safetensors')); installed=bool(weights) and all(p.is_file() and p.stat().st_size>0 for p in weights)
         index=path/'model.safetensors.index.json'
         if index.is_file():
             try:
                 files=set(json.loads(index.read_text())['weight_map'].values())
-                installed=bool(files) and all(isinstance(f,str) and not Path(f).is_absolute() and '..' not in Path(f).parts and (path/f).is_file() for f in files)
+                installed=bool(files) and all(isinstance(f,str) and not Path(f).is_absolute() and '..' not in Path(f).parts and (path/f).is_file() and (path/f).stat().st_size>0 for f in files)
             except (ValueError,KeyError,TypeError,OSError): installed=False
         shards=[re.fullmatch(r'model-(\d+)-of-(\d+)\.safetensors',f.name) for f in weights if f.name.startswith('model-')]
         if shards:

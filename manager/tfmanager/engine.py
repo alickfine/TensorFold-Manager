@@ -11,16 +11,19 @@ import sys
 import threading
 import time
 from .state import APIError,clean_env,ADVANCED_OPTIONS
+from .resources import ResourceGate,ResourceBlocked,GIB
 
 class Engine:
-    def __init__(self,store,models,command=None,startup_timeout=600,stop_timeout=120):
+    def __init__(self,store,models,command=None,startup_timeout=600,stop_timeout=120,resources=None):
+        self.resources=resources or ResourceGate(store);self.lease=None;self.attachment=None
         self.store=store; self.models=models; self.command=command; self.startup_timeout=startup_timeout; self.stop_timeout=stop_timeout
         self.lifecycle=threading.RLock(); self.lock=threading.RLock(); self.condition=threading.Condition(self.lock)
         self.active_model_id=None;self.running_model_config=None;self.running_parameters=None
         self.active_requests=0; self.draining=False; self.proc=None; self.reader=None; self.running_settings=None
-        self.data=dict(state='stopped',pid=None,model=None,version=None,health=None,error=None,started_at=None,pending=False)
+        self.data=dict(control_owner=None,state='stopped',pid=None,model=None,version=None,health=None,error=None,started_at=None,pending=False)
     def status(self):
         with self.lock:
+            if self.attachment and not self.resources.verify_attachment(self.attachment):self.data.update(state='failed',health=False,error='External service identity or health changed; detach and revalidate')
             if self.proc and self.proc.poll() is not None and self.data['state'] not in ('stopped','failed'):
                 self.data.update(state='failed',health=False,error='Engine supervisor exited',pid=None)
             result=self.data.copy(); result['pending']=bool(self.running_settings and (self.store.settings()!=self.running_settings or self.store.get('model_config',self.active_model_id,{})!=self.running_model_config)); return result
@@ -90,26 +93,65 @@ class Engine:
         if '--name' in flags:argv.extend(['--name',settings.get('name') or model['repo'] or model['name']])
         if '--no-update-check' in flags: argv.append('--no-update-check')
         return argv,probe
-    def start(self,model):
+    @staticmethod
+    def runtime_config(settings):
+        keys=set(ADVANCED_OPTIONS)|{'context','max_tokens','temperature','top_p','top_k','parallel','thinking','prompt_cache_gib','mlx_cache_gib','engine_port','engine_python'}
+        return {key:(settings or {}).get(key) for key in keys}
+    def start(self,model,allow_attach=True):
         with self.lifecycle:
-            if self.proc and self.proc.poll() is None: raise APIError('An owned engine is already running','engine_busy',409)
-            row=self.models.resolve(model); settings=self.store.settings(); effective=settings|self.store.get('model_config',row['id'],{})
-            with socket.socket() as sock:
-                sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
-                try: sock.bind(('127.0.0.1',settings['engine_port']))
-                except OSError: raise APIError('Engine port is occupied; no external service was adopted','port_conflict',409)
-            argv,probe=self.build_command(row,effective)
-            env=clean_env(); env.update(TENSORFOLD_NO_UPDATE_CHECK='1',HF_HUB_OFFLINE='1',TRANSFORMERS_OFFLINE='1',HF_HUB_DISABLE_IMPLICIT_TOKEN='1',HF_HOME=str(self.store.root/'hf-runtime'))
-            supervisor=[sys.executable,'-B',str(Path(__file__).with_name('supervisor.py'))]
-            self.proc=subprocess.Popen(supervisor,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True,bufsize=1,env=clean_env(),start_new_session=True)
-            self.proc.stdin.write(json.dumps({'argv':argv,'env':env,'stop_timeout':self.stop_timeout})+'\n'); self.proc.stdin.flush()
-            with self.lock:
-                self.running_parameters=effective.copy();self.running_settings=settings;self.active_model_id=row['id'];self.running_model_config=self.store.get('model_config',row['id'],{}); self.draining=False
-                self.data.update(state='starting',pid=None,model=row['repo'] or row['id'],version=probe['version'],served_name=effective.get('name') or row['repo'] or row['name'],health=False,error=None,started_at=time.time())
-            self.reader=threading.Thread(target=self._events,args=(self.proc,),daemon=True); self.reader.start()
-            threading.Thread(target=self._wait_ready,args=(self.proc,settings['engine_port']),daemon=True).start()
-            self.store.log('info','Starting owned engine: '+row['name']); return self.status()
-    def _events(self,proc):
+            row=self.models.resolve(model);settings=self.store.settings();effective=settings|self.store.get('model_config',row['id'],{})
+            if effective.get('drafter') not in (None,'auto','none'):
+                draft=effective['drafter'];path=Path(draft).expanduser()
+                candidate=self.models.describe(path) if path.is_absolute() else next((r for r in self.models.scan() if r['repo']==draft),None)
+                if not candidate or not candidate['installed']:raise APIError('Drafter must be installed in configured roots','drafter_missing',409)
+                effective=effective|{'drafter':candidate['path']}
+            if self.attachment or (self.proc and self.proc.poll() is None):
+                if self.active_model_id==row['id'] and self.runtime_config(self.running_parameters)==self.runtime_config(effective):return self.status()
+                raise APIError('Stop the current engine and wait for release before changing model or configuration','engine_busy',409)
+            lease=self.resources.acquire_start(row['path'],effective)
+            try:
+                if lease.attachment:
+                    if not allow_attach:raise ResourceBlocked(lease.report,'Upgrade validation requires an owned candidate; external service is active')
+                    return self._attach(row,settings,effective,lease)
+                with socket.socket() as sock:
+                    sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
+                    try:sock.bind(('127.0.0.1',settings['engine_port']))
+                    except OSError:raise APIError('Engine port is occupied; no external service was adopted','port_conflict',409)
+                argv,probe=self.build_command(row,effective)
+                report=self.resources.preflight_start(row['path'],effective)
+                if not report['allowed'] or report['attachment']:raise ResourceBlocked(report,'Resources changed during CLI preflight; retry with fresh evidence')
+                lease.report=report
+                env=clean_env();env.update(TENSORFOLD_NO_UPDATE_CHECK='1',HF_HUB_OFFLINE='1',TRANSFORMERS_OFFLINE='1',HF_HUB_DISABLE_IMPLICIT_TOKEN='1',HF_HOME=str(self.store.root/'hf-runtime'),TENSORFOLD_MEMORY_LIMIT_GB=str(lease.memory_limit_bytes/GIB))
+                supervisor=[sys.executable,'-B',str(Path(__file__).with_name('supervisor.py'))]
+                self.proc=subprocess.Popen(supervisor,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True,bufsize=1,env=clean_env(),start_new_session=True,pass_fds=(lease.fd,))
+                self.lease=lease
+                self.proc.stdin.write(json.dumps({'argv':argv,'env':env,'stop_timeout':self.stop_timeout})+'\n');self.proc.stdin.flush()
+                with self.lock:
+                    self.running_parameters=effective.copy();self.running_settings=settings;self.active_model_id=row['id'];self.running_model_config=self.store.get('model_config',row['id'],{});self.draining=False
+                    self.data.update(control_owner='manager',state='starting',pid=None,model=row['repo'] or row['id'],version=probe['version'],served_name=effective.get('name') or row['repo'] or row['name'],health=False,error=None,started_at=time.time(),resource_admission=lease.report)
+                self.reader=threading.Thread(target=self._events,args=(self.proc,lease),daemon=True);self.reader.start()
+                threading.Thread(target=self._wait_ready,args=(self.proc,settings['engine_port']),daemon=True).start()
+                self.store.log('info','Starting owned engine: '+row['name']);return self.status()
+            except Exception:
+                if not self.proc or self.proc.poll() is not None:lease.release()
+                elif self.lease is not lease:lease.release()
+                raise
+    def _attach(self,row,settings,effective,lease):
+        service=lease.attachment
+        if not self.resources.verify_attachment(service):lease.release();raise ResourceBlocked(lease.report,'External identity changed before attachment')
+        self.attachment=service;self.lease=lease;self.proc=None;self.draining=False
+        self.running_settings=settings;self.running_parameters=effective.copy();self.active_model_id=row['id'];self.running_model_config=self.store.get('model_config',row['id'],{})
+        self.data.update(control_owner='external',state='attached',pid=service['pid'],model=row['repo'] or row['id'],version=None,served_name=service['flags']['name'],health=True,error=None,started_at=service.get('started_at'),port=int(service['flags']['port']),resource_admission=lease.report)
+        self.store.log('info','Attached read-only to verified same-user TensorFold service');return self.status()
+    def detach(self):
+        with self.lifecycle:
+            if not self.attachment:return self.status()
+            self.drain();self.attachment=None
+            if self.lease:self.lease.release();self.lease=None
+            self.running_settings=None;self.running_parameters=None;self.draining=False
+            self.data.update(control_owner=None,state='stopped',pid=None,health=False,error=None)
+            return self.status()
+    def _events(self,proc,lease):
         for line in proc.stdout:
             try: event=json.loads(line)
             except ValueError: continue
@@ -121,7 +163,7 @@ class Engine:
                 if 'exit' in event:
                     expected=self.data['state']=='stopping'
                     self.data.update(state='stopped' if expected else 'failed',pid=None,health=False,error=None if expected else f'Engine exited with code {event["exit"]}')
-        proc.stdout.close()
+        proc.stdout.close();proc.wait();lease.release()
     def _wait_ready(self,proc,port):
         deadline=time.monotonic()+self.startup_timeout
         while time.monotonic()<deadline:
@@ -152,8 +194,8 @@ class Engine:
     @contextlib.contextmanager
     def request(self):
         with self.condition:
-            if self.draining or self.status()['state']!='ready': raise APIError('Engine is not ready','engine_not_ready',503)
-            self.active_requests+=1; port=self.running_settings['engine_port']
+            if self.draining or self.status()['state'] not in ('ready','attached'): raise APIError('Engine is not ready','engine_not_ready',503)
+            self.active_requests+=1; port=int(self.attachment['flags']['port']) if self.attachment else self.running_settings['engine_port']
         try: yield port
         finally:
             with self.condition: self.active_requests-=1; self.condition.notify_all()
@@ -167,6 +209,7 @@ class Engine:
                 self.condition.wait(remaining)
     def stop(self,force=False):
         with self.lifecycle:
+            if self.attachment:raise APIError('External engine is read-only; detach without stopping it','external_control_forbidden',409)
             if not self.proc or self.proc.poll() is not None:
                 if self.proc:
                     if self.reader:self.reader.join(timeout=2)
@@ -194,7 +237,7 @@ class Engine:
         deadline=time.monotonic()+(timeout or self.startup_timeout)
         while time.monotonic()<deadline:
             status=self.status()
-            if status['state']=='ready': return status
+            if status['state'] in ('ready','attached'): return status
             if status['state'] in ('failed','stopped'): raise APIError(status['error'] or 'Engine stopped','engine_failed',409)
             time.sleep(.2)
         raise APIError('Readiness timed out','engine_failed',409)
