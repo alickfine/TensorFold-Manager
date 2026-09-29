@@ -17,11 +17,20 @@
 | 运行时完整性 | 完整实际签名文件 manifest；stdlib 改动、内容损坏和未登记文件 fixture 检查通过 | 每次启动校验稳定副本 |
 | Native 校验 | bootstrap / origin / export / credential scope / runtime integrity checks 通过 | Keychain 只测输入解析，未读写真实 token |
 
+## 本次集成证据（仍不代表最终验收）
+
+- 内存准入使用 macOS 容量、可回收内存和压力采样，预留系统容量，模型权重 / KV / 并发 / 缓存按保守预算计入。进程 RSS 不作为模型峰值预算。
+- 同数据目录管理实例锁与全局重任务锁已实现。已有兼容 TensorFold 服务可只读接入；接入服务不会随 App 退出而停止。
+- 下载认证仅通过 App 自有凭据显式启用，官方精确域名可接收对应 token，第三方镜像禁止携带 token，跳转剥离认证头。4 项新增凭据边界测试及原下载测试通过；未操作真实 Keychain。
+- 参考答案测试页已接入题目添加 / 删除、真实结果、部分结果和取消队列。评分为参考文本相等 / 包含，不代表通用知识准确率。
+- 真实 loopback 管理 HTTP 集成检查：state、resources、services、tools、accuracy、downloads/catalog、cache、stats、keys、profiles、logs、benchmark/results、updates 均返回 200。此次未启动模型、未停止外部服务。
+- 本次 Python 全套 93 tests、Web 22 tests 通过；外部生命周期与工具监督器仍在并行完善，因此需以最终集成后的重新验证为准。
+
 ## 待完成
 
-- 新增内存压力 / 容量 / 服务发现门禁，兼容复用，明确外部服务控制边界。
+- 内存 / 服务门禁与外部切换的真实 App 界面及模型切换验收；完成独立审查。
 - 标准 MLX 转换、HF 上传范围预览及 App 自有凭据集成。
-- 参考答案队列 Web 入口、高级参数及完整指标展示。
+- 参考答案队列的真实模型测试、高级参数及完整指标展示。
 - 新协议的真实端到端验收、模型切换与下载、独立安全和全分支审查。
 - DMG 挂载 / 安装 / 最终启动、公开源码同步、GitHub Release 和 SHA256。
 
