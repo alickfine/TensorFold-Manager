@@ -7,6 +7,11 @@ import { serializeSettings, partitionProfileConfig } from '../web/views/settings
 import { exportTextFile } from '../web/export.js';
 import { chooseLaunchModel, getLaunchGate } from '../web/views/overview.js';
 import { canValidateModel } from '../web/views/models.js';
+import { renderCache } from '../web/views/cache.js';
+
+test('stopped engine with null health still renders cache controls', () => {
+  assert.match(renderCache({snapshot:{engine:{state:'stopped',health:null}},pageData:{cache:{can_clear:true}}}), /清理受管快照/);
+});
 
 test('escapeHtml escapes markup and attribute delimiters from backend text', () => {
   assert.equal(

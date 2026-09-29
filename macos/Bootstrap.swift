@@ -1,4 +1,42 @@
 import Foundation
+import CryptoKit
+
+struct RuntimeIntegrity {
+    static func verify(_ root: URL, manifest: Data) throws {
+        let root = root.resolvingSymlinksInPath().standardizedFileURL
+        guard let entries = try JSONSerialization.jsonObject(with: manifest) as? [String: [String: Any]] else {
+            throw NSError(domain: "TensorFoldManager", code: 3)
+        }
+        let fm = FileManager.default
+        for (name, record) in entries {
+            guard !name.hasPrefix("/"), !name.split(separator: "/").contains("..") else { throw NSError(domain: "TensorFoldManager", code: 3) }
+            let path = root.appendingPathComponent(name)
+            if let target = record["link"] as? String {
+                guard try fm.destinationOfSymbolicLink(atPath: path.path) == target,
+                      path.resolvingSymlinksInPath().path.hasPrefix(root.path + "/") else { throw NSError(domain: "TensorFoldManager", code: 3) }
+            } else {
+                let attributes = try fm.attributesOfItem(atPath: path.path)
+                guard attributes[.type] as? FileAttributeType == .typeRegular,
+                      (attributes[.posixPermissions] as? NSNumber)?.intValue == (record["mode"] as? NSNumber)?.intValue else { throw NSError(domain: "TensorFoldManager", code: 31) }
+                let file = try FileHandle(forReadingFrom: path)
+                defer { try? file.close() }
+                var digest = SHA256()
+                while let bytes = try file.read(upToCount: 65536), !bytes.isEmpty { digest.update(data: bytes) }
+                let hash = digest.finalize().map { String(format: "%02x", $0) }.joined()
+                guard hash == record["sha256"] as? String else { throw NSError(domain: "TensorFoldManager", code: 32) }
+            }
+        }
+        let walk = fm.enumerator(at: root, includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey])!
+        for case let path as URL in walk {
+            let values = try path.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+            if values.isDirectory != true || values.isSymbolicLink == true {
+                let canonical = path.deletingLastPathComponent().resolvingSymlinksInPath().appendingPathComponent(path.lastPathComponent)
+                let name = String(canonical.path.dropFirst(root.path.count + 1))
+                guard entries[name] != nil else { throw NSError(domain: "TensorFoldManager", code: 33) }
+            }
+        }
+    }
+}
 
 struct Handshake: Decodable {
     let `protocol`: Int

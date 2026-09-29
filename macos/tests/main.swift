@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 func XCTAssertThrowsError<T>(_ expression: @autoclosure () throws -> T) {
     do { _ = try expression(); fatalError("Expected thrown error") } catch {}
 }
@@ -49,3 +50,24 @@ try suite.testAcceptsMatchingHandshake()
 suite.testNavigationExactOrigin()
 try suite.testExportRejectsPathsAndUnsupportedTypes()
 print("PASS: 5 native bootstrap, exact-origin and export checks")
+let credential = try CredentialRequest.parse(Data(#"{"operation":"set","provider":"hf-upload","token":"fixture-secret"}"#.utf8))
+XCTAssertEqual(credential.provider, "hf-upload")
+for input in [#"{"operation":"get","provider":"existing-omlx"}"#, #"{"operation":"status","provider":"hf-upload","token":"secret"}"#, #"{"operation":"set","provider":"hf-upload","token":""}"#] {
+    XCTAssertThrowsError(try CredentialRequest.parse(Data(input.utf8)))
+}
+let fixtureRoot = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+try FileManager.default.createDirectory(at: fixtureRoot, withIntermediateDirectories: true)
+defer { try? FileManager.default.removeItem(at: fixtureRoot) }
+let data = Data("stdlib fixture".utf8)
+let path = fixtureRoot.appendingPathComponent("library.py")
+try data.write(to: path)
+try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: path.path)
+let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+let manifest = try JSONSerialization.data(withJSONObject: ["library.py": ["sha256": digest, "mode": 420]])
+try RuntimeIntegrity.verify(fixtureRoot, manifest: manifest)
+try Data("changed".utf8).write(to: path)
+XCTAssertThrowsError(try RuntimeIntegrity.verify(fixtureRoot, manifest: manifest))
+try data.write(to: path)
+try data.write(to: fixtureRoot.appendingPathComponent("unlisted.py"))
+XCTAssertThrowsError(try RuntimeIntegrity.verify(fixtureRoot, manifest: manifest))
+print("PASS: credential scope and full runtime integrity checks")

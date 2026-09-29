@@ -9,6 +9,7 @@ import argparse
 import hashlib
 import json
 import os
+import platform
 from pathlib import Path
 import plistlib
 import re
@@ -90,6 +91,17 @@ def sha(path: Path) -> str:
         return hashlib.file_digest(source, 'sha256').hexdigest()
 
 
+def runtime_manifest(runtime: Path) -> dict:
+    result = {}
+    for path in sorted(runtime.rglob('*')):
+        name = path.relative_to(runtime).as_posix()
+        if path.is_symlink():
+            result[name] = {'link': os.readlink(path)}
+        elif path.is_file():
+            result[name] = {'sha256': sha(path), 'mode': path.stat().st_mode & 0o777}
+    return result
+
+
 def run(*args: str) -> None:
     subprocess.run(args, check=True)
 
@@ -121,6 +133,7 @@ def build(runtime: Path, uv: Path, output: Path, dmg: bool = True, version: str 
     frameworks.mkdir()
     python_framework = copy_runtime_framework(runtime, frameworks)
     shutil.copy2(uv, helpers / 'uv')
+    shutil.copytree(ROOT / 'macos/licenses', resources / 'licenses')
     copy_source(ROOT / 'manager', resources / 'manager')
     copy_source(ROOT / 'web', resources / 'web')
     shutil.copy2(ROOT / 'scripts/sidecar-launch.py', resources / 'sidecar-launch.py')
@@ -136,14 +149,16 @@ def build(runtime: Path, uv: Path, output: Path, dmg: bool = True, version: str 
         'python_binary_sha256': sha(runtime / 'bin/python3'),
         'python_library_sha256': sha(runtime / 'lib/libpython3.12.dylib'),
         'uv_sha256': sha(uv),
-        'runtime_fingerprint': hashlib.sha256((sha(runtime / 'bin/python3') + sha(runtime / 'lib/libpython3.12.dylib')).encode()).hexdigest(),
         'signing': 'ad hoc / not notarized' if signing == '-' else 'Developer ID / notarization separate',
-        'tested_macos': '27.0', 'deployment_target': '14.0',
+        'build_macos': platform.mac_ver()[0], 'deployment_target': '14.0',
     }
     (resources / 'provenance.json').write_text(json.dumps(provenance, indent=2) + '\n')
     run('/usr/bin/swiftc', '-swift-version', '5', '-target', 'arm64-apple-macosx14.0',
         '-O', '-framework', 'Cocoa', '-framework', 'WebKit', '-framework', 'Security',
         str(ROOT / 'macos/Bootstrap.swift'), str(ROOT / 'macos/main.swift'), '-o', str(contents / 'MacOS/TensorFoldManager'))
+    run('/usr/bin/swiftc', '-swift-version', '5', '-target', 'arm64-apple-macosx14.0',
+        '-O', '-framework', 'Security', str(ROOT / 'macos/CredentialRequest.swift'),
+        str(ROOT / 'macos/CredentialHelper/main.swift'), '-o', str(helpers / 'CredentialStore'))
     for path in sorted(contents.rglob('*'), key=lambda p: len(p.parts), reverse=True):
         if macho(path) and path not in {contents / 'MacOS/TensorFoldManager', python_framework / 'Versions/A/PythonRuntime'}:
             args = ['/usr/bin/codesign', '--force', '--sign', signing]
@@ -152,8 +167,14 @@ def build(runtime: Path, uv: Path, output: Path, dmg: bool = True, version: str 
                 if path.name.startswith('python3'):
                     args += ['--entitlements', str(ROOT / 'macos/python.entitlements')]
             run(*args, str(path))
-    run('/usr/bin/codesign', '--force', '--sign', signing, str(python_framework))
-    run('/usr/bin/codesign', '--force', '--sign', signing, str(app))
+    manifest = runtime_manifest(python_framework / 'Resources/runtime')
+    manifest_bytes = json.dumps(manifest, sort_keys=True, separators=(',', ':')).encode()
+    (resources / 'runtime-manifest.json').write_bytes(manifest_bytes)
+    provenance['runtime_fingerprint'] = hashlib.sha256(manifest_bytes + signing.encode()).hexdigest()
+    (resources / 'provenance.json').write_text(json.dumps(provenance, indent=2) + '\n')
+    signing_options = ['--options', 'runtime', '--timestamp'] if signing != '-' else []
+    run('/usr/bin/codesign', '--force', '--sign', signing, *signing_options, str(python_framework))
+    run('/usr/bin/codesign', '--force', '--sign', signing, *signing_options, str(app))
     run('/usr/bin/codesign', '--verify', '--deep', '--strict', str(app))
     if dmg:
         stage = output / 'dmg-content'

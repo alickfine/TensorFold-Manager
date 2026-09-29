@@ -4,7 +4,7 @@ export function renderCache(state) {
   const cache = state.pageData.cache ?? {};
   const snapshot = state.snapshot ?? {};
   const running = snapshot.engine?.state !== 'stopped';
-  const health = typeof snapshot.engine?.health === 'object' ? snapshot.engine.health : {};
+  const health = snapshot.engine?.health && typeof snapshot.engine.health === 'object' ? snapshot.engine.health : {};
   const memory = health.memory ?? {};
   const settings = snapshot.settings ?? {};
   const stats = snapshot.stats ?? {};

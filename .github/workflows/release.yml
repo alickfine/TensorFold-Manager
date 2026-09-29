@@ -17,6 +17,7 @@ jobs:
           expected=$(awk '{print $1}' uv.sha256)
           actual=$(shasum -a 256 uv.tar.gz | awk '{print $1}')
           test "$expected" = "$actual"
+          test "$actual" = "dc098ff224d78ed418e121fd374f655949d2c7031a70f6f6604eaf016a130433"
           tar -xzf uv.tar.gz
           ./uv-aarch64-apple-darwin/uv python install 3.12.9 --no-bin
       - name: Verify backend and Web
@@ -24,7 +25,7 @@ jobs:
           runtime=$(./uv-aarch64-apple-darwin/uv python find 3.12.9)
           "$runtime" -m unittest discover -s tests
           node --test tests/web.test.mjs
-          swiftc macos/Bootstrap.swift macos/tests/main.swift -o /tmp/bootstrap-tests
+          swiftc macos/Bootstrap.swift macos/CredentialRequest.swift macos/tests/main.swift -o /tmp/bootstrap-tests
           /tmp/bootstrap-tests
       - name: Build ad hoc test DMG
         run: |

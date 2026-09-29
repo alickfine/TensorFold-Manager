@@ -5,6 +5,17 @@ import unittest
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 class BundleSafetyTests(unittest.TestCase):
+    def test_runtime_manifest_tracks_library_changes_and_links(self):
+        with tempfile.TemporaryDirectory() as name:
+            root = pathlib.Path(name)
+            (root / 'library.py').write_text('first')
+            (root / 'alias').symlink_to('library.py')
+            build = self.builder()
+            before = build.runtime_manifest(root)
+            (root / 'library.py').write_text('patched')
+            self.assertNotEqual(before, build.runtime_manifest(root))
+            self.assertEqual(before['alias']['link'], 'library.py')
+
     def builder(self):
         spec = importlib.util.spec_from_file_location('build_app', ROOT / 'scripts/build-app.py')
         module = importlib.util.module_from_spec(spec)

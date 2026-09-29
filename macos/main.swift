@@ -76,13 +76,15 @@ final class ManagerApp: NSObject, NSApplicationDelegate, WKNavigationDelegate, W
                 do { try FileManager.default.moveItem(at: stage, to: runtime) }
                 catch { try? FileManager.default.removeItem(at: stage); if !FileManager.default.fileExists(atPath: runtime.path) { throw error } }
             }
+            do { try RuntimeIntegrity.verify(runtime, manifest: Data(contentsOf: resources.appendingPathComponent("runtime-manifest.json"))) }
+            catch { throw failure("运行时完整性验证失败。保留现有环境，请重新安装完整的 App 后重试。") }
             var bytes = [UInt8](repeating: 0, count: 32)
             guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else { throw failure("无法创建安全管理会话") }
             token = Data(bytes).base64EncodedString()
             let process = Process()
             let input = Pipe(), output = Pipe(), errors = Pipe()
             process.executableURL = runtime.appendingPathComponent("bin/python3")
-            process.arguments = ["-I", resources.appendingPathComponent("sidecar-launch.py").path,
+            process.arguments = ["-I", "-B", resources.appendingPathComponent("sidecar-launch.py").path,
                                  "--data-dir", support.appendingPathComponent("data").path,
                                  "--web-dir", resources.appendingPathComponent("web").path, "--port", "0", "--parent-pipe"]
             process.currentDirectoryURL = support
@@ -91,6 +93,7 @@ final class ManagerApp: NSObject, NSApplicationDelegate, WKNavigationDelegate, W
                 "TFM_ADMIN_TOKEN": token, "TFM_BOOTSTRAP_NONCE": nonce,
                 "TFM_RUNTIME_PYTHON": runtime.appendingPathComponent("bin/python3").path,
                 "TFM_UV": contents.appendingPathComponent("Helpers/uv").path,
+                "TFM_KEYCHAIN_HELPER": contents.appendingPathComponent("Helpers/CredentialStore").path,
                 "TFM_APP_VERSION": provenance["app_version"] as? String ?? "0.1.0-alpha.1"]
             process.standardInput = input
             process.standardOutput = output
@@ -209,6 +212,18 @@ final class ManagerApp: NSObject, NSApplicationDelegate, WKNavigationDelegate, W
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
                  for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? { nil }
 
+    func webView(_ webView: WKWebView, runJavaScriptConfirmPanelWithMessage message: String,
+                 initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (Bool) -> Void) {
+        guard frame.isMainFrame, let url = frame.request.url, let currentPort = port,
+              Handshake.permits(url, port: currentPort) else { completionHandler(false); return }
+        let alert = NSAlert()
+        alert.messageText = "确认操作"
+        alert.informativeText = String(message.prefix(4000))
+        alert.addButton(withTitle: "确认")
+        alert.addButton(withTitle: "取消")
+        alert.beginSheetModal(for: window) { response in completionHandler(response == .alertFirstButtonReturn) }
+    }
+
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
@@ -229,7 +244,21 @@ final class ManagerApp: NSObject, NSApplicationDelegate, WKNavigationDelegate, W
             process.waitUntilExit()
             DispatchQueue.main.async { sender.reply(toApplicationShouldTerminate: true) }
         }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 125) { self.checkShutdown(process, sender: sender) }
         return .terminateLater
+    }
+
+    private func checkShutdown(_ process: Process, sender: NSApplication) {
+        guard process.isRunning else { return }
+        let alert = NSAlert()
+        alert.messageText = "服务尚未退出"
+        alert.informativeText = "已等待超过 120 秒。可以继续等待，或强制结束本 App 创建的管理进程；推理监督器会在连接断开后清理所属引擎。"
+        alert.addButton(withTitle: "继续等待")
+        alert.addButton(withTitle: "强制退出")
+        alert.beginSheetModal(for: window) { response in
+            if response == .alertSecondButtonReturn, process.isRunning { kill(process.processIdentifier, SIGKILL) }
+            else { DispatchQueue.main.asyncAfter(deadline: .now() + 30) { self.checkShutdown(process, sender: sender) } }
+        }
     }
 }
 
