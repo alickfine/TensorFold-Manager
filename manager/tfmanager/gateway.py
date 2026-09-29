@@ -1,0 +1,113 @@
+"""Authenticated HTTP handlers use this real OpenAI proxy and accounting path."""
+import http.client
+import json
+import select
+import socket
+import threading
+import time
+from .state import APIError
+
+MAX_RESPONSE=32*1024*1024
+
+def validate_payload(data):
+    if not isinstance(data,dict):raise APIError('JSON object required')
+    if 'stream' in data and not isinstance(data['stream'],bool):raise APIError('stream must be boolean')
+    if 'max_tokens' in data and (isinstance(data['max_tokens'],bool) or not isinstance(data['max_tokens'],int) or not 1<=data['max_tokens']<=2097152):raise APIError('Invalid max_tokens')
+    if 'messages' in data and (not isinstance(data['messages'],list) or not data['messages']):raise APIError('messages must be a non-empty array')
+    return data
+
+def usage_into(record,payload):
+    usage=payload.get('usage') or {}
+    for source,target in (('prompt_tokens','input_tokens'),('completion_tokens','output_tokens')):
+        value=usage.get(source)
+        if isinstance(value,int) and not isinstance(value,bool) and value>=0:record[target]=value
+
+
+def completion(engine,store,data,path='/v1/chat/completions',record=True,observe_stream=False,job=None):
+    data=validate_payload(data.copy());data['stream']=observe_stream;data.setdefault('model',engine.status()['model'])
+    start=time.monotonic();metrics={'model':data['model'],'status':502,'error':None,'ttft':None,'prefill_tps':None,'decode_tps':None,'input_tokens':None,'output_tokens':None}
+    try:
+        with engine.request() as port:
+            connection=http.client.HTTPConnection('127.0.0.1',port,timeout=600)
+            try:
+                connection.request('POST',path,json.dumps(data).encode(),{'Content-Type':'application/json'})
+                response=connection.getresponse();metrics['status']=response.status
+                if observe_stream and response.status<400:
+                    content=[];finished=False
+                    while True:
+                        if job:job.checkpoint()
+                        line=response.readline(1024*1024+1)
+                        if not line:break
+                        if len(line)>1024*1024:raise APIError('Oversized SSE event','upstream_error',502)
+                        if not line.startswith(b'data:'):continue
+                        if line[5:].strip()==b'[DONE]':finished=True;break
+                        event=json.loads(line[5:]);usage_into(metrics,event)
+                        for choice in event.get('choices',[]):
+                            delta=choice.get('delta') or {};text=delta.get('content') or delta.get('reasoning_content') or choice.get('text')
+                            if text:
+                                if metrics['ttft'] is None:metrics['ttft']=time.monotonic()-start
+                                content.append(text)
+                    if not finished:raise APIError('Stream ended before completion','incomplete_stream',502)
+                    return {'choices':[{'message':{'role':'assistant','content':''.join(content)}}]},metrics
+                raw=response.read(MAX_RESPONSE+1)
+                if len(raw)>MAX_RESPONSE:raise APIError('Upstream response too large','upstream_error',502)
+                payload=json.loads(raw)
+                if response.status>=400:raise APIError(str(payload.get('error',payload)),'upstream_error',response.status)
+                usage_into(metrics,payload);return payload,metrics
+            finally:connection.close()
+    except Exception as exc:metrics['error']=str(exc);metrics['status']=getattr(exc,'status',502);raise
+    finally:
+        metrics['elapsed']=time.monotonic()-start
+        if record:store.record_request(metrics)
+
+
+def proxy(handler,app,path,data=None):
+    if data is not None:validate_payload(data);data=data.copy();data.setdefault('model',app.engine.status()['model'])
+    stream=bool(data and data.get('stream'));start=time.monotonic();metrics={'model':data.get('model') if data else app.engine.status()['model'],'status':502,'error':None,'ttft':None}
+    began=False;done=threading.Event();disconnected=threading.Event();connection=None
+    try:
+        with app.engine.request() as port:
+            connection=http.client.HTTPConnection('127.0.0.1',port,timeout=600)
+            connection.connect();upstream_socket=connection.sock
+            def watch_client():
+                # A browser Abort closes the upstream socket immediately, including during prefill.
+                while not done.wait(.1):
+                    try:
+                        readable,_,_=select.select([handler.connection],[],[],0)
+                        if readable and handler.connection.recv(1,socket.MSG_PEEK)==b'':
+                            disconnected.set();upstream_socket.shutdown(socket.SHUT_RDWR);return
+                    except OSError:return
+            threading.Thread(target=watch_client,daemon=True).start()
+            connection.request('POST' if data is not None else 'GET',path,json.dumps(data).encode() if data is not None else None,{'Content-Type':'application/json'})
+            response=connection.getresponse();metrics['status']=response.status
+            if stream and response.status<400:
+                handler.send_response(response.status);handler.send_header('Content-Type','text/event-stream; charset=utf-8');handler.send_header('Cache-Control','no-store');handler.send_header('Connection','close');handler.security_headers();handler.end_headers();handler.close_connection=True;began=True
+                while True:
+                    line=response.readline(1024*1024+1)
+                    if not line:break
+                    if len(line)>1024*1024:raise APIError('Upstream SSE event exceeds limit','upstream_error',502)
+                    if line.startswith(b'data:') and line[5:].strip()!=b'[DONE]':
+                        try:
+                            payload=json.loads(line[5:]);usage_into(metrics,payload)
+                            choices=payload.get('choices') or []
+                            if metrics['ttft'] is None and any((c.get('delta') or {}).get('content') or (c.get('delta') or {}).get('reasoning_content') or c.get('text') for c in choices):metrics['ttft']=time.monotonic()-start
+                        except (ValueError,TypeError):pass
+                    handler.wfile.write(line);handler.wfile.flush()
+            else:
+                raw=response.read(MAX_RESPONSE+1)
+                if len(raw)>MAX_RESPONSE:raise APIError('Upstream response too large','upstream_error',502)
+                try:payload=json.loads(raw);usage_into(metrics,payload)
+                except ValueError:raise APIError('Upstream did not return JSON','upstream_error',502)
+                handler.respond(payload,response.status);began=True
+    except (BrokenPipeError,ConnectionResetError) as exc:
+        metrics.update(status=499,error='Client cancelled');handler.close_connection=True
+    except Exception as exc:
+        metrics['error']=str(exc)
+        if disconnected.is_set():metrics['status']=499
+        elif not began:raise APIError('Upstream request failed: '+str(exc),'upstream_error',502) from exc
+        else:metrics['status']=502;handler.close_connection=True
+    finally:
+        done.set()
+        if connection:connection.close()
+        metrics['elapsed']=time.monotonic()-start
+        if data is not None:app.store.record_request(metrics)
