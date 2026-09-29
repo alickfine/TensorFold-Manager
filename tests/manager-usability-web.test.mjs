@@ -15,6 +15,7 @@ import { renderChat } from '../web/views/chat.js';
 import { renderLogs } from '../web/views/logs.js';
 import { renderStats } from '../web/views/stats.js';
 import { prepareChatTurn } from '../web/chat-options.js';
+import { dispatchDocumentClick } from '../web/click-routing.js';
 
 const supported = {
   id:'/Models/Qwen', name:'Qwen', repo:'org/qwen', source:'huggingface',
@@ -262,4 +263,26 @@ test('logs use the compact toolbar and log surface classes', () => {
   assert.match(output, /tf-heading-compact/);
   assert.match(output, /tf-log-toolbar/);
   assert.match(output, /tf-log-card/);
+});
+
+test('clicking an action inside main dispatches handleAction instead of treating main as navigation', () => {
+  const actionButton = { disabled:false, dataset:{ action:'refresh', value:'now' } };
+  const target = {
+    closest(selector) {
+      if (selector === 'button[data-page]') return null;
+      if (selector === '[data-action]') return actionButton;
+      return null;
+    },
+  };
+  let navigated = null;
+  let handled = null;
+  let prevented = false;
+  const result = dispatchDocumentClick({ target, preventDefault() { prevented = true; } }, {
+    navigate(page) { navigated = page; },
+    handleAction(action, value, element) { handled = { action, value, element }; },
+  });
+  assert.equal(result, 'action');
+  assert.equal(navigated, null);
+  assert.deepEqual(handled, { action:'refresh', value:'now', element:actionButton });
+  assert.equal(prevented, true);
 });

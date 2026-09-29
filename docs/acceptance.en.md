@@ -53,7 +53,7 @@ An OS heavy-task lease covers inference, conversion, switching, activation and r
 
 Two independent agents handled investigation/review and Web fixes; the coordinator integrated backend/native changes.
 
-- Python 3.12.9: 175 tests passed. Web: 63 passed. Native bootstrap/language, full manifest integrity and directory write protection checks passed.
+- Python 3.12.9: 175 tests passed. Web: 64 passed. Native bootstrap/language, full manifest integrity and directory write protection checks passed.
 - The actual native App opened existing data with 12 retained navigation items and no duplicate three-light header. Library buttons were uniform; model settings opened in a dialog. Unsaved Temperature=0.73 survived Chinese-to-English switching and was discarded on close.
 - Installed Gemma/Qwen/GLM compatibility was checked using the actual TensorFold CLI and MLX reader, without loading weights. Detection does not prove inference or weight provenance.
 - Existing installer logs and chat history remained visible. Generation is explicitly disabled while stopped; old conversations are not new-release inference evidence.

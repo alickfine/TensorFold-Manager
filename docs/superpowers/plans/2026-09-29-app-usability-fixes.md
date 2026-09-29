@@ -59,4 +59,6 @@
 
 Initial isolated branch: codex/app-usability-fixes at 1c202a41dc4a13f6f582c8f29049d70e96f1bb7d. Original app-dependent checkout retained at manager-app/TensorFold.
 
-Final local gate: 175 Python / 63 Web tests passed, native tests and sealed-runtime proof passed. Final local alpha.3 DMG built. Full-disk native scan previously failed on EPERM; permission and network metadata ordering fixes have eight regression tests passing. Final real scan rerun pending Mac unlock.
+Final local gate: 175 Python / 64 Web tests passed, native tests and sealed-runtime proof passed. Final local alpha.3 DMG built. Full-disk native scan previously failed on EPERM; permission and network metadata ordering fixes have eight regression tests passing. Final real scan rerun pending Mac unlock.
+
+Final review reproduced an event-routing regression caused by main[data-page]. Fixed using data-view and button-only navigation routing; the production dispatch function now has an action-event regression.

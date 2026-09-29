@@ -20,6 +20,7 @@ import { renderBenchmark, benchmarkRequest } from './views/benchmark.js';
 import { renderChat } from './views/chat.js';
 import { getLocale, initializeLocale, setLocale, t, translateDocument } from './i18n.js';
 import { captureFormDraft, restoreFormDraft } from './form-draft.js';
+import { dispatchDocumentClick } from './click-routing.js';
 
 const PAGE_LABELS = {
   overview:'运行总览', stats:'统计与用量', cache:'缓存管理', models:'模型库', downloads:'模型下载器',
@@ -106,13 +107,13 @@ function updateChrome() {
   const led = document.querySelector('#side-led');
   led.className = `tf-led ${engine.state === 'ready' ? '' : engine.state === 'failed' ? 'red' : 'amber'}`;
   document.querySelector('#poll-status').textContent = state.lastUpdated ? t('更新于 {time}', { time:state.lastUpdated.toLocaleTimeString(getLocale()) }) : '';
-  document.querySelectorAll('[data-page]').forEach((button) => button.classList.toggle('active', button.dataset.page === state.page));
+  document.querySelectorAll('button[data-page]').forEach((button) => button.classList.toggle('active', button.dataset.page === state.page));
 }
 
 function renderCurrent() {
   updateChrome();
   const renderer = renderers[state.page];
-  pageElement.dataset.page = state.page;
+  pageElement.dataset.view = state.page;
   pageElement.innerHTML = renderer(state);
   pageElement.focus({ preventScroll:true });
 }
@@ -468,15 +469,7 @@ async function handleForm(form) {
 }
 
 document.addEventListener('click', (event) => {
-  const pageButton = event.target.closest('[data-page]');
-  if (pageButton) {
-    navigate(pageButton.dataset.page);
-    return;
-  }
-  const button = event.target.closest('[data-action]');
-  if (!button || button.disabled || !button.dataset.action) return;
-  event.preventDefault();
-  handleAction(button.dataset.action, button.dataset.value ?? '', button).catch(() => {});
+  dispatchDocumentClick(event, { navigate, handleAction });
 });
 
 for (const type of ['input', 'change']) pageElement.addEventListener(type, (event) => {
