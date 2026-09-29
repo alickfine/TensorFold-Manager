@@ -76,6 +76,7 @@ class ToolTests(unittest.TestCase):
         )
         (self.model / "model.safetensors").write_bytes(b"source weights")
         self.capture = self.root / "child-capture.json"
+        self.trace = self.root / "conversion-trace.jsonl"
         self.tool_python = self.store.root / "tools" / "testing" / "bin" / "python"
         self.tool_python.parent.mkdir(parents=True)
         self.tool_python.write_text(
@@ -85,9 +86,21 @@ class ToolTests(unittest.TestCase):
             "args=sys.argv[1:]\n"
             "if '-m' in args and args[args.index('-m')+1]=='mlx_lm':\n"
             " source=pathlib.Path(args[args.index('--hf-path')+1]); output=pathlib.Path(args[args.index('--mlx-path')+1])\n"
-            " capture.write_text(json.dumps({'started':True,'pid':os.getpid()}))\n"
-            " if json.loads((source/'config.json').read_text()).get('slow'): time.sleep(30)\n"
-            " output.mkdir(); shutil.copy2(source/'config.json',output/'config.json'); (output/'model.safetensors').write_bytes(b'converted')\n"
+            " config=json.loads((source/'config.json').read_text()); phase='dequantize' if '--dequantize' in args else 'quantize'\n"
+            f" with pathlib.Path({str(self.trace)!r}).open('a') as trace: trace.write(json.dumps({{'args':args,'phase':phase,'pid':os.getpid()}})+'\\n')\n"
+            " output.mkdir(); (output/'model.safetensors').write_bytes(b'partial')\n"
+            " capture.write_text(json.dumps({'started':True,'pid':os.getpid(),'phase':phase}))\n"
+            " if config.get('slow') or config.get('slow_phase')==phase: time.sleep(30)\n"
+            " if config.get('fail_phase')==phase: raise SystemExit(9)\n"
+            " if phase=='dequantize':\n"
+            "  if not config.get('bad_dequantize'): config.pop('quantization',None); config.pop('quantization_config',None)\n"
+            " else:\n"
+            "  if 'quantization' not in config: config['quantization']={'bits':int(args[args.index('--q-bits')+1]),'group_size':int(args[args.index('--q-group-size')+1]),'mode':args[args.index('--q-mode')+1]}\n"
+            "  if 'output_quantization' in config: config['quantization']=config['output_quantization']\n"
+            "  if config.get('protected_router'): config['quantization']['model.layers.0.router.proj']={'bits':8,'group_size':64}\n"
+            "  config['quantization_config']=config['quantization']\n"
+            "  if config.get('mutate_source'): pathlib.Path(config['mutate_source']).write_bytes(b'changed during conversion')\n"
+            " (output/'config.json').write_text(json.dumps(config)); (output/'model.safetensors').write_bytes(b'converted')\n"
             " capture.write_text(json.dumps({'args':args,'token':os.environ.get('TFM_HF_UPLOAD_TOKEN')}))\n"
             "elif '-c' in args:\n"
             " manifest=json.loads(pathlib.Path(args[-1]).read_text())\n"

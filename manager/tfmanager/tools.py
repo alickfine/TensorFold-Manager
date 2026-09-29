@@ -411,6 +411,7 @@ class Tools:
         output = self.converted_root / name
         if output.exists():
             raise APIError("The converted output already exists", "output_exists", 409)
+        self._check_conversion_disk(self._conversion_plan(Path(model["path"])))
         options = {"bits": bits, "group_size": group_size}
         self._ensure_heavy_available(model["path"], options)
         return self.jobs.create(
@@ -465,6 +466,90 @@ class Tools:
                 raise APIError("Converted model shards are incomplete", "conversion_failed", 409)
         return config, weights
 
+    @staticmethod
+    def _effective_quantization(config, required=False):
+        """Read declared global and per-layer values, never the requested flags."""
+        sections = []
+        for container in (config, config.get("text_config", {})):
+            if not isinstance(container, dict):
+                continue
+            for key in ("quantization", "quantization_config"):
+                if key in container:
+                    sections.append(container[key])
+        if not sections:
+            if required:
+                raise APIError("Output quantization metadata is missing", "conversion_failed", 409)
+            return None
+
+        def values(value):
+            if not isinstance(value, dict):
+                raise APIError("Invalid quantization declaration", "conversion_failed", 409)
+            bits, group, mode = value.get("bits"), value.get("group_size"), value.get("mode", "affine")
+            if type(bits) is not int or bits not in (2, 3, 4, 5, 6, 8, 16):
+                raise APIError("Invalid quantization bits", "conversion_failed", 409)
+            if type(group) is not int or group not in (16, 32, 64, 128):
+                raise APIError("Invalid quantization group size", "conversion_failed", 409)
+            if mode not in ("affine", "mxfp4", "nvfp4", "mxfp8"):
+                raise APIError("Invalid quantization mode", "conversion_failed", 409)
+            if (mode == "mxfp4" and (bits, group) != (4, 32)
+                    or mode == "nvfp4" and (bits, group) != (4, 16)
+                    or mode == "mxfp8" and (bits, group) != (8, 32)
+                    or mode == "affine" and (bits == 16 or group == 16)):
+                raise APIError("Unsupported quantization combination", "conversion_failed", 409)
+            return {"bits": bits, "group_size": group, "mode": mode}
+
+        normalized = []
+        for section in sections:
+            global_values = values(section)
+            overrides = {}
+            for layer, value in section.items():
+                if layer in ("bits", "group_size", "mode"):
+                    continue
+                if not isinstance(layer, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*(?:\.[A-Za-z_0-9]+)+", layer):
+                    raise APIError("Invalid per-layer quantization name", "conversion_failed", 409)
+                if not isinstance(value, dict) or set(value) - {"bits", "group_size", "mode"}:
+                    raise APIError("Invalid per-layer quantization declaration", "conversion_failed", 409)
+                overrides[layer] = values(value)
+            normalized.append(global_values | {"overrides": overrides,
+                "mixed": any(value != global_values for value in overrides.values())})
+        if any(value != normalized[0] for value in normalized[1:]):
+            raise APIError("Conflicting quantization declarations", "conversion_failed", 409)
+        return normalized[0]
+
+    def _conversion_plan(self, source):
+        config, weights = self._validate_weights(source)
+        effective = self._effective_quantization(config)
+        # ResourceGate currently budgets the canonical top-level MLX declaration.
+        # Legacy-only declarations cannot silently enter with its float-source budget.
+        if effective is not None and "quantization" not in config:
+            raise APIError("Canonical MLX quantization metadata is required for the memory budget", "resource_blocked", 409)
+        minimum = min([effective["bits"], *(value["bits"] for value in effective["overrides"].values())]) if effective else 16
+        weight_bytes = sum(path.stat().st_size for path in weights)
+        # Request float16 but reserve float32 expansion: a model's cast predicate
+        # can protect individual layers. The final output is bounded as float too,
+        # because quantization may skip layers whose shape is not group-aligned.
+        float_bytes = (weight_bytes * 32 + minimum - 1) // minimum
+        metadata_bytes = 0
+        for path in source.rglob("*"):
+            if path.is_symlink():
+                raise APIError("Conversion source contains a symbolic link", "unsafe_model_source", 409)
+            if path.is_file() and path not in weights:
+                metadata_bytes += path.stat().st_size
+        per_output = float_bytes + metadata_bytes
+        return {"dequantize": effective is not None, "intermediate_bytes": per_output if effective else 0,
+            "output_bytes": per_output, "reserve_bytes": 8 * 1024**3}
+
+    def _check_conversion_disk(self, plan, intermediate_exists=False):
+        required = plan["output_bytes"] + plan["reserve_bytes"]
+        if not intermediate_exists:
+            required += plan["intermediate_bytes"]
+        try:
+            free = shutil.disk_usage(self.converted_root).free
+        except OSError:
+            raise APIError("Available conversion disk space could not be measured", "resource_blocked", 409)
+        if type(free) is not int or free < required:
+            raise APIError(f"Insufficient conversion disk space: need {required} bytes; available {free}", "resource_blocked", 409)
+
     def run_quantize(self, job):
         params = job.params
         source = Path(params["source"])
@@ -476,7 +561,9 @@ class Tools:
             raise APIError("Quantization source changed", "source_changed", 409)
         options = {"bits": params["bits"], "group_size": params["group_size"]}
         stage = self.converted_root / (".staging-" + job.id)
-        if stage.exists() or output.exists():
+        intermediate_root = self.converted_root / (".intermediate-" + job.id)
+        intermediate = intermediate_root / "float"
+        if stage.exists() or intermediate_root.exists() or output.exists():
             raise APIError("The converted output already exists", "output_exists", 409)
         lease = self._quantize_lease(str(source), options)
         with lease:
@@ -484,6 +571,10 @@ class Tools:
             # independently changing processes after the lease is held.
             self._ensure_engine_stopped()
             self._ensure_no_external_service()
+            if self.models.fingerprint(source) != params["source_fingerprint"]:
+                raise APIError("Quantization source changed", "source_changed", 409)
+            plan = self._conversion_plan(source)
+            self._check_conversion_disk(plan)
             python = self._active_python()
             env = clean_env()
             home = self.store.root / "tools-runtime-home"
@@ -495,8 +586,26 @@ class Tools:
                 HF_HUB_OFFLINE="1",
                 TRANSFORMERS_OFFLINE="1",
             )
-            job.progress(phase="quantize", source=str(source), output=str(output))
+            requested = {"bits": params["bits"], "group_size": params["group_size"], "mode": params["mode"]}
+            intermediate_owned = False
             try:
+                conversion_source = source
+                if plan["dequantize"]:
+                    intermediate_root.mkdir(mode=0o700)
+                    intermediate_owned = True
+                    job.checkpoint()
+                    job.progress(phase="dequantize", source=str(source), output=str(output), disk_budget=plan)
+                    self._run([python, "-I", "-B", "-m", "mlx_lm", "convert",
+                        "--hf-path", source, "--mlx-path", intermediate, "--dequantize", "--dtype", "float16"],
+                        job, env, lease=lease)
+                    job.checkpoint()
+                    float_config, _ = self._validate_weights(intermediate)
+                    if self._effective_quantization(float_config) is not None:
+                        raise APIError("Dequantization left quantization metadata", "conversion_failed", 409)
+                    conversion_source = intermediate
+                    self._check_conversion_disk(plan, intermediate_exists=True)
+                job.checkpoint()
+                job.progress(phase="quantize", source=str(source), output=str(output), disk_budget=plan)
                 self._run(
                     [
                         python,
@@ -506,10 +615,12 @@ class Tools:
                         "mlx_lm",
                         "convert",
                         "--hf-path",
-                        source,
+                        conversion_source,
                         "--mlx-path",
                         stage,
                         "--quantize",
+                        "--dtype",
+                        "float16",
                         "--q-bits",
                         params["bits"],
                         "--q-group-size",
@@ -522,24 +633,29 @@ class Tools:
                     lease=lease,
                 )
                 job.checkpoint()
-                self._validate_weights(stage)
+                output_config, _ = self._validate_weights(stage)
+                effective = self._effective_quantization(output_config, required=True)
+                actual = {key: effective[key] for key in ("bits", "group_size", "mode")}
+                if actual != requested:
+                    raise APIError("Output quantization does not match the requested bits/group/mode", "conversion_failed", 409)
                 cli_info = self.engine.inspect_model(self.engine.executable(), str(stage))
                 manifest = {
                     "owner": "tfmanager",
                     "kind": "converted-model",
                     "source": str(source),
-                    "source_fingerprint": self.models.fingerprint(source),
+                    "source_fingerprint": params["source_fingerprint"],
                     "created_at": time.time(),
-                    "quantization": {
-                        "bits": params["bits"],
-                        "group_size": params["group_size"],
-                        "mode": "affine",
-                    },
+                    "quantization": actual,
+                    "requested_quantization": requested,
+                    "effective_quantization": effective,
                     "cli_info": cli_info,
                 }
                 manifest_path = stage / ".tfmanager-manifest.json"
                 manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True))
                 os.chmod(manifest_path, 0o600)
+                job.checkpoint()
+                if self.models.fingerprint(source) != params["source_fingerprint"]:
+                    raise APIError("Quantization source changed during conversion", "source_changed", 409)
                 if output.exists():
                     raise APIError("The converted output already exists", "output_exists", 409)
                 stage.rename(output)
@@ -547,11 +663,15 @@ class Tools:
                 if stage.exists():
                     shutil.rmtree(stage)
                 raise
+            finally:
+                if intermediate_owned:
+                    shutil.rmtree(intermediate_root)
         settings = self.store.settings()
         converted = str(self.converted_root)
         if converted not in settings["model_dirs"]:
             self.store.settings_update({"model_dirs": settings["model_dirs"] + [converted]})
-        return {"path": str(output), "quantization": manifest["quantization"], "cli_info": cli_info}
+        return {"path": str(output), "quantization": actual, "requested_quantization": requested,
+            "effective_quantization": effective, "cli_info": cli_info}
 
     @staticmethod
     def _allowed_upload_file(relative):
