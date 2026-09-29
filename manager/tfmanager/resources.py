@@ -83,7 +83,7 @@ def parse_command(command,executable=None,argv=None):
             if key not in allowed:complete=False;continue # Unknown arguments (including secrets) are never retained.
         if key in flags:complete=False
         flags[key]=value
-    return {'kind':kind,'model_path':str(Path(model).resolve()) if model and Path(model).is_absolute() else None,'flags':flags,'identity_complete':complete and bool(model and Path(model).is_absolute()),'command_signature':hashlib.sha256(command.encode()).hexdigest()}
+    return {'kind':kind,'model_path':str(Path(model).resolve()) if model and Path(model).is_absolute() else None,'flags':flags,'argv_verified':argv is not None and reliable,'identity_complete':complete and bool(model and Path(model).is_absolute()),'command_signature':hashlib.sha256(json.dumps(argv,ensure_ascii=False,separators=(',',':')).encode()).hexdigest()}
 
 def parse_procargs(raw):
     # KERN_PROCARGS2 layout: argc, executable NUL, padding NUL, argc argv strings.
@@ -322,6 +322,7 @@ class ResourceGate:
             if not report['allowed']:raise ResourceBlocked(report)
             lease.report=report;return lease
         except Exception:lease.release();raise
+    def acquire_switch(self):return self._lock(self.lock_dir/'heavy-work.lock',{'kind':'external_switch'})
     def acquire_start(self,path,settings):return self._acquire(path,settings,'inference')
     def acquire_quantize(self,source_path,options=None):return self._acquire(source_path,options or {},'quantize')
     def verify_attachment(self,service):

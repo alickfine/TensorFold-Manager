@@ -97,18 +97,24 @@ class Engine:
     def runtime_config(settings):
         keys=set(ADVANCED_OPTIONS)|{'context','max_tokens','temperature','top_p','top_k','parallel','thinking','prompt_cache_gib','mlx_cache_gib','engine_port','engine_python'}
         return {key:(settings or {}).get(key) for key in keys}
-    def start(self,model,allow_attach=True):
+    def prepare_start(self,model):
+        row=self.models.resolve(model);settings=self.store.settings();effective=settings|self.store.get('model_config',row['id'],{})
+        if effective.get('drafter') not in (None,'auto','none'):
+            draft=effective['drafter'];path=Path(draft).expanduser()
+            candidate=self.models.describe(path) if path.is_absolute() else next((r for r in self.models.scan() if r['repo']==draft),None)
+            if not candidate or not candidate['installed']:raise APIError('Drafter must be installed in configured roots','drafter_missing',409)
+            effective=effective|{'drafter':candidate['path']}
+        return row,settings,effective
+    def start(self,model,allow_attach=True,_lease=None):
         with self.lifecycle:
-            row=self.models.resolve(model);settings=self.store.settings();effective=settings|self.store.get('model_config',row['id'],{})
-            if effective.get('drafter') not in (None,'auto','none'):
-                draft=effective['drafter'];path=Path(draft).expanduser()
-                candidate=self.models.describe(path) if path.is_absolute() else next((r for r in self.models.scan() if r['repo']==draft),None)
-                if not candidate or not candidate['installed']:raise APIError('Drafter must be installed in configured roots','drafter_missing',409)
-                effective=effective|{'drafter':candidate['path']}
+            row,settings,effective=self.prepare_start(model)
             if self.attachment or (self.proc and self.proc.poll() is None):
                 if self.active_model_id==row['id'] and self.runtime_config(self.running_parameters)==self.runtime_config(effective):return self.status()
                 raise APIError('Stop the current engine and wait for release before changing model or configuration','engine_busy',409)
-            lease=self.resources.acquire_start(row['path'],effective)
+            lease=_lease or self.resources.acquire_start(row['path'],effective)
+            if _lease:
+                lease.report=self.resources.preflight_start(row['path'],effective)
+                if not lease.report['allowed']:raise ResourceBlocked(lease.report)
             try:
                 if lease.attachment:
                     if not allow_attach:raise ResourceBlocked(lease.report,'Upgrade validation requires an owned candidate; external service is active')

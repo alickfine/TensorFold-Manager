@@ -28,6 +28,7 @@ from .resources import ResourceGate
 from .accuracy import Accuracy
 from .credentials import Credentials
 from .tools import Tools
+from .services import Services
 
 class Server(ThreadingHTTPServer):
     daemon_threads=True;allow_reuse_address=True
@@ -43,10 +44,11 @@ class Application:
             self.models=Models(self.store);self.engine=Engine(self.store,self.models,command=engine_command,resources=self.resources);self.jobs=Jobs(self.store)
             self.credentials=Credentials();self.tools=Tools(self.store,self.jobs,self.engine,self.models,self.credentials,resources=self.resources)
             self.accuracy=Accuracy(self.store,self.jobs,self.engine)
+            self.services=Services(self.store,self.jobs,self.engine,self.resources)
         except Exception:
             if hasattr(self,'store'):self.store.close()
             self.state_lease.release();raise
-        self.downloads=Downloads(self.store,self.jobs);self.updates=Updates(self.store,self.jobs,self.engine)
+        self.downloads=Downloads(self.store,self.jobs,self.credentials);self.updates=Updates(self.store,self.jobs,self.engine)
         self.jobs.register('benchmark',self.benchmark)
         self.http=None;self.gateway=None;self.gateway_error=None;self.closed=threading.Event();self.shutdown_lock=threading.Lock();self.update_thread=None;self.update_stop=threading.Event()
     def start(self,port=0,check_updates=True):
@@ -172,6 +174,7 @@ class Application:
                 result=None
                 if method=='GET':
                     if path=='/api/state':result=app.state()
+                    elif path=='/api/services':result=app.services.list()
                     elif path=='/api/resources':result=app.resources.snapshot(fresh=True)
                     elif path=='/api/accuracy':result=app.accuracy.status()
                     elif path=='/api/tools':result=app.tools.status()
@@ -199,6 +202,7 @@ class Application:
                     elif path=='/api/models/config':result={'config':app.models.configure(data)}
                 elif method=='POST':
                     if path=='/api/engine/start':result=app.engine.start(data.get('model') or app.store.settings()['selected_model'])
+                    elif path=='/api/services/switch':result=app.services.switch(data)
                     elif path=='/api/engine/detach':result=app.engine.detach()
                     elif path=='/api/accuracy/cases':result=app.accuracy.add(data)
                     elif path=='/api/accuracy/run':result=app.accuracy.start(data)
