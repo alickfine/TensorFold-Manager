@@ -19,6 +19,49 @@ class ServerTests(unittest.TestCase):
   h={'Authorization':'Bearer '+token} if token else {}
   if body is not None:h['Content-Type']='application/json'
   h.update(headers or {});c.request(method,path,json.dumps(body) if body is not None else None,h);r=c.getresponse();data=r.read();status=r.status;c.close();return status,data
+ def test_model_discovery_job_registers_directory_and_is_readable_from_state(self):
+  from unittest.mock import patch
+  disk=Path(self.tmp.name)/'disk';model=disk/'nested/model';model.mkdir(parents=True)
+  (model/'config.json').write_text(json.dumps({'model_type':'qwen3_5','_name_or_path':'Vontra/Qwen3.8-27B-MLX-4bit'}));(model/'model.safetensors').write_bytes(b'fixture')
+  from tfmanager.discovery import ModelDiscovery
+  with patch.object(self.app,'discovery',ModelDiscovery(self.app.models,roots=[disk]),create=True):
+   status,data=self.request('/api/models/discover','POST',{})
+   self.assertEqual(status,200);row=json.loads(data)
+   for _ in range(100):
+    current=self.app.jobs.get(row['id'])
+    if current['status'] in ('completed','failed'):break
+    time.sleep(.01)
+  self.assertEqual(current['status'],'completed',current)
+  self.assertIn(str(model.resolve()),self.app.store.settings()['model_dirs'])
+ def test_probe_scheduler_does_not_reuse_finished_runner_with_stale_persisted_status(self):
+  from unittest.mock import patch
+  for _ in range(100):
+   if self.app.probe_active is None:break
+   time.sleep(.01)
+  with patch.object(self.app.jobs,'_start',return_value=None):
+   predecessor=self.app.jobs.create('model_probe',{'engine_identity':{'version':'old'}})
+  predecessor['status']='running';self.app.store.put('job',predecessor,predecessor['id'])
+  successor=self.app.schedule_model_probe()
+  self.assertNotEqual(successor['id'],predecessor['id'])
+ def test_probe_refresh_during_old_identity_eventually_checks_new_identity(self):
+  from unittest.mock import patch
+  entered=threading.Event();release=threading.Event();identities=[]
+  for _ in range(100):
+   if all(r['status'] not in ('running','queued') for r in self.app.jobs.list()):break
+   time.sleep(.01)
+  model=self.app.store.root/'models/probe';model.mkdir(parents=True)
+  (model/'config.json').write_text(json.dumps({'model_type':'qwen3_5','_name_or_path':'Vontra/Qwen3.8-27B-MLX-4bit'}));(model/'model.safetensors').write_bytes(b'fixture')
+  current={'version':'old'}
+  def validate(path):
+   identities.append(current['version'])
+   if len(identities)==1:entered.set();release.wait(2)
+  with patch.object(self.app.engine,'validation_identity',side_effect=lambda:current.copy()),patch.object(self.app.engine,'validate_model',side_effect=validate):
+   self.app.refresh_models();self.assertTrue(entered.wait(2))
+   current['version']='new';self.app.refresh_models();release.set()
+   for _ in range(200):
+    if 'new' in identities and all(r['status'] not in ('running','queued') for r in self.app.jobs.list()):break
+    time.sleep(.01)
+   self.assertIn('new',identities)
  def test_auth_host_origin_and_state_instance(self):
   self.assertEqual(self.request('/api/state',token=None)[0],401)
   self.assertEqual(self.request('/api/state',headers={'Host':'evil.test'})[0],403)

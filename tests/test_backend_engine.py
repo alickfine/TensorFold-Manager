@@ -37,7 +37,14 @@ class EngineTests(unittest.TestCase):
    self.assertIsNone(self.engine.status()['pid'])
  def test_failed_process_is_not_ready(self):
   failed=self.model.parent/'fail-model'; self.model.rename(failed)
-  self.engine.start(str(failed)); state=wait_state(self.engine,'failed'); self.assertIn('exited',state['error'])
+  self.engine.start(str(failed)); state=wait_state(self.engine,'failed')
+  self.assertFalse(state['health'])
+  # Binding failure can arrive before the supervisor's final exit event.
+  for _ in range(100):
+   state=self.engine.status()
+   if state.get('child_exit_confirmed'):break
+   time.sleep(.02)
+  self.assertTrue(state['child_exit_confirmed']);self.assertIn('exited',state['error'])
  def test_unknown_model_and_command_injection_rejected(self):
   for model in ('--help','owner/model;echo bad','/tmp/not-in-model-roots'):
    with self.assertRaises(APIError): self.engine.start(model)
@@ -51,6 +58,12 @@ class EngineProbeTests(unittest.TestCase):
   (self.model/'reject-info').write_text('incompatible quantization')
   with self.assertRaisesRegex(APIError,'incompatible quantization'):self.engine.start(str(self.model))
   self.assertIsNone(self.engine.status()['pid'])
+
+ def test_info_success_without_mlx_reader_is_rejected(self):
+  for readers in ('not yet: no engine reads these weights','NVIDIA GPUs (CUDA)'):
+   with self.subTest(readers=readers):
+    (self.model/'fixture-readers').write_text(readers)
+    with self.assertRaisesRegex(APIError,'MLX'):self.engine.inspect_model(self.engine.executable(),str(self.model))
 
 class ModelConfigurationTests(unittest.TestCase):
  setUp=EngineTests.setUp

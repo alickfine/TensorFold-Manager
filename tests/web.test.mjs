@@ -199,8 +199,8 @@ test('chooseLaunchModel ignores unsupported scanned models and prefers a verifie
     engine: { model:null },
     models: [
       { id:'/Models/DeepSeek-V4-AWQ', name:'DeepSeek-V4-AWQ', installed:true, supported:false },
-      { id:'/Models/Qwen3.8-27B', name:'Qwen3.8-27B', installed:true, supported:true },
-      { id:'/Models/Qwen-Missing', name:'Qwen Missing', installed:false, supported:true },
+      { id:'/Models/Qwen3.8-27B', name:'Qwen3.8-27B', installed:true, supported:true, startable:true },
+      { id:'/Models/Qwen-Missing', name:'Qwen Missing', installed:false, supported:true, startable:true },
     ],
   };
   const choice = chooseLaunchModel(snapshot);
@@ -215,7 +215,7 @@ test('getLaunchGate blocks engine controls until a runtime is installed', () => 
   );
   assert.deepEqual(
     getLaunchGate({ update:{ active:{ version:'v0.3.6' } }, engine:{ state:'stopped' } }, ''),
-    { allowed:false, reason:'请先安装并选择受支持模型' },
+    { allowed:false, reason:'请先选择已通过当前引擎检测的模型' },
   );
 });
 

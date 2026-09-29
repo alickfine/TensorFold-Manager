@@ -1,9 +1,13 @@
-import { h, html } from './shared.js';
+import { h, html, formatNumber } from './shared.js';
 import { t } from '../i18n.js';
 
 function average(rows, field) {
   const values = rows.map((row) => row[field]).filter((value) => typeof value === 'number' && Number.isFinite(value));
   return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
+}
+
+function metricWithUnit(value, unit) {
+  return value == null ? null : `${formatNumber(value)}${unit}`;
 }
 
 export function renderStats(state) {
@@ -21,6 +25,6 @@ export function renderStats(state) {
     + `<div class="tf-metrics">${h.metric('请求数', requestCount)}${h.metric('成功 / 失败 / 取消', `${successes} / ${failures} / ${cancelled}`, '后端聚合口径')}${h.metric('输入 tokens', total.input_tokens ?? data.input_tokens)}${h.metric('输出 tokens', total.output_tokens ?? data.output_tokens)}${h.metric('缓存 tokens', total.cache_tokens, 'usage.prompt_tokens_details.cached_tokens')}</div>`
     + `<div class="tf-metrics">${h.metric('平均总耗时', data.total?.avg_elapsed ?? average(rows, 'elapsed'), '秒')}${h.metric('平均 TTFT', data.total?.avg_ttft ?? average(rows, 'ttft'), '秒')}${h.metric('平均 Prefill', data.total?.avg_prefill_tps ?? average(rows, 'prefill_tps'), 'tok/s')}${h.metric('平均 Decode', data.total?.avg_decode_tps ?? average(rows, 'decode_tps'), 'tok/s')}</div>`
     + h.card('指标样本', h.kv('样本数', compact(total.metric_samples)))
-    + h.card('各模型累计', h.table(['模型', '请求', '错误', '取消', '输入 tokens', '输出 tokens', '缓存 tokens', '平均耗时'], (data.models ?? []).map((model) => [model.model, model.requests, model.errors, model.cancelled, model.input_tokens, model.output_tokens, model.cache_tokens, model.avg_elapsed == null ? null : `${model.avg_elapsed}s`])))
-    + h.card('请求记录', h.table(['时间', '模型', '状态', '总耗时', 'TTFT', 'Prefill', 'Decode', '输出', '缓存', '指标来源', '请求参数', '引擎参数', '错误'], rows.map((item) => [item.at, item.model, item.status, item.elapsed == null ? null : `${item.elapsed}s`, item.ttft == null ? null : `${item.ttft}s`, item.prefill_tps == null ? null : `${item.prefill_tps} tok/s`, item.decode_tps == null ? null : `${item.decode_tps} tok/s`, item.output_tokens, item.cache_tokens, compact({ ttft:item.ttft_source, prefill:item.prefill_tps_source }), compact(item.parameters), compact(item.engine_parameters), item.error])));
+    + h.card('各模型累计', h.table(['模型', '请求', '错误', '取消', '输入 tokens', '输出 tokens', '缓存 tokens', '平均耗时'], (data.models ?? []).map((model) => [model.model, model.requests, model.errors, model.cancelled, model.input_tokens, model.output_tokens, model.cache_tokens, metricWithUnit(model.avg_elapsed, 's')])))
+    + h.card('请求记录', h.table(['时间', '模型', '状态', '总耗时', 'TTFT', 'Prefill', 'Decode', '输出', '缓存', '指标来源', '请求参数', '引擎参数', '错误'], rows.map((item) => [item.at, item.model, item.status, metricWithUnit(item.elapsed, 's'), metricWithUnit(item.ttft, 's'), metricWithUnit(item.prefill_tps, ' tok/s'), metricWithUnit(item.decode_tps, ' tok/s'), item.output_tokens, item.cache_tokens, compact({ ttft:item.ttft_source, prefill:item.prefill_tps_source }), compact(item.parameters), compact(item.engine_parameters), item.error])));
 }

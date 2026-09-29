@@ -19,7 +19,7 @@ class Engine:
     def __init__(self,store,models,command=None,startup_timeout=600,stop_timeout=120,resources=None):
         self.resources=resources or ResourceGate(store);self.lease=None;self.attachment=None
         self.native=NativeInstances();self.peer_token=None;self.child_liveness=None;self.child_exit_confirmed=True
-        self.store=store; self.models=models; self.command=command; self.startup_timeout=startup_timeout; self.stop_timeout=stop_timeout
+        self.store=store; self.models=models; self.command=command; self.models.engine_identity=self.validation_identity; self.startup_timeout=startup_timeout; self.stop_timeout=stop_timeout
         self.lifecycle=threading.RLock(); self.lock=threading.RLock(); self.condition=threading.Condition(self.lock)
         self.active_model_id=None;self.running_model_config=None;self.running_parameters=None
         self.active_requests=0; self.draining=False; self.proc=None; self.reader=None; self.running_settings=None
@@ -53,7 +53,11 @@ class Engine:
             safe_memory={k:v for k,v in memory.items() if k in ('active','cache','peak','budget','mlx_budget','footprint') and type(v) is int and v>=0}
             detail={k:payload.get(k) for k in ('status','model','warming','max_batch_size')}
             detail['memory']=safe_memory
-            self.data.update(health_detail=detail,last_health_at=time.time(),health_error=None)
+            self.data.update(health=True,health_detail=detail,last_health_at=time.time(),health_error=None,error=None)
+        except (TimeoutError,subprocess.TimeoutExpired):
+            # A slow endpoint is not proof that the owned process has failed.
+            # Fail requests closed, but keep sampling so a healthy endpoint can recover.
+            self.data.update(health=False,health_detail=None,health_error='Health sampling timed out; retrying',error='Health sampling timed out; retrying')
         except (OSError,ValueError,APIError,http.client.HTTPException,subprocess.TimeoutExpired):
             self.data.update(state='failed',health=False,health_detail=None,health_error='Current health model identity or endpoint could not be verified',error='Current health model identity or endpoint could not be verified')
         finally:connection.close()
@@ -84,17 +88,30 @@ class Engine:
         try:info=subprocess.run(command+['info',path],env=env,capture_output=True,text=True,timeout=30)
         except (OSError,subprocess.TimeoutExpired) as exc:raise APIError('Model preflight failed: '+str(exc),'model_preflight_failed',409)
         if info.returncode:raise APIError('Model preflight failed: '+(info.stderr or info.stdout)[-4000:],'unsupported_model',409)
+        if command[-2:]==['-m','tensorfold']:
+            helper="from pathlib import Path; import sys; from tensorfold import families; p=Path(sys.argv[1]); f=families.detect(p); c=families.read_config(p); b=families.backends_of(f); (('mlx' in b) or (_ for _ in ()).throw(ValueError('No MLX reader for this checkpoint'))); families.require_readable(f,c,'mlx'); check=getattr(f.package,'check',None); check(p) if check else None; print('MLX_READABLE')"
+            try:checked=subprocess.run(command[:-2]+['-c',helper,path],env=env,capture_output=True,text=True,timeout=30)
+            except (OSError,subprocess.TimeoutExpired) as exc:raise APIError('MLX compatibility probe failed: '+str(exc),'model_preflight_failed',409)
+            if checked.returncode or 'MLX_READABLE' not in checked.stdout:raise APIError('MLX compatibility probe failed: '+(checked.stderr or checked.stdout)[-4000:],'unsupported_model',409)
+        elif not re.search(r'^runs on\s+.*Apple Silicon \(MLX\)',info.stdout,re.M):
+            raise APIError('CLI info did not verify a readable MLX checkpoint','unsupported_model',409)
         return info.stdout.strip()[-8000:]
+    def validation_identity(self):
+        if self.command:return {'command':self.command}
+        active=self.store.get('engine_active')
+        return {key:active.get(key) for key in ('version','commit','python')} if active else None
     def validate_model(self,value):
         if not isinstance(value,str) or not Path(value).expanduser().is_absolute():raise APIError('An absolute local model path is required')
         row=self.models.describe(Path(value).expanduser())
         if not row or not row['installed']:raise APIError('Model weights are incomplete or missing','model_missing',409)
+        identity=self.validation_identity();fingerprint=self.models.fingerprint(row['path'])
         command=self.executable();probe=self.probe(command);info=self.inspect_model(command,row['path'])
-        validation={'scope':'cli_compatibility_only','verified_at':time.time(),'engine_version':probe['version'],'cli_info':info,'fingerprint':self.models.fingerprint(row['path']),'loaded':False,'note':'CLI compatibility was checked. Weight provenance and successful model loading have not been verified.'}
+        if identity!=self.validation_identity() or fingerprint!=self.models.fingerprint(row['path']):raise APIError('Engine or model changed during detection; retry','model_changed',409)
+        validation={'scope':'cli_compatibility_only','backend':'mlx','supported':True,'engine_identity':identity,'verified_at':time.time(),'engine_version':probe['version'],'cli_info':info,'fingerprint':self.models.fingerprint(row['path']),'loaded':False,'note':'CLI compatibility was checked. Weight provenance and successful model loading have not been verified.'}
         self.store.put('model_validation',validation,row['id']);self.models.scan()
         return {'model':self.models.describe(Path(row['path'])),'validation':validation}
-    def build_command(self,model,settings):
-        command=self.executable(); probe=self.probe(command); flags=set(probe['flags'])
+    def build_command(self,model,settings,command=None):
+        command=command or self.executable(); probe=self.probe(command); flags=set(probe['flags'])
         self.inspect_model(command,model['path'])
         argv=command+['serve',model['path'],'--host','127.0.0.1','--port',str(settings['engine_port']),'--snapshot-dir',str(self.store.snapshots)]
         for key in ('context','max_tokens','temperature','top_p','top_k','parallel','prompt_cache_gib','mlx_cache_gib'):
@@ -135,9 +152,9 @@ class Engine:
             if not candidate or not candidate['installed']:raise APIError('Drafter must be installed in configured roots','drafter_missing',409)
             effective=effective|{'drafter':candidate['path']}
         return row,settings,effective
-    def start(self,model,allow_attach=True,_lease=None):
+    def start(self,model,allow_attach=True,_lease=None,_prepared=None,_model_config=None):
         with self.lifecycle:
-            row,settings,effective=self.prepare_start(model)
+            row,settings,effective=_prepared or self.prepare_start(model)
             if self.proc and self.proc.poll() is not None and self._child_alive():raise APIError('Prior engine child exit is not confirmed','child_exit_unconfirmed',409)
             if self.attachment or (self.proc and self.proc.poll() is None):
                 if self.active_model_id==row['id'] and self.runtime_config(self.running_parameters)==self.runtime_config(effective):return self.status()
@@ -173,7 +190,7 @@ class Engine:
                     self.proc.stdin.write(json.dumps({'argv':argv,'env':env,'stop_timeout':self.stop_timeout,'lease_fd':lease.fd,'liveness_fd':live_write})+'\n');self.proc.stdin.flush()
                 finally:os.close(live_write)
                 with self.lock:
-                    self.running_parameters=effective.copy();self.running_settings=settings;self.active_model_id=row['id'];self.running_model_config=self.store.get('model_config',row['id'],{});self.draining=False
+                    self.running_parameters=effective.copy();self.running_settings=settings;self.active_model_id=row['id'];self.running_model_config=_model_config if _model_config is not None else self.store.get('model_config',row['id'],{});self.draining=False
                     self.data.update(cache_ownership='manager',external_snapshot_dir=None,child_exit_confirmed=False,control_owner='manager',state='starting',pid=None,model=row['repo'] or row['id'],version=probe['version'],served_name=effective.get('name') or row['repo'] or row['name'],health=False,error=None,started_at=time.time(),resource_admission=lease.report)
                 self.reader=threading.Thread(target=self._events,args=(self.proc,lease),daemon=True);self.reader.start()
                 threading.Thread(target=self._wait_ready,args=(self.proc,settings['engine_port']),daemon=True).start()
@@ -269,7 +286,8 @@ class Engine:
     @contextlib.contextmanager
     def request(self):
         with self.condition:
-            if self.draining or self.status()['state'] not in ('ready','attached'): raise APIError('Engine is not ready','engine_not_ready',503)
+            status=self.status()
+            if self.draining or status['state'] not in ('ready','attached') or status.get('health') is not True: raise APIError('Engine is not ready','engine_not_ready',503)
             port=int(self.attachment['flags']['port']) if self.attachment else self.running_settings['engine_port']
             connection=self.connection(port);self.active_requests+=1
         try:yield connection
@@ -326,9 +344,9 @@ class Engine:
     @staticmethod
     def transition_child_lease(guard):
         return Lease(guard.path,os.dup(guard.fd),guard.report.copy())
-    def start_transition(self,model,guard):
+    def start_transition(self,model,guard,prepared=None,model_config=None):
         lease=self.transition_child_lease(guard)
-        try:return self.start(model,allow_attach=False,_lease=lease)
+        try:return self.start(model,allow_attach=False,_lease=lease,_prepared=prepared,_model_config=model_config)
         finally:
             if self.lease is not lease:lease.release()
     def restart(self,model=None):

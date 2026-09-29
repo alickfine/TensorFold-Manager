@@ -22,6 +22,14 @@ class BundleSafetyTests(unittest.TestCase):
         spec.loader.exec_module(module)
         return module
 
+    def test_sealed_runtime_namespace_preserves_legacy_prefix_and_is_deterministic(self):
+        import hashlib
+        build=self.builder();manifest=b'{}'
+        new=build.runtime_fingerprint(manifest,'-')
+        self.assertEqual(new,build.runtime_fingerprint(manifest,'-'))
+        self.assertNotEqual(new,hashlib.sha256(manifest+b'-').hexdigest())
+        self.assertNotEqual(new,build.runtime_fingerprint(b'{"changed":1}','-'))
+
     def test_release_version_rejects_paths_and_honors_tag(self):
         build = self.builder()
         self.assertEqual(build.get_version('v0.2.0-beta.3'), '0.2.0-beta.3')

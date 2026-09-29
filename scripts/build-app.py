@@ -17,7 +17,7 @@ import shutil
 import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
-VERSION = '0.1.0-alpha.2'
+VERSION = '0.1.0-alpha.3'
 ALLOWED = {'.py', '.js', '.mjs', '.css', '.html', '.json', '.toml', '.md'}
 
 
@@ -38,7 +38,7 @@ def validate_runtime(runtime: Path) -> Path:
             raise ValueError('Runtime contains an external symlink: ' + str(path.relative_to(runtime)))
     if not python.resolve().is_relative_to(runtime):
         raise ValueError('Runtime python resolves outside the bundled runtime')
-    result = subprocess.check_output([str(python), '-I', '-c', 'import sys; print(sys.version_info[:3])'], text=True).strip()
+    result = subprocess.check_output([str(python), '-I', '-B', '-c', 'import sys; print(sys.version_info[:3])'], text=True).strip()
     if result != '(3, 12, 9)':
         raise ValueError('Expected standalone Python 3.12.9')
     return runtime
@@ -100,6 +100,12 @@ def runtime_manifest(runtime: Path) -> dict:
         elif path.is_file():
             result[name] = {'sha256': sha(path), 'mode': path.stat().st_mode & 0o777}
     return result
+
+
+def runtime_fingerprint(manifest: bytes, signing: str) -> str:
+    # Migrate from prefixes that earlier developer/tool invocations may have mutated.
+    # Never ignore unmanifested bytecode or remove an existing runtime in place.
+    return hashlib.sha256(b'sealed-runtime-v2\0' + manifest + signing.encode()).hexdigest()
 
 
 def run(*args: str) -> None:
@@ -170,7 +176,7 @@ def build(runtime: Path, uv: Path, output: Path, dmg: bool = True, version: str 
     manifest = runtime_manifest(python_framework / 'Resources/runtime')
     manifest_bytes = json.dumps(manifest, sort_keys=True, separators=(',', ':')).encode()
     (resources / 'runtime-manifest.json').write_bytes(manifest_bytes)
-    provenance['runtime_fingerprint'] = hashlib.sha256(manifest_bytes + signing.encode()).hexdigest()
+    provenance['runtime_fingerprint'] = runtime_fingerprint(manifest_bytes, signing)
     (resources / 'provenance.json').write_text(json.dumps(provenance, indent=2) + '\n')
     signing_options = ['--options', 'runtime', '--timestamp'] if signing != '-' else []
     run('/usr/bin/codesign', '--force', '--sign', signing, *signing_options, str(python_framework))

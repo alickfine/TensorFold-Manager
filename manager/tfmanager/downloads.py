@@ -42,15 +42,22 @@ def safe_target(root,name):
 
 class Downloads:
     SOURCES={'huggingface':'https://huggingface.co','hf-mirror':'https://hf-mirror.com','modelscope':'https://modelscope.cn'}
-    def __init__(self,store,jobs,credentials=None):
-        self.credentials=credentials
+    def __init__(self,store,jobs,credentials=None,on_complete=None):
+        self.credentials=credentials;self.on_complete=on_complete
         self.store=store;self.jobs=jobs;self.root=store.root/'models';self.root.mkdir(exist_ok=True,mode=0o700);jobs.register('download',self.run)
     def catalog(self):
         from .models import CATALOG
-        return {'models':CATALOG,'sources':[{'id':id,'url':url,'third_party':id=='hf-mirror','credentials_supported':id!='hf-mirror'} for id,url in self.SOURCES.items()],'default_directory':str(self.root),'revision_policy':'Resolve once to immutable commit; verify each file identity before publish'}
+        return {'models':[row|{'download_sources':['huggingface','hf-mirror']} for row in CATALOG],'sources':[{'id':id,'url':url,'third_party':id=='hf-mirror','credentials_supported':id!='hf-mirror'} for id,url in self.SOURCES.items()],'default_directory':str(self.root),'revision_policy':'Resolve once to immutable commit; verify each file identity before publish'}
+    @staticmethod
+    def require_catalog(repo,source):
+        from .models import CATALOG
+        row=next((r for r in CATALOG if r['repo']==repo and r.get('supported')),None)
+        if row is None:raise APIError('Model is not in the supported download catalog','unsupported_model',409)
+        if source not in ('huggingface','hf-mirror'):raise APIError('This catalog checkpoint has no verified repository on the selected source','source_unavailable',409)
     def create(self,data):
         repo=repo_id(data.get('repo'));source=data.get('source','huggingface')
         if source not in self.SOURCES:raise APIError('Unknown download source')
+        self.require_catalog(repo,source)
         use_credentials=data.get('use_credentials',False)
         if not isinstance(use_credentials,bool):raise APIError('use_credentials must be a boolean')
         if use_credentials and source=='hf-mirror':raise APIError('Credentials cannot be sent to a third-party mirror','credential_origin_forbidden',409)
@@ -128,6 +135,7 @@ class Downloads:
             while chunk:=f.read(1048576):digest.update(chunk)
         if digest.hexdigest()!=(entry.get('sha256') or entry.get('git_sha1')):raise APIError('Downloaded content identity mismatch','integrity_error',409)
     def run(self,job):
+        self.require_catalog(job.params['repo'],job.params['source'])
         params=job.params;root=Path(params['directory']);stage=safe_target(root,'.tfmanager-partials/'+job.id);stage.mkdir(parents=True,exist_ok=True,mode=0o700);os.chmod(stage.parent,0o700)
         manifest_path=safe_target(stage,'manifest.json')
         if manifest_path.exists():manifest=json.loads(manifest_path.read_text())
@@ -164,4 +172,7 @@ class Downloads:
         (content/'.tfmanager-manifest.json').write_text(json.dumps(manifest));os.rename(content,destination)
         dirs=self.store.settings()['model_dirs']
         if str(root) not in dirs:self.store.settings_update({'model_dirs':dirs+[str(root)]})
+        if self.on_complete:
+            try:self.on_complete()
+            except Exception as error:self.store.log('warning','Download published; model refresh needs retry: '+str(error))
         return {'path':str(destination),'revision':manifest['revision'],'verified_files':len(manifest['files'])}

@@ -12,7 +12,7 @@ CATALOG=[{'repo':repo,'name':repo.split('/')[-1],'family':family,'supported':Tru
  ('Vontra/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-MLX-4bit','nemotron_h'),('mlx-community/gemma-4-26b-a4b-it-4bit','gemma4')]]
 
 class Models:
-    def __init__(self,store): self.store=store; self.rows=[]
+    def __init__(self,store): self.store=store; self.rows=[]; self.engine_identity=lambda:None
     def roots(self): return [Path(p).expanduser().resolve() for p in self.store.settings()['model_dirs']]
     def permitted(self,path): return any(path.is_relative_to(root) for root in self.roots())
     def describe(self,path):
@@ -45,9 +45,9 @@ class Models:
             else:
                 totals={int(m.group(2)) for m in shards};installed=installed and len(totals)==1 and {int(m.group(1)) for m in shards}==set(range(1,next(iter(totals))+1))
         validation=self.store.get('model_validation',str(path))
-        if validation and validation.get('fingerprint')!=self.fingerprint(path):validation=None
+        if validation and (validation.get('fingerprint')!=self.fingerprint(path) or validation.get('engine_identity')!=self.engine_identity() or validation.get('backend')!='mlx'):validation=None
         size=sum(f.stat().st_size for f in path.rglob('*') if f.is_file())
-        return {'id':str(path),'name':match['name'] if match else path.name,'repo':match['repo'] if match else repo,'path':str(path),'size_bytes':size,'family':config.get('model_type'),'installed':installed,'supported':bool(match or validation),'validation':validation,'config':self.store.get('model_config',str(path),{})}
+        return {'id':str(path),'name':match['name'] if match else path.name,'repo':match['repo'] if match else repo,'path':str(path),'size_bytes':size,'family':config.get('model_type'),'installed':installed,'supported':bool(match or (validation and validation.get('supported'))),'startable':bool(installed and validation and validation.get('supported') and validation.get('backend')=='mlx'),'unsupported_reason':validation.get('reason') if validation and not validation.get('supported') else (None if validation else 'Current engine MLX compatibility has not been checked'),'validation':validation,'config':self.store.get('model_config',str(path),{})}
     @staticmethod
     def fingerprint(path):
         path=Path(path);digest=hashlib.sha256((path/'config.json').read_bytes())
@@ -83,4 +83,6 @@ class Models:
         allowed={'context','max_tokens','temperature','top_p','top_k','parallel','thinking','prompt_cache_gib','mlx_cache_gib'} | set(ADVANCED_OPTIONS)
         if not isinstance(config,dict) or set(config)-allowed: raise APIError('Unsupported model configuration')
         self.store.validate_settings(config)
-        return self.store.put('model_config',config,model['id'])
+        result=self.store.put('model_config',config,model['id'])
+        self.rows=[row|{'config':config} if row['id']==model['id'] else row for row in self.rows]
+        return result

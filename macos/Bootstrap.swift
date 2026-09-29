@@ -98,6 +98,20 @@ struct NativeCopy {
 }
 
 struct RuntimeIntegrity {
+    static func sealDirectories(_ root: URL) throws {
+        let fm = FileManager.default
+        let walk = fm.enumerator(at: root, includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey])!
+        var directories = [root]
+        for case let path as URL in walk {
+            let values = try path.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+            if values.isDirectory == true && values.isSymbolicLink != true { directories.append(path) }
+        }
+        for path in directories.reversed() {
+            let attributes = try fm.attributesOfItem(atPath: path.path)
+            let mode = (attributes[.posixPermissions] as! NSNumber).intValue
+            try fm.setAttributes([.posixPermissions: mode & ~0o222], ofItemAtPath: path.path)
+        }
+    }
     static func verify(_ root: URL, manifest: Data) throws {
         let root = root.resolvingSymlinksInPath().standardizedFileURL
         guard let entries = try JSONSerialization.jsonObject(with: manifest) as? [String: [String: Any]] else {

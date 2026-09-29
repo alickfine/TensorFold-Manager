@@ -29,6 +29,7 @@ from .accuracy import Accuracy
 from .credentials import Credentials
 from .tools import Tools
 from .services import Services
+from .discovery import ModelDiscovery
 
 class Server(ThreadingHTTPServer):
     daemon_threads=True;allow_reuse_address=True
@@ -48,16 +49,63 @@ class Application:
         except Exception:
             if hasattr(self,'store'):self.store.close()
             self.state_lease.release();raise
-        self.downloads=Downloads(self.store,self.jobs,self.credentials);self.updates=Updates(self.store,self.jobs,self.engine)
+        self.downloads=Downloads(self.store,self.jobs,self.credentials,on_complete=self.refresh_models);self.updates=Updates(self.store,self.jobs,self.engine,on_change=self.refresh_models)
         self.jobs.register('benchmark',self.benchmark)
+        self.discovery=ModelDiscovery(self.models)
+        self.jobs.register('model_discovery',self.discover_models)
+        self.probe_pending=False;self.probe_active=None
+        self.jobs.register('model_probe',self.probe_models)
         self.http=None;self.gateway=None;self.gateway_error=None;self.closed=threading.Event();self.shutdown_lock=threading.Lock();self.update_thread=None;self.update_stop=threading.Event()
     def start(self,port=0,check_updates=True):
         self.models.scan();self.http=Server(('127.0.0.1',port),self.handler(False));threading.Thread(target=self.http.serve_forever,daemon=True).start()
         try:
             self.gateway=Server(('127.0.0.1',self.store.settings()['gateway_port']),self.handler(True));threading.Thread(target=self.gateway.serve_forever,daemon=True).start()
         except OSError as exc:self.gateway_error=f'Gateway port conflict: {exc}';self.store.log('error',self.gateway_error)
+        self.schedule_model_probe()
         if check_updates:
             self.update_thread=threading.Thread(target=self._update_loop,daemon=True);self.update_thread.start()
+    def schedule_model_probe(self):
+        with self.jobs.lock:
+            if self.jobs.closing:return None
+            if self.probe_active:
+                self.probe_pending=True
+                return self.jobs.get(self.probe_active)
+            self.probe_pending=False
+            row=self.jobs.create('model_probe',{'engine_identity':self.engine.validation_identity()})
+            self.probe_active=row['id']
+            return row
+    def refresh_models(self):
+        self.models.scan()
+        return self.schedule_model_probe()
+    def discover_models(self,job):
+        result=self.discovery.run(job)
+        self.schedule_model_probe()
+        return result
+    def probe_models(self,job):
+        try:return self._probe_models(job)
+        finally:
+            with self.jobs.lock:
+                if self.probe_active==job.id:self.probe_active=None
+                if self.probe_pending and not self.jobs.closing:self.schedule_model_probe()
+    def _probe_models(self,job):
+        identity=job.params.get('engine_identity')
+        if identity!=self.engine.validation_identity():
+            self.probe_pending=True
+            return {'checked':0,'stale':True}
+        if identity is None:return {'checked':0,'reason':'Install an engine to check MLX compatibility'}
+        rows=self.models.scan();checked=0;rejected=0
+        for row in rows:
+            job.checkpoint()
+            if not row['installed']:continue
+            if self.engine.validation_identity()!=identity:return {'checked':checked,'stale':True}
+            path=Path(row['path']);fingerprint=self.models.fingerprint(path)
+            try:self.engine.validate_model(row['path'])
+            except APIError as error:
+                if self.engine.validation_identity()!=identity or fingerprint!=self.models.fingerprint(path):continue
+                self.store.put('model_validation',{'scope':'cli_compatibility_only','backend':'mlx','supported':False,'engine_identity':identity,'fingerprint':fingerprint,'reason':str(error),'verified_at':time.time()},row['id']);rejected+=1
+            checked+=1;job.progress(phase='detecting',checked=checked,total=len(rows),rejected=rejected)
+        self.models.scan()
+        return {'checked':checked,'rejected':rejected}
     def _update_loop(self):
         while not self.update_stop.is_set():
             self.updates.check()
@@ -218,7 +266,9 @@ class Application:
                     elif path=='/api/tools/uploads/confirm':result=app.tools.upload_confirm(data)
                     elif path=='/api/engine/stop':result=app.engine.stop(force=data.get('force') is True)
                     elif path=='/api/engine/restart':result=app.engine.restart(data.get('model'))
-                    elif path=='/api/models/scan':result={'models':app.models.scan()}
+                    elif path=='/api/models/scan':
+                        app.refresh_models();result={'models':app.models.rows}
+                    elif path=='/api/models/discover':result=app.jobs.create('model_discovery',{})
                     elif path=='/api/models/validate':result=app.engine.validate_model(data.get('model'))
                     elif path=='/api/profiles':result=app.store.profile_save(data)
                     elif path=='/api/keys':result=app.store.key_create(data)
@@ -228,6 +278,7 @@ class Application:
                     elif path.startswith('/api/jobs/') and len(path.split('/'))==5:result=app.jobs.action(*path.split('/')[3:5])
                     elif path=='/api/updates/check':result=app.updates.check()
                     elif path in ('/api/updates/install','/api/engine/install'):result=app.updates.create(data,bootstrap=path=='/api/engine/install')
+                    elif path=='/api/updates/upgrade':result=app.updates.upgrade(data)
                     elif path=='/api/updates/activate':result=app.updates.activate(data)
                     elif path=='/api/updates/rollback':result=app.updates.rollback()
                     elif path=='/api/cache/clear':result=app.clear_cache(data)

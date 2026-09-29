@@ -30,6 +30,27 @@ class TaskTests(unittest.TestCase):
    while True:job.checkpoint();time.sleep(.01)
   self.jobs.register('test',run);job=self.jobs.create('test',{});self.jobs.action(job['id'],'cancel');time.sleep(.03)
   self.assertEqual(partial.read_text(),'data');self.assertEqual(self.jobs.get(job['id'])['status'],'cancelled')
+ def test_cancel_checks_live_atomic_state_after_stale_store_read(self):
+  import threading
+  from unittest.mock import patch
+  release=threading.Event()
+  self.jobs.register('engine_upgrade',lambda job:release.wait(2))
+  row=self.jobs.create('engine_upgrade',{});job=self.jobs.live[row['id']]
+  original=self.jobs.get
+  def stale(id):
+   snapshot=original(id)
+   if not job.row.get('atomic'):job.begin_atomic()
+   return snapshot
+  try:
+   with patch.object(self.jobs,'get',side_effect=stale):
+    with self.assertRaises(APIError):self.jobs.action(row['id'],'cancel')
+   self.assertFalse(job.cancelled)
+  finally:release.set()
+ def test_cancel_before_atomic_checkpoint_prevents_switch(self):
+  from tfmanager.jobs import Job,Cancelled
+  job=Job(self.jobs,{'id':'not-started','params':{},'atomic':False});job.cancelled=True
+  with self.assertRaises(Cancelled):job.begin_atomic()
+  self.assertFalse(job.row['atomic'])
  def test_download_rejects_traversal_symlink_and_unknown_source(self):
   root=Path(self.tmp.name)/'downloads';root.mkdir(); (root/'link').symlink_to('/tmp')
   for name in ('../escape','/tmp/file','link/file'):
@@ -37,6 +58,12 @@ class TaskTests(unittest.TestCase):
   downloads=Downloads(self.store,self.jobs)
   for data in ({'repo':'x/y','source':'unknown'}, {'repo':'x/../y','source':'huggingface'}, {'repo':'x/y','directory':'/tmp/unspecified-scope'}):
    with self.assertRaises(APIError):downloads.create(data)
+ def test_download_rejects_repo_outside_supported_catalog_before_queuing(self):
+  from unittest.mock import patch
+  downloads=Downloads(self.store,self.jobs)
+  with patch.object(self.jobs,'create') as create:
+   with self.assertRaisesRegex(APIError,'catalog'):downloads.create({'repo':'owner/unlisted'})
+   create.assert_not_called()
  def test_download_verifies_actual_content_before_publish(self):
   downloads=Downloads(self.store,self.jobs)
   good=Path(self.tmp.name)/'data';good.write_bytes(b'hello')
@@ -52,12 +79,12 @@ class DownloadFlowTests(unittest.TestCase):
  def test_download_resume_pin_hash_and_private_staging(self):
   import io,os
   from unittest.mock import patch
-  downloads=Downloads(self.store,self.jobs);content=b'hello actual bytes';commit='a'*40
+  downloads=Downloads(self.store,self.jobs,on_complete=lambda:(_ for _ in ()).throw(RuntimeError('refresh failed')));content=b'hello actual bytes';commit='a'*40
   manifest={'sha':commit,'siblings':[{'rfilename':'config.json','size':len(content),'lfs':{'size':len(content),'sha256':hashlib.sha256(content).hexdigest()}}]}
   class Response(io.BytesIO):
    status=200;headers={}
   with patch('tfmanager.downloads.public_json',return_value=manifest),patch('tfmanager.downloads.public_open',side_effect=lambda *a,**kw:Response(content)):
-   job=downloads.create({'repo':'owner/model','source':'huggingface','revision':'main'})
+   job=downloads.create({'repo':'Vontra/Qwen3.8-27B-MLX-4bit','source':'huggingface','revision':'main'})
    for _ in range(100):
     row=self.jobs.get(job['id'])
     if row['status'] in ('completed','failed'):break
@@ -74,7 +101,7 @@ class DownloadFlowTests(unittest.TestCase):
   manifest={'sha':'b'*40,'siblings':[{'rfilename':'config.json','lfs':{'size':3,'sha256':'0'*64}}]}
   class Response(io.BytesIO):status=200;headers={}
   with patch('tfmanager.downloads.public_json',return_value=manifest),patch('tfmanager.downloads.public_open',side_effect=lambda *a,**kw:Response(b'bad')):
-   job=downloads.create({'repo':'owner/model'})
+   job=downloads.create({'repo':'Vontra/Qwen3.8-27B-MLX-4bit'})
    for _ in range(100):
     row=self.jobs.get(job['id'])
     if row['status']=='failed':break
@@ -90,7 +117,7 @@ class DownloadRetryTests(unittest.TestCase):
   downloads=Downloads(self.store,self.jobs);correct=b'yes';manifest={'sha':'c'*40,'siblings':[{'rfilename':'config.json','lfs':{'size':3,'sha256':hashlib.sha256(correct).hexdigest()}}]}
   class Response(io.BytesIO):status=200;headers={}
   with patch('tfmanager.downloads.public_json',return_value=manifest),patch('tfmanager.downloads.public_open',side_effect=lambda *a,**kw:Response(b'bad')):
-   job=downloads.create({'repo':'owner/model'})
+   job=downloads.create({'repo':'Vontra/Qwen3.8-27B-MLX-4bit'})
    for _ in range(100):
     if self.jobs.get(job['id'])['status']=='failed':break
     time.sleep(.01)
@@ -110,7 +137,7 @@ class EmptyFileTests(unittest.TestCase):
   downloads=Downloads(self.store,self.jobs)
   manifest={'sha':'e'*40,'siblings':[{'rfilename':'empty.txt','size':0,'blobId':hashlib.sha1(b'blob 0\0').hexdigest()}]}
   with patch('tfmanager.downloads.public_json',return_value=manifest):
-   job=downloads.create({'repo':'owner/model'})
+   job=downloads.create({'repo':'Vontra/Qwen3.8-27B-MLX-4bit'})
    for _ in range(100):
     row=self.jobs.get(job['id'])
     if row['status'] in ('completed','failed'):break
