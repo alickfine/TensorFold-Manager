@@ -65,7 +65,12 @@ class Application:
     def system(self):
         try:memory=os.sysconf('SC_PHYS_PAGES')*os.sysconf('SC_PAGE_SIZE')
         except (ValueError,OSError):memory=None
-        return {'platform':platform.system(),'architecture':platform.machine(),'memory_total_bytes':memory,'memory_used_bytes':None,'gpu_utilization':None,'gpu_memory_bytes':None,'cpu_percent':None}
+        return {'hostname':platform.node(),'platform':platform.system(),'architecture':platform.machine(),
+                'os_version':platform.mac_ver()[0] or platform.release(),
+                'python_version':platform.python_version(),'runtime_path':sys.prefix,
+                'manager_pid':os.getpid(),'cpu_count':os.cpu_count(),
+                'memory_total_bytes':memory,'memory_used_bytes':None,
+                'gpu_utilization':None,'gpu_memory_bytes':None,'cpu_percent':None}
     def capabilities(self):
         result={name:{'supported':False,'reason':reason} for name,reason in {
             'quantize':'The installed TensorFold CLI has no stable quantization command adapter. Use a separately verified upstream conversion workflow.',
