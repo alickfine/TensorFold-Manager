@@ -55,7 +55,7 @@ class Downloads:
         if not isinstance(use_credentials,bool):raise APIError('use_credentials must be a boolean')
         if use_credentials and source=='hf-mirror':raise APIError('Credentials cannot be sent to a third-party mirror','credential_origin_forbidden',409)
         if use_credentials and self.credentials is None:raise APIError('App credential helper unavailable','credential_helper_unavailable',409)
-        revision=data.get('revision') or 'main'
+        revision=data.get('revision') or ('master' if source=='modelscope' else 'main')
         if not isinstance(revision,str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,127}',revision) or '..' in revision:raise APIError('Invalid revision')
         directory=Path(data.get('directory') or self.root).expanduser()
         # A directory field is not sufficient authority to create hidden staging in arbitrary external paths.
@@ -81,15 +81,31 @@ class Downloads:
             raise APIError('Credential destination is not the exact official source','credential_origin_forbidden',409)
         if self.credentials is None:raise APIError('App credential helper unavailable','credential_helper_unavailable',409)
         provider='hf-download' if source=='huggingface' else 'modelscope-download'
-        return {'Authorization':'Bearer '+self.credentials.get(provider)}
+        token=self.credentials.get(provider)
+        headers={'Authorization':'Bearer '+token}
+        if source=='modelscope':
+            if any(ord(c)<33 or ord(c)>126 or ord(c) in (34,44,59,92) for c in token):raise APIError('ModelScope token cannot be encoded safely as a session cookie','invalid_credential',409)
+            headers['Cookie']='m_session_id='+token
+        return headers
     def metadata(self,params):
         repo=params['repo'];base=self.SOURCES[params['source']];rev=urllib.parse.quote(params['revision'],safe='')
         if params['source']=='modelscope':
             url=f'{base}/api/v1/models/{repo}/repo/files?Revision={rev}&Recursive=true'
             payload=public_json(url,headers=self.request_headers(params,url))
-            data=payload.get('Data',{});revision=data.get('Revision') or params['revision']
-            if not re.fullmatch(r'[0-9a-f]{40,64}',revision):raise APIError('ModelScope requires an immutable commit revision','revision_not_pinned',409)
-            files=[{'path':f['Path'],'size':f['Size'],'sha256':f.get('Sha256'),'url':f'{base}/api/v1/models/{repo}/repo?Revision={revision}&FilePath='+urllib.parse.quote(f['Path'],safe='')} for f in data.get('Files',[]) if f.get('Type')!='tree']
+            data=payload.get('Data',{});entries=data.get('Files',[]) if isinstance(data,dict) else data
+            if not isinstance(entries,list) or len(entries)>=3000:raise APIError('ModelScope file tree is missing or may be truncated','incomplete_file_tree',409)
+            pinned=data.get('Revision') if isinstance(data,dict) else None
+            pinned=pinned or (params['revision'] if re.fullmatch(r'[0-9a-f]{40,64}',params['revision']) else None)
+            files=[]
+            for f in entries:
+                if f.get('Type')=='tree':continue
+                commit=pinned or f.get('Revision')
+                if not isinstance(commit,str) or not re.fullmatch(r'[0-9a-f]{40,64}',commit):raise APIError('ModelScope file lacks an immutable commit revision','revision_not_pinned',409)
+                files.append({'path':f['Path'],'size':f['Size'],'sha256':f.get('Sha256'),'revision':commit,'url':f'{base}/api/v1/models/{repo}/repo?Revision={commit}&FilePath='+urllib.parse.quote(f['Path'],safe='')})
+            # Legacy API supplies each file's immutable last-change commit, not the branch HEAD.
+            # A content manifest identifies this captured tree without inventing a repository commit.
+            revision=pinned or hashlib.sha256(json.dumps(sorted((f['path'],f['size'],f['sha256'],f['revision']) for f in files),separators=(',',':')).encode()).hexdigest()
+            revision_kind='repository_commit' if pinned else 'file_manifest_sha256'
         else:
             url=f'{base}/api/models/{repo}/revision/{rev}?blobs=true'
             payload=public_json(url,headers=self.request_headers(params,url));revision=payload.get('sha','')
@@ -102,7 +118,7 @@ class Downloads:
         for f in files:
             safe_target(self.root,f['path'])
             if not isinstance(f['size'],int) or f['size']<0 or not (re.fullmatch('[0-9a-f]{64}',f.get('sha256') or '') or re.fullmatch('[0-9a-f]{40}',f.get('git_sha1') or '')):raise APIError('Source does not provide verifiable file identity','identity_unavailable',409)
-        return {'repo':repo,'source':params['source'],'revision':revision,'files':files}
+        return {'repo':repo,'source':params['source'],'revision':revision,'revision_kind':revision_kind if params['source']=='modelscope' else 'repository_commit','files':files}
     @staticmethod
     def verify_file(path,entry):
         if path.stat().st_size!=entry['size']:raise APIError('Downloaded size mismatch','integrity_error',409)
