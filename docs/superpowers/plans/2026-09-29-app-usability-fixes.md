@@ -52,7 +52,7 @@
 - [x] Reproduce and repair supported-model evidence and update/caching defects identified by the investigator.
 - [x] Run targeted failing regressions before behavior fixes, then Python/Web/native gates.
 - [x] Review with the investigator and resolve every confirmed blocking issue.
-- [ ] Complete final real App acceptance: fixture data for browser layout; original App data for bilingual/dialog checks, without credential or weight modifications. Final native restart/chat/scan recovery pending Mac unlock.
+- [x] Actual CI App passed native restart, sealed runtime reuse, long-history composer/expanded parameters, bilingual and scan recovery/registration checks using existing data. No credentials or weights changed.
 - [ ] Package and verify the public DMG, complete CI/release workflow, and report unperformed heavy-model tests accurately.
 
 ## Execution evidence
@@ -62,3 +62,5 @@ Initial isolated branch: codex/app-usability-fixes at 1c202a41dc4a13f6f582c8f290
 Final local gate: 175 Python / 64 Web tests passed, native tests and sealed-runtime proof passed. Final local alpha.3 DMG built. Full-disk native scan previously failed on EPERM; permission and network metadata ordering fixes have eight regression tests passing. Final real scan rerun pending Mac unlock.
 
 Final review reproduced an event-routing regression caused by main[data-page]. Fixed using data-view and button-only navigation routing; the production dispatch function now has an action-event regression.
+
+Actual CI App scan: 200000 dirs / 5 found / 4 registered / 596 skipped; explicitly partial at directory_limit. Two final downloader presentation defects were repaired and verified by render regressions: unrelated jobs and mirror source labels.

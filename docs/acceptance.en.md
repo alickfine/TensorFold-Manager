@@ -64,4 +64,8 @@ Two independent agents handled investigation/review and Web fixes; the coordinat
 
 Full large-model downloads, new-release GLM loading and a live GLM upgrade were not performed in this pass. The build is ad hoc signed, without Developer ID signing or Apple notarization. Previous heavy-model acceptance does not prove these new-release flows.
 
-- The final local build succeeded. Final native chat layout, scan recovery and restart checks are pending while the Mac is locked. This record does not claim alpha.3 publication is complete.
+- [Branch CI](https://github.com/alickfine/TensorFold-Manager/actions/runs/36578444335) passed. Its downloaded DMG matched SHA256SUMS; strict signature, version and manager/Web byte equality checks passed.
+- Actual CI App discovery completed: 200000 directories, five model locations, four registered directories and 596 skipped entries. The directory_limit and partial result are displayed explicitly; this is not a complete whole-disk scan. Permission errors no longer abort it. Actual CLI detection completed and the library expanded from five to nine entries.
+- The long-history chat composer stays visible with generation parameters collapsed or expanded; the parameter panel scrolls independently. The actual scan button dispatched its job; page navigation worked.
+- Actual uv offline fixture-wheel installation, plain imports without -B and full manifest verification preserved the CI App runtime. Normal quit/relaunch succeeded and retained Chinese, without starting an inference service.
+- Final QA additionally found unrelated jobs in the downloader and an incorrect mirror label; both were repaired and passed render regressions; final package checks continue. alpha.3 publication is not yet claimed.

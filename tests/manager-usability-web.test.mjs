@@ -85,6 +85,17 @@ test('downloads can only submit a supported official catalog entry using its rea
   assert.match(output, /<select[^>]+name="catalog_model"/);
   assert.doesNotMatch(output, /<input[^>]+name="repo"|name="revision"|name="directory"/);
   assert.doesNotMatch(output, /org\/unknown|org\/invalid/);
+  assert.equal(output.match(/HF 镜像/g)?.length, 2, 'the selector and support table must both identify the mirror source');
+  const mixedJobs = [
+    { id:'download-1', kind:'download', status:'running', params:{ repo:'jobs/real-download', source:'huggingface' }, progress:{} },
+    { id:'probe-1', kind:'model_probe', status:'running' },
+    { id:'discover-1', kind:'model_discovery', status:'completed' },
+    { id:'install-1', kind:'engine_install', status:'queued' },
+    { id:'accuracy-1', kind:'accuracy', status:'failed' },
+  ];
+  const jobsOutput = renderDownloads(state({ pageData:{ ...state().pageData, catalog, jobs:{ jobs:mixedJobs } } }));
+  assert.match(jobsOutput, /jobs\/real-download/);
+  assert.doesNotMatch(jobsOutput, /model_probe|model_discovery|engine_install|accuracy-1/);
 });
 
 test('model library opens an in-place configuration dialog with model generation fields', () => {
