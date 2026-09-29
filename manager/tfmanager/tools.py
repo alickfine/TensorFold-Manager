@@ -23,7 +23,7 @@ from .state import APIError, clean_env, identifier, repo_id
 
 
 MLX_LM_VERSION = "0.31.3"
-HUGGINGFACE_HUB_VERSION = "2.0.0"
+HUGGINGFACE_HUB_VERSION = "1.33.0"
 PLAN_LIFETIME_SECONDS = 15 * 60
 MAX_CHILD_OUTPUT = 4 * 1024 * 1024
 

@@ -96,7 +96,7 @@ class ToolTests(unittest.TestCase):
         self.tool_python.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
         self.store.put(
             "tools_active",
-            {"python": str(self.tool_python), "packages": {"mlx-lm": "0.31.3", "huggingface-hub": "2.0.0"}},
+            {"python": str(self.tool_python), "packages": {"mlx-lm": "0.31.3", "huggingface-hub": "1.33.0"}},
         )
 
     def make_tools(self, resources=None):
@@ -195,21 +195,21 @@ class ToolTests(unittest.TestCase):
             f"capture=pathlib.Path({str(uv_capture)!r}); capture.open('a').write(json.dumps(sys.argv[1:])+'\\n')\n"
             "if sys.argv[1]=='venv':\n"
             " slot=pathlib.Path(sys.argv[-1]); (slot/'bin').mkdir(parents=True); python=slot/'bin/python'; python.write_text('#!/bin/sh\\nexit 0\\n'); python.chmod(0o700)\n"
-            "elif sys.argv[1:3]==['pip','freeze']: print('huggingface-hub==2.0.0\\nmlx-lm==0.31.3\\nsafetensors==0.6.2')\n"
+            "elif sys.argv[1:3]==['pip','freeze']: print('huggingface-hub==1.33.0\\nmlx-lm==0.31.3\\nsafetensors==0.6.2')\n"
         )
         fake_uv.chmod(0o700)
         with patch.dict(os.environ, {"TFM_UV": str(fake_uv), "TFM_RUNTIME_PYTHON": sys.executable}):
             result = wait_job(self.jobs, tools.install({})["id"])
         self.assertEqual(result["status"], "completed", result)
         active = self.store.get("tools_active")
-        self.assertEqual(active["packages"], {"mlx-lm": "0.31.3", "huggingface-hub": "2.0.0"})
+        self.assertEqual(active["packages"], {"mlx-lm": "0.31.3", "huggingface-hub": "1.33.0"})
         self.assertEqual(
             active["freeze"],
-            ["huggingface-hub==2.0.0", "mlx-lm==0.31.3", "safetensors==0.6.2"],
+            ["huggingface-hub==1.33.0", "mlx-lm==0.31.3", "safetensors==0.6.2"],
         )
         calls = [json.loads(line) for line in uv_capture.read_text().splitlines()]
         self.assertIn("mlx-lm==0.31.3", calls[1])
-        self.assertIn("huggingface-hub==2.0.0", calls[1])
+        self.assertIn("huggingface-hub==1.33.0", calls[1])
         self.assertEqual(calls[2][:2], ["pip", "freeze"])
 
     def test_quantize_integrates_with_real_resource_gate_contract(self):
