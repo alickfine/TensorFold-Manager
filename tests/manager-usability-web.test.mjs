@@ -267,13 +267,16 @@ test('logs use the compact toolbar and log surface classes', () => {
 
 test('clicking an action inside main dispatches handleAction instead of treating main as navigation', () => {
   const actionButton = { disabled:false, dataset:{ action:'refresh', value:'now' } };
+  const legacyMain = { dataset:{ page:'chat' } };
   const target = {
     closest(selector) {
       if (selector === 'button[data-page]') return null;
+      if (selector === '[data-page]') return legacyMain;
       if (selector === '[data-action]') return actionButton;
       return null;
     },
   };
+  assert.equal(target.closest('[data-page]'), legacyMain, 'the regression fixture must reproduce the legacy main[data-page] ancestor');
   let navigated = null;
   let handled = null;
   let prevented = false;
