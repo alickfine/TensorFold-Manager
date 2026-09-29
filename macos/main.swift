@@ -23,6 +23,7 @@ final class ManagerApp: NSObject, NSApplicationDelegate, WKNavigationDelegate, W
         buildMenus()
         let config = WKWebViewConfiguration()
         config.userContentController.addScriptMessageHandler(self, contentWorld: .page, name: "bootstrap")
+        config.userContentController.addScriptMessageHandler(self, contentWorld: .page, name: "exportFile")
         config.preferences.javaScriptCanOpenWindowsAutomatically = false
         webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = self
@@ -174,10 +175,28 @@ final class ManagerApp: NSObject, NSApplicationDelegate, WKNavigationDelegate, W
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage,
                                replyHandler: @escaping (Any?, String?) -> Void) {
         let origin = message.frameInfo.securityOrigin
-        guard message.name == "bootstrap", message.frameInfo.isMainFrame,
+        guard message.frameInfo.isMainFrame,
               origin.protocol == "http", origin.host == "127.0.0.1", origin.port == port,
               instance != nil, !quitting else { replyHandler(nil, "Unauthorized frame"); return }
-        replyHandler(["token": token, "instance_id": instance!], nil)
+        if message.name == "bootstrap" {
+            replyHandler(["token": token, "instance_id": instance!], nil)
+        } else if message.name == "exportFile" {
+            guard let body = message.body as? [String: Any], let name = body["name"] as? String,
+                  let content = body["content"] as? String, name.count <= 100,
+                  !name.contains("/"), !name.contains("\\"), !name.contains(".."),
+                  ["csv", "json", "txt", "md"].contains(URL(fileURLWithPath: name).pathExtension.lowercased()),
+                  content.utf8.count <= 10 * 1024 * 1024 else {
+                replyHandler(nil, "Invalid export request"); return
+            }
+            let panel = NSSavePanel()
+            panel.nameFieldStringValue = name
+            panel.canCreateDirectories = true
+            panel.beginSheetModal(for: window) { response in
+                guard response == .OK, let url = panel.url else { replyHandler(["saved": false], nil); return }
+                do { try Data(content.utf8).write(to: url, options: .atomic); replyHandler(["saved": true], nil) }
+                catch { replyHandler(nil, "Export write failed") }
+            }
+        } else { replyHandler(nil, "Unknown native operation") }
     }
 
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
