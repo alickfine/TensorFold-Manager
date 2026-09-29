@@ -4,7 +4,7 @@ from http.server import BaseHTTPRequestHandler,HTTPServer
 if '--version' in sys.argv:
  print('tensorfold 0.0.1'); sys.exit()
 if '--help' in sys.argv:
- print('--host --port --name --context --max-tokens --temperature --top-p --top-k --parallel --thinking --no-thinking --snapshot-dir --prompt-cache-gib --mlx-cache-gib --no-update-check'); sys.exit()
+ print('--host --port --name --context --max-tokens --temperature --top-p --top-k --parallel --thinking --no-thinking --snapshot-dir --prompt-cache-gib --mlx-cache-gib --no-update-check --drafter --drafter-bits --mtp-drafts --mtp-confidence --no-drafts --checkpoint-slots --spill-gib --max-snapshots --reasoning-effort --thinking-budget'); sys.exit()
 if len(sys.argv)>2 and sys.argv[1]=='info':
  from pathlib import Path
  marker=Path(sys.argv[2])/'reject-info'
@@ -23,6 +23,8 @@ class Handler(BaseHTTPRequestHandler):
    prompt=str(body.get('messages'))
    self.send_response(200); self.send_header('Content-Type','text/event-stream'); self.end_headers()
    if 'slow' in prompt: time.sleep(5)
+   if 'error-event' in prompt:
+    self.wfile.write(b'data: {"error":{"message":"engine inference failed"}}\n\ndata: [DONE]\n\n');return
    for item in [{'choices':[{'delta':{'content':'ok'}}]}, {'choices':[],'usage':{'prompt_tokens':2,'completion_tokens':1}}]:
     self.wfile.write(('data: '+json.dumps(item)+'\n\n').encode()); self.wfile.flush(); time.sleep(.02)
    if 'incomplete' not in prompt:self.wfile.write(b'data: [DONE]\n\n')

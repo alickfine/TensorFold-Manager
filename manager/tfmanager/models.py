@@ -3,7 +3,7 @@ import hashlib
 import json
 import re
 from pathlib import Path
-from .state import APIError, repo_id
+from .state import APIError, repo_id, ADVANCED_OPTIONS
 
 # Tested MLX checkpoints advertised by upstream TensorFold; family match alone is not a guarantee.
 CATALOG=[{'repo':repo,'name':repo.split('/')[-1],'family':family,'supported':True,'source':'huggingface'} for repo,family in [
@@ -80,7 +80,7 @@ class Models:
         return row
     def configure(self,data):
         model=self.resolve(data.get('model')); config=data.get('config',{})
-        allowed={'context','max_tokens','temperature','top_p','top_k','parallel','thinking','prompt_cache_gib','mlx_cache_gib'}
+        allowed={'context','max_tokens','temperature','top_p','top_k','parallel','thinking','prompt_cache_gib','mlx_cache_gib'} | set(ADVANCED_OPTIONS)
         if not isinstance(config,dict) or set(config)-allowed: raise APIError('Unsupported model configuration')
         self.store.validate_settings(config)
         return self.store.put('model_config',config,model['id'])

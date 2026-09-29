@@ -75,12 +75,21 @@ class Application:
                 elif path.is_dir():shutil.rmtree(path)
             return self.cache()
     def benchmark(self,job):
-        data=job.params;results=[]
-        for i in range(data['runs']):
-            job.checkpoint();job.progress(run=i+1,total=data['runs'])
-            _,metrics=completion(self.engine,self.store,{'model':self.engine.status()['model'],'messages':[{'role':'user','content':data['prompt']}],'max_tokens':data['max_tokens'],'temperature':0},observe_stream=True,job=job)
-            results.append(metrics)
-        result={'id':job.id,**data,'results':results,'created_at':time.time()};self.store.put('benchmark',result,job.id);return result
+        data=job.params;results=[];snapshot=self.engine.request_metadata()
+        result={'id':job.id,**data,'model':snapshot['model'],'engine_version':snapshot['engine_version'],'engine_parameters':snapshot['engine_parameters'],'parameters':{'max_tokens':data['max_tokens'],'temperature':0,'stream':True},'results':results,'created_at':time.time(),'status':'running'}
+        self.store.put('benchmark',result,job.id)
+        try:
+            for i in range(data['runs']):
+                job.checkpoint();job.progress(run=i+1,total=data['runs'])
+                if self.engine.request_metadata()['engine_started_at']!=snapshot['engine_started_at']:raise APIError('Engine changed during benchmark; completed runs retained','engine_changed',409)
+                _,metrics=completion(self.engine,self.store,{'model':snapshot['model'],'messages':[{'role':'user','content':data['prompt']}],'max_tokens':data['max_tokens'],'temperature':0},observe_stream=True,job=job)
+                results.append(metrics)
+                if metrics['engine_started_at']!=snapshot['engine_started_at']:raise APIError('Engine changed during benchmark; per-run source retained','engine_changed',409)
+                self.store.put('benchmark',result,job.id)
+            result['status']='completed';return result
+        except Exception as exc:
+            result.update(status='cancelled' if job.cancelled else 'failed',error=str(exc));raise
+        finally:self.store.put('benchmark',result,job.id)
     def shutdown(self):
         if not self.shutdown_lock.acquire(blocking=False):return
         try:
@@ -154,8 +163,8 @@ class Application:
                     elif path=='/api/logs':result={'logs':app.store.logs(query.get('level',''),query.get('query',''),query.get('limit',200))}
                     elif path=='/api/stats':result=app.store.stats(query.get('model',''),query.get('range','all'))
                     elif path=='/api/stats/export':
-                        rows=app.store.stats(query.get('model',''),query.get('range','all'))['requests'];out=io.StringIO();fields=['id','at','model','status','elapsed','ttft','input_tokens','output_tokens','prefill_tps','decode_tps','error'];writer=csv.DictWriter(out,fieldnames=fields,extrasaction='ignore');writer.writeheader()
-                        for row in rows:writer.writerow({k:("'"+v if isinstance(v,str) and v.startswith(('=','+','-','@')) else v) for k,v in row.items()})
+                        rows=app.store.stats(query.get('model',''),query.get('range','all'))['requests'];out=io.StringIO();fields=['id','at','model','status','elapsed','ttft','input_tokens','output_tokens','prefill_tps','decode_tps','cache_tokens','prefill_seconds','prefill_tps_source','engine_version','parameters','engine_parameters','error'];writer=csv.DictWriter(out,fieldnames=fields,extrasaction='ignore');writer.writeheader()
+                        for row in rows:writer.writerow({k:("'"+v if isinstance(v,str) and v.startswith(('=','+','-','@')) else json.dumps(v,ensure_ascii=False) if isinstance(v,(dict,list)) else v) for k,v in row.items()})
                         self.respond(out.getvalue().encode('utf-8-sig'),content_type='text/csv; charset=utf-8');return
                 elif method=='PUT':
                     if path=='/api/settings':result={'settings':app.store.settings_update(data),'pending':app.engine.status()['pending']}

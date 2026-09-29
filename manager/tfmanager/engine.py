@@ -10,13 +10,13 @@ import subprocess
 import sys
 import threading
 import time
-from .state import APIError,clean_env
+from .state import APIError,clean_env,ADVANCED_OPTIONS
 
 class Engine:
     def __init__(self,store,models,command=None,startup_timeout=600,stop_timeout=120):
         self.store=store; self.models=models; self.command=command; self.startup_timeout=startup_timeout; self.stop_timeout=stop_timeout
         self.lifecycle=threading.RLock(); self.lock=threading.RLock(); self.condition=threading.Condition(self.lock)
-        self.active_model_id=None;self.running_model_config=None
+        self.active_model_id=None;self.running_model_config=None;self.running_parameters=None
         self.active_requests=0; self.draining=False; self.proc=None; self.reader=None; self.running_settings=None
         self.data=dict(state='stopped',pid=None,model=None,version=None,health=None,error=None,started_at=None,pending=False)
     def status(self):
@@ -35,7 +35,7 @@ class Engine:
             if not external or os.environ.get('TFM_ALLOW_EXTERNAL_ENGINE')!='1': raise APIError('Install the TensorFold engine first','engine_not_installed',409)
             path=Path(external)
         if not path.is_file(): raise APIError('Engine Python is missing','engine_not_installed',409)
-        return [str(path),'-m','tensorfold']
+        return [str(path),'-B','-m','tensorfold']
     def probe(self,command=None):
         command=command or self.executable(); env=clean_env(); env['TENSORFOLD_NO_UPDATE_CHECK']='1'
         try:
@@ -71,7 +71,23 @@ class Engine:
         thinking='--thinking' if settings['thinking'] else '--no-thinking'
         if thinking not in flags: raise APIError('Engine cannot apply the requested thinking setting','unsupported_capability',409)
         argv.append(thinking)
-        if '--name' in flags: argv.extend(['--name',model['repo'] or model['name']])
+        for key in ADVANCED_OPTIONS:
+            value=settings.get(key)
+            if value is None or key=='name':continue
+            flag='--'+key.replace('_','-')
+            if flag not in flags:raise APIError(f'Installed engine does not support {flag}','unsupported_capability',409)
+            if key=='mtp_confidence':raise APIError('--mtp-confidence is a CUDA-only option; TensorFold MLX does not implement it','unsupported_capability',409)
+            if key=='drafter' and value not in ('auto','none'):
+                path=Path(value).expanduser()
+                if path.is_absolute():draft=self.models.describe(path)
+                else:draft=next((row for row in self.models.scan() if row['repo']==value),None)
+                if not draft or not draft['installed']:raise APIError('Drafter weights must already exist in configured model roots','drafter_missing',409)
+                value=draft['path']
+            if key=='no_drafts':
+                if value:argv.append(flag)
+            else:argv.extend([flag,str(value)])
+        if settings.get('name') is not None and '--name' not in flags:raise APIError('Installed engine does not support --name','unsupported_capability',409)
+        if '--name' in flags:argv.extend(['--name',settings.get('name') or model['repo'] or model['name']])
         if '--no-update-check' in flags: argv.append('--no-update-check')
         return argv,probe
     def start(self,model):
@@ -84,12 +100,12 @@ class Engine:
                 except OSError: raise APIError('Engine port is occupied; no external service was adopted','port_conflict',409)
             argv,probe=self.build_command(row,effective)
             env=clean_env(); env.update(TENSORFOLD_NO_UPDATE_CHECK='1',HF_HUB_OFFLINE='1',TRANSFORMERS_OFFLINE='1',HF_HUB_DISABLE_IMPLICIT_TOKEN='1',HF_HOME=str(self.store.root/'hf-runtime'))
-            supervisor=[sys.executable,str(Path(__file__).with_name('supervisor.py'))]
+            supervisor=[sys.executable,'-B',str(Path(__file__).with_name('supervisor.py'))]
             self.proc=subprocess.Popen(supervisor,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True,bufsize=1,env=clean_env(),start_new_session=True)
             self.proc.stdin.write(json.dumps({'argv':argv,'env':env,'stop_timeout':self.stop_timeout})+'\n'); self.proc.stdin.flush()
             with self.lock:
-                self.running_settings=settings;self.active_model_id=row['id'];self.running_model_config=self.store.get('model_config',row['id'],{}); self.draining=False
-                self.data.update(state='starting',pid=None,model=row['repo'] or row['id'],version=probe['version'],health=False,error=None,started_at=time.time())
+                self.running_parameters=effective.copy();self.running_settings=settings;self.active_model_id=row['id'];self.running_model_config=self.store.get('model_config',row['id'],{}); self.draining=False
+                self.data.update(state='starting',pid=None,model=row['repo'] or row['id'],version=probe['version'],served_name=effective.get('name') or row['repo'] or row['name'],health=False,error=None,started_at=time.time())
             self.reader=threading.Thread(target=self._events,args=(self.proc,),daemon=True); self.reader.start()
             threading.Thread(target=self._wait_ready,args=(self.proc,settings['engine_port']),daemon=True).start()
             self.store.log('info','Starting owned engine: '+row['name']); return self.status()
@@ -130,6 +146,9 @@ class Engine:
             if response.status!=200 or not isinstance(payload.get('data'),list) or not payload['data']: raise APIError('Engine API is not ready','engine_not_ready',503)
             return payload
         finally: conn.close()
+    def request_metadata(self):
+        with self.lock:
+            return {'engine_version':self.data['version'],'engine_started_at':self.data['started_at'],'engine_parameters':{k:v for k,v in (self.running_parameters or {}).items() if k in set(ADVANCED_OPTIONS)|{'context','max_tokens','temperature','top_p','top_k','thinking','parallel','prompt_cache_gib','mlx_cache_gib'}},'model':self.data.get('served_name') or self.data['model']}
     @contextlib.contextmanager
     def request(self):
         with self.condition:

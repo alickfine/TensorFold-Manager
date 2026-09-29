@@ -124,5 +124,15 @@ class InstallerEnvironmentTests(unittest.TestCase):
   from tfmanager.jobs import Job
   updates=Updates(self.store,self.jobs,None);output=Path(self.tmp.name)/'installer-environment.json'
   job=Job(self.jobs,{'id':'env-test','params':{}})
-  updates._command([sys.executable,'-c','import json,os,sys;open(sys.argv[1],"w").write(json.dumps({k:os.environ.get(k) for k in ("HOME","PYTHONNOUSERSITE","TFM_ADMIN_TOKEN")}))',str(output)],job)
-  env=json.loads(output.read_text());self.assertTrue(Path(env['HOME']).is_relative_to(self.store.root));self.assertEqual(env['PYTHONNOUSERSITE'],'1');self.assertIsNone(env['TFM_ADMIN_TOKEN'])
+  updates._command([sys.executable,'-c','import json,os,sys;open(sys.argv[1],"w").write(json.dumps({k:os.environ.get(k) for k in ("HOME","PYTHONNOUSERSITE","PYTHONDONTWRITEBYTECODE","TFM_ADMIN_TOKEN")}))',str(output)],job)
+  env=json.loads(output.read_text());self.assertTrue(Path(env['HOME']).is_relative_to(self.store.root));self.assertEqual(env['PYTHONNOUSERSITE'],'1');self.assertEqual(env['PYTHONDONTWRITEBYTECODE'],'1');self.assertIsNone(env['TFM_ADMIN_TOKEN'])
+
+
+class BytecodeSafetyTests(unittest.TestCase):
+ def test_clean_child_import_does_not_mutate_source_tree(self):
+  import subprocess
+  from tfmanager.state import clean_env
+  with tempfile.TemporaryDirectory() as root:
+   source=Path(root)/'bundle_module.py';source.write_text('value=42')
+   result=subprocess.run([sys.executable,'-c','import sys;sys.path.insert(0,sys.argv[1]);import bundle_module;print(bundle_module.value)',root],env=clean_env(),capture_output=True,text=True)
+   self.assertEqual(result.returncode,0,result.stderr);self.assertFalse((Path(root)/'__pycache__').exists())

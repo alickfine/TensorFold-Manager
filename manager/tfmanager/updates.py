@@ -72,7 +72,7 @@ class Updates:
             self._command([str(uv),'venv','--no-python-downloads','--python',str(runtime),str(slot)],job)
             python=slot/'bin/python';job.progress(phase='install',version=version,commit=commit)
             self._command([str(uv),'pip','install','--no-python-downloads','--python',str(python),'https://github.com/ashhart/TensorFold/archive/'+commit+'.tar.gz'],job)
-            job.checkpoint();probe=self.engine.probe([str(python),'-m','tensorfold'])
+            job.checkpoint();probe=self.engine.probe([str(python),'-B','-m','tensorfold'])
             candidate={'version':version,'commit':commit,'python':str(python),'installed_at':time.time(),'cli':probe,'api_verified':False}
             (slot/'tfmanager-provenance.json').write_text(json.dumps(candidate));self.store.put('engine_staged',candidate)
             if job.params.get('bootstrap') and not self.store.get('engine_active'):
@@ -96,7 +96,7 @@ class Updates:
                 job.progress(phase='validating_candidate');self.engine.start(model);self.engine.await_ready()
                 # Health alone does not prove inference compatibility. Perform a tiny actual completion.
                 from .gateway import completion
-                response,_=completion(self.engine,self.store,{'model':self.engine.status()['model'],'messages':[{'role':'user','content':'Reply OK'}],'max_tokens':1,'temperature':0},record=True)
+                response,_=completion(self.engine,self.store,{'model':self.engine.status().get('served_name') or self.engine.status()['model'],'messages':[{'role':'user','content':'Reply OK'}],'max_tokens':1,'temperature':0},record=True)
                 if not isinstance(response.get('choices'),list) or not response['choices']:raise APIError('Candidate did not complete a real request','candidate_failed',409)
                 candidate=candidate|{'api_verified':True};self.store.put('engine_active',candidate)
                 if previous:self.store.put('engine_previous',previous)
@@ -110,7 +110,7 @@ class Updates:
                 if previous:
                     job.progress(phase='recovering_previous');self.engine.start(model);self.engine.await_ready()
                     from .gateway import completion
-                    completion(self.engine,self.store,{'model':self.engine.status()['model'],'messages':[{'role':'user','content':'Reply OK'}],'max_tokens':1},record=True)
+                    completion(self.engine,self.store,{'model':self.engine.status().get('served_name') or self.engine.status()['model'],'messages':[{'role':'user','content':'Reply OK'}],'max_tokens':1},record=True)
                     self.store.put('update_recovery',{'at':time.time(),'api_verified':True,'error':str(error)})
                     raise APIError('Candidate failed; previous engine API restored: '+str(error),'candidate_failed_recovered',409)
                 raise APIError('Candidate failed; no previous environment existed: '+str(error),'candidate_failed',409)

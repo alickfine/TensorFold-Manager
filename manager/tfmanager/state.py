@@ -11,6 +11,8 @@ import threading
 import time
 import uuid
 
+ADVANCED_OPTIONS = {key: None for key in ('drafter','drafter_bits','mtp_drafts','mtp_confidence','no_drafts','checkpoint_slots','spill_gib','max_snapshots','reasoning_effort','thinking_budget','name')}
+
 class APIError(Exception):
     def __init__(self, message, code='invalid_request', status=400):
         super().__init__(message); self.code=code; self.status=status
@@ -21,7 +23,7 @@ def clean_env():
     # Allow-list avoids leaking provider keys, manager auth, Python injection or proxy credentials.
     env={k:v for k,v in os.environ.items() if k in ('HOME','USER','LOGNAME','TMPDIR','LANG','LC_ALL','SYSTEMROOT')}
     env['PATH']='/usr/bin:/bin:/usr/sbin:/sbin'
-    env['PYTHONUNBUFFERED']='1';env['PYTHONNOUSERSITE']='1'
+    env['PYTHONUNBUFFERED']='1';env['PYTHONNOUSERSITE']='1';env['PYTHONDONTWRITEBYTECODE']='1'
     return env
 
 def redact(message):
@@ -78,15 +80,17 @@ class Store:
     def delete(self,kind,id):
         with self.lock,self.db: self.db.execute('DELETE FROM documents WHERE kind=? AND id=?',(kind,id))
     def defaults(self):
-        return dict(selected_model=None,engine_python=None,model_dirs=[str(self.root/'models'),str(Path.home()/'.cache/huggingface/hub'),str(Path.home()/'.omlx/models')],engine_port=18080,gateway_port=8080,context=32768,max_tokens=4096,temperature=0.6,top_p=0.95,top_k=20,parallel='auto',thinking=True,prompt_cache_gib=4.0,mlx_cache_gib=8.0,snapshot_dir=str(self.snapshots))
+        return dict(selected_model=None,engine_python=None,model_dirs=[str(self.root/'models'),str(Path.home()/'.cache/huggingface/hub'),str(Path.home()/'.omlx/models')],engine_port=18080,gateway_port=8080,context=32768,max_tokens=4096,temperature=0.6,top_p=0.95,top_k=20,parallel='auto',thinking=True,prompt_cache_gib=4.0,mlx_cache_gib=8.0,snapshot_dir=str(self.snapshots)) | ADVANCED_OPTIONS
     def settings(self):
         return self.defaults() | self.get('settings',default={})
     def validate_settings(self, values):
         if not isinstance(values,dict): raise APIError('Settings must be an object')
         if set(values)-set(self.defaults()): raise APIError('Unknown settings: '+', '.join(sorted(set(values)-set(self.defaults()))))
         result={}
-        ranges={'engine_port':(1024,65535,True),'gateway_port':(1024,65535,True),'context':(1,2097152,True),'max_tokens':(1,2097152,True),'temperature':(0,5,False),'top_p':(0,1,False),'top_k':(0,100000,True),'prompt_cache_gib':(0,1024,False),'mlx_cache_gib':(0,1024,False)}
+        ranges={'engine_port':(1024,65535,True),'gateway_port':(1024,65535,True),'context':(1,2097152,True),'max_tokens':(1,2097152,True),'temperature':(0,5,False),'top_p':(0,1,False),'top_k':(0,100000,True),'prompt_cache_gib':(0,1024,False),'mlx_cache_gib':(0,1024,False),'mtp_drafts':(0,1024,True),'mtp_confidence':(0,1,False),'checkpoint_slots':(0,4096,True),'spill_gib':(0,1048576,False),'max_snapshots':(0,4096,True),'thinking_budget':(0,2097152,True)}
         for key,value in values.items():
+            if key in ADVANCED_OPTIONS and value is None:
+                result[key]=None;continue
             if key in ranges:
                 bounded_number(value,*ranges[key][:2],key,ranges[key][2])
                 if key.endswith('_port') and value==8089: raise APIError('Port 8089 is reserved for the external engine')
@@ -100,8 +104,17 @@ class Store:
                 value=[str(Path(p).expanduser().resolve()) for p in value]
             elif key=='parallel':
                 if value!='auto' and (isinstance(value,bool) or not str(value).isdigit() or not 1<=int(value)<=128): raise APIError('parallel must be auto or 1–128')
-            elif key=='thinking':
-                if not isinstance(value,bool): raise APIError('thinking must be boolean')
+            elif key in ('thinking','no_drafts'):
+                if not isinstance(value,bool): raise APIError(key+' must be boolean')
+            elif key=='drafter_bits':
+                if type(value) is not int or value not in (0,2,3,4,5,6,8):raise APIError('drafter_bits must be one of 0,2,3,4,5,6,8')
+            elif key=='reasoning_effort':
+                if value not in ('low','medium','xhigh'):raise APIError('reasoning_effort must be low, medium or xhigh')
+            elif key=='name':
+                if not isinstance(value,str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}',value):raise APIError('name must be a safe model API identifier')
+            elif key=='drafter':
+                if not isinstance(value,str) or not value or len(value)>4096 or any(ord(c)<32 for c in value):raise APIError('Invalid drafter')
+                if value not in ('auto','none') and not Path(value).expanduser().is_absolute():repo_id(value)
             elif key=='selected_model':
                 if value is not None and (not isinstance(value,str) or len(value)>4096 or '\x00' in value or value.startswith('-')): raise APIError('Invalid model')
             result[key]=value
@@ -158,7 +171,7 @@ class Store:
         with self.lock:
             return [dict(r) for r in self.db.execute('SELECT * FROM logs WHERE (?="" OR level=?) AND message LIKE ? ORDER BY id DESC LIMIT ?',(level,level,'%'+query+'%',min(max(int(limit),1),2000)))]
     def record_request(self,record):
-        body=dict(id=uuid.uuid4().hex,at=time.time(),model=None,status=None,elapsed=None,ttft=None,input_tokens=None,output_tokens=None,prefill_tps=None,decode_tps=None,error=None) | record
+        body=dict(id=uuid.uuid4().hex,at=time.time(),model=None,status=None,elapsed=None,ttft=None,input_tokens=None,output_tokens=None,prefill_tps=None,decode_tps=None,cache_tokens=None,prefill_seconds=None,prefill_tps_source=None,ttft_source=None,engine_version=None,parameters=None,engine_parameters=None,engine_started_at=None,error=None) | record
         with self.lock,self.db: self.db.execute('INSERT INTO requests VALUES (?,?,?,?)',(body['id'],body['at'],body['model'],json.dumps(body)))
         return body
     def stats(self,model='',range='all'):
@@ -168,5 +181,11 @@ class Store:
         with self.lock:
             records=[json.loads(r[0]) for r in self.db.execute('SELECT body FROM requests WHERE at>=? AND (?="" OR model=?) ORDER BY at DESC',(after,model,model))]
         def aggregate(rows):
-            return {'requests':len(rows),'errors':sum(r.get('status',500)>=400 for r in rows),'input_tokens':sum(r['input_tokens'] for r in rows if r['input_tokens'] is not None) if any(r['input_tokens'] is not None for r in rows) else None,'output_tokens':sum(r['output_tokens'] for r in rows if r['output_tokens'] is not None) if any(r['output_tokens'] is not None for r in rows) else None,'avg_elapsed':sum(r['elapsed'] for r in rows if r['elapsed'] is not None)/len(rows) if rows else None}
-        return {'total':aggregate(records),'models':[dict(model=m,**aggregate([r for r in records if r['model']==m])) for m in sorted({r['model'] or '' for r in records})],'requests':records[:2000]}
+            def values(key):return [r[key] for r in rows if isinstance(r.get(key),(int,float)) and not isinstance(r[key],bool) and math.isfinite(r[key]) and r[key]>=0]
+            def average(key):
+                samples=values(key);return sum(samples)/len(samples) if samples else None
+            def total(key):
+                samples=values(key);return sum(samples) if samples else None
+            return {'requests':len(rows),'errors':sum(isinstance(r.get('status'),int) and r['status']>=400 and r['status']!=499 for r in rows),'cancelled':sum(r.get('status')==499 for r in rows),'input_tokens':total('input_tokens'),'output_tokens':total('output_tokens'),'cache_tokens':total('cache_tokens'),'avg_elapsed':average('elapsed'),'avg_ttft':average('ttft'),'avg_prefill_tps':average('prefill_tps'),'avg_decode_tps':average('decode_tps'),'metric_samples':{key:len(values(key)) for key in ('ttft','prefill_tps','decode_tps','cache_tokens','elapsed')}}
+        models=sorted({r.get('model') for r in records},key=lambda value:value or '')
+        return {'total':aggregate(records),'models':[dict(model=m,**aggregate([r for r in records if r.get('model')==m])) for m in models],'requests':records[:2000]}
