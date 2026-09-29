@@ -55,7 +55,8 @@ def copy_source(source: Path, target: Path) -> None:
 
 
 def sha(path: Path) -> str:
-    return hashlib.file_digest(path.open('rb'), 'sha256').hexdigest()
+    with path.open('rb') as source:
+        return hashlib.file_digest(source, 'sha256').hexdigest()
 
 
 def run(*args: str) -> None:
@@ -101,6 +102,7 @@ def build(runtime: Path, uv: Path, output: Path, dmg: bool = True, version: str 
         'app_version': version, 'python_version': '3.12.9', 'uv_version': '0.9.5',
         'python_source': 'https://github.com/astral-sh/python-build-standalone',
         'uv_source': 'https://github.com/astral-sh/uv/releases/tag/0.9.5',
+        'uv_source_archive_sha256': 'dc098ff224d78ed418e121fd374f655949d2c7031a70f6f6604eaf016a130433',
         'python_binary_sha256': sha(runtime / 'bin/python3'),
         'python_library_sha256': sha(runtime / 'lib/libpython3.12.dylib'),
         'uv_sha256': sha(uv),

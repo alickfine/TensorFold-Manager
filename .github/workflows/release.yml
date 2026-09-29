@@ -9,7 +9,7 @@ jobs:
   macos-arm64:
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Install pinned uv and standalone Python
         run: |
           curl --fail --location --proto '=https' --tlsv1.2 -o uv.tar.gz https://github.com/astral-sh/uv/releases/download/0.9.5/uv-aarch64-apple-darwin.tar.gz
@@ -18,7 +18,7 @@ jobs:
           actual=$(shasum -a 256 uv.tar.gz | awk '{print $1}')
           test "$expected" = "$actual"
           tar -xzf uv.tar.gz
-          ./uv-aarch64-apple-darwin/uv python install 3.12.9
+          ./uv-aarch64-apple-darwin/uv python install 3.12.9 --no-bin
       - name: Verify backend and Web
         run: |
           runtime=$(./uv-aarch64-apple-darwin/uv python find 3.12.9)
@@ -33,7 +33,7 @@ jobs:
           export TFM_BUILD_VERSION="${GITHUB_REF_NAME#v}"
           if [[ "$GITHUB_REF" != refs/tags/* ]]; then export TFM_BUILD_VERSION="0.1.0-alpha.1"; fi
           "$runtime" scripts/build-app.py --runtime "$root" --uv ./uv-aarch64-apple-darwin/uv --output dist/release
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: TensorFold-Manager-macOS-arm64-test
           path: |
