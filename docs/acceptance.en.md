@@ -43,4 +43,8 @@ An OS heavy-task lease covers inference, conversion, switching, activation and r
 - An unsaved port value (18081) survived language switching without being saved. Existing chat text and an unsent bilingual draft remained unchanged. No new model was loaded.
 - After quitting in English, the manager port changed from 63491 to 63975 on restart; both the workspace and native menu stayed English. After switching back, another restart on port 64126 retained Chinese. The App was closed after acceptance.
 - Regression tests cover dependent quantization format restoration for different models and English local validation errors; independent review confirmed both fixes.
-- Local alpha.2 DMG build and strict App signature verification passed. Signing remains ad hoc, not Apple notarized. Public-package verification will be recorded after release.
+- Local alpha.2 DMG build and strict App signature verification passed. Signing remains ad hoc, not Apple notarized. Public-package verification is recorded below.
+
+- [alpha.2 CI](https://github.com/alickfine/TensorFold-Manager/actions/runs/36513259885) completed successfully: 149 Python / 48 Web tests, native checks, build and publication.
+- The DMG downloaded from the [alpha.2 Release](https://github.com/alickfine/TensorFold-Manager/releases/tag/v0.1.0-alpha.2) matched its checksum file and GitHub digest: `a080d5a66ade9c6c2b22371d94a23d0dfb2a19e7c9c762957ce20fd359ae5789`.
+- The public App was mounted read-only, copied, unmounted and launched. Manager/Web source bytes and version matched the tested source; strict signature checks passed. Chinese/English page and native-menu switching worked. The preference was restored to Chinese; normal quit removed the manager process and closed port 65085.

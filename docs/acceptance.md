@@ -60,4 +60,8 @@
 - 未保存端口 18081 在语言切换后保留；没有保存该测试值。已有聊天原文保留，未发送草稿“运行总览 保存 bilingual 验收”切换后保持原样。未加载新模型。
 - 英文退出重启后管理端口由 63491 改为 63975，界面与原生菜单仍为英文；改回中文再次重启端口为 64126，中文偏好保持。验收后退出 App。
 - 量化页不同模型格式联动恢复、英文本地校验错误有专项回归；独立复审两项修复通过。
-- 本地 alpha.2 DMG 构建成功；App 严格签名验证通过，ad hoc / 未 Apple 公证。公开安装包验收在发布后补记。
+- 本地 alpha.2 DMG 构建成功；App 严格签名验证通过，ad hoc / 未 Apple 公证。公开安装包已按下述记录验收。
+
+- 公开 [alpha.2 CI](https://github.com/alickfine/TensorFold-Manager/actions/runs/36513259885) 全部通过，149 Python / 48 Web / 原生检查、构建与发布均成功。
+- 从 [alpha.2 Release](https://github.com/alickfine/TensorFold-Manager/releases/tag/v0.1.0-alpha.2) 下载 DMG，SHA256 与文件清单和 GitHub digest 一致：`a080d5a66ade9c6c2b22371d94a23d0dfb2a19e7c9c762957ce20fd359ae5789`。
+- 只读挂载、复制、卸载后实际启动公开 App；manager / Web 源码与已验证源码逐字节一致、版本正确、严格签名通过。中文与英文页面及原生菜单实际切换，验收后恢复中文并正常退出，管理进程消失、65085 端口关闭。
