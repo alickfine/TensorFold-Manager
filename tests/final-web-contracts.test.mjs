@@ -117,6 +117,26 @@ test('owned service remains observable but is excluded from external switch cont
   assert.match(output, /external-snapshot/);
 });
 
+test('overview and server use the actual native system and engine health schema', () => {
+  const overview = renderOverview({
+    snapshot:{ ...baseSnapshot, engine:{ state:'ready', control_owner:'manager', child_exit_confirmed:false, health_detail:{ memory:{ footprint:15438900816 } } } },
+    pageData:{ services:{ services:[] } },
+  });
+  assert.match(overview, /引擎内存/);
+  assert.match(overview, /14\.4 GB/);
+  assert.match(overview, /上游 health 实际采样/);
+  assert.doesNotMatch(overview, /运行内存/);
+
+  const server = renderServer({
+    snapshot:{ ...baseSnapshot, system:{ architecture:'arm64', hostname:'Mac', manager_pid:123 }, engine:{ state:'attached', pid:86999 } },
+  });
+  assert.match(server, /arm64/);
+  assert.match(server, /App 自有生命周期/);
+  assert.match(server, /外部兼容只读接入/);
+  assert.match(server, /已验证确认切换/);
+  assert.doesNotMatch(server, /按端口终止外部服务/);
+});
+
 test('attached verified services remain usable for chat and benchmark', () => {
   const snapshot = { ...baseSnapshot, engine:{ state:'attached', control_owner:'external', model:'org/qwen' } };
   const chat = renderChat({ snapshot, chat:{ options:{}, messages:[], streaming:false } });
@@ -281,6 +301,31 @@ test('pure request builders preserve exact backend paths and bodies for click co
   assert.equal(await contracts.optionalCredentialStatus(async () => { calls += 1; }, unavailable), unavailable);
   assert.equal(calls, 1);
   await assert.rejects(contracts.optionalCredentialStatus(async () => { throw Object.assign(new Error('offline'), { code:'http_error' }); }), /offline/);
+});
+
+test('poll policy refreshes live routes without replacing focused editors or streaming chat', async () => {
+  const contracts = await import('../web/contracts.js');
+  const livePages = ['overview', 'models', 'downloads', 'model-tools', 'updates', 'stats', 'cache', 'logs', 'benchmark', 'accuracy', 'server'];
+  for (const page of livePages) {
+    assert.equal(contracts.shouldPollLivePage(page, { editing:false, streaming:false }), true, `${page} should refresh while idle`);
+  }
+  for (const page of ['chat', 'auth', 'api', 'engine-config', 'model-config', 'capabilities']) {
+    assert.equal(contracts.shouldPollLivePage(page, { editing:false, streaming:false }), false, `${page} should not be replaced by polling`);
+  }
+  assert.equal(contracts.shouldPollLivePage('benchmark', { editing:true, streaming:false }), false);
+  assert.equal(contracts.shouldPollLivePage('accuracy', { editing:false, streaming:true }), false);
+
+  const outsideForm = (tagName, extra = {}) => ({ tagName, closest:() => null, ...extra });
+  for (const tag of ['INPUT', 'SELECT', 'TEXTAREA']) assert.equal(contracts.isPollEditingTarget(outsideForm(tag)), true);
+  assert.equal(contracts.isPollEditingTarget(outsideForm('DIV', { isContentEditable:true })), true);
+  assert.equal(contracts.isPollEditingTarget({ tagName:'BUTTON', closest:() => ({}) }), true, 'a focused control inside a form remains protected');
+  assert.equal(contracts.isPollEditingTarget(outsideForm('BUTTON')), false);
+  assert.equal(contracts.isPollEditingTarget(null), false);
+
+  const appSource = readFileSync(new URL('../web/app.js', import.meta.url), 'utf8');
+  const pollSource = appSource.slice(appSource.indexOf('setInterval(async () =>'));
+  assert.match(pollSource, /await refreshSnapshot\(\{ render:false \}\)/, 'chrome snapshot still refreshes while editing');
+  assert.match(pollSource, /await loadPageData\(polledPage, \{ render:false \}\)[\s\S]*renderCurrent\(\)/, 'live route data loads before rendering');
 });
 
 test('every shipped page renders and every visible action or form has an application handler', async () => {

@@ -1,5 +1,20 @@
 const exactRepo = /^[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const providers = new Set(['hf-download', 'hf-upload', 'modelscope-download']);
+const livePollPages = new Set([
+  'overview', 'models', 'downloads', 'model-tools', 'updates',
+  'stats', 'cache', 'logs', 'benchmark', 'accuracy', 'server',
+]);
+
+export function shouldPollLivePage(page, { editing = false, streaming = false } = {}) {
+  return !editing && !streaming && livePollPages.has(page);
+}
+
+export function isPollEditingTarget(element) {
+  if (!element) return false;
+  const tagName = String(element.tagName ?? '').toLowerCase();
+  if (['input', 'select', 'textarea'].includes(tagName) || element.isContentEditable === true) return true;
+  return Boolean(element.closest?.('form, [contenteditable]:not([contenteditable="false"])'));
+}
 
 function post(path, body = {}) {
   return { path, options:{ method:'POST', body } };

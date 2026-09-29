@@ -1,7 +1,7 @@
 import { api } from './api.js';
 import { exportTextFile } from './export.js';
 import { parseChatOptions, chatRequest } from './chat-options.js';
-import { serviceSwitchRequest, engineStopRequest, engineDetachRequest, credentialRequest, credentialDeleteRequest, quantizeRequest, uploadPrepareRequest, uploadConfirmRequest, downloadRequest, optionalCredentialStatus } from './contracts.js';
+import { serviceSwitchRequest, engineStopRequest, engineDetachRequest, credentialRequest, credentialDeleteRequest, quantizeRequest, uploadPrepareRequest, uploadConfirmRequest, downloadRequest, optionalCredentialStatus, shouldPollLivePage, isPollEditingTarget } from './contracts.js';
 import { formValues, escapeHtml, capability } from './views/shared.js';
 import { serializeSettings, partitionProfileConfig } from './views/settings.js';
 import { renderOverview } from './views/overview.js';
@@ -515,11 +515,13 @@ async function initialize() {
     renderCurrent();
     setInterval(async () => {
       try {
-        const editing = document.activeElement?.closest?.('form');
         await refreshSnapshot({ render:false });
-        if (!editing && !state.chat.streaming && ['overview', 'models', 'downloads', 'model-tools', 'updates'].includes(state.page)) {
-          if (['overview', 'downloads', 'model-tools'].includes(state.page)) await loadPageData(state.page, { render:false });
-          renderCurrent();
+        const polledPage = state.page;
+        const editing = isPollEditingTarget(document.activeElement);
+        if (shouldPollLivePage(polledPage, { editing, streaming:state.chat.streaming })) {
+          await loadPageData(polledPage, { render:false });
+          const stillEditing = isPollEditingTarget(document.activeElement);
+          if (state.page === polledPage && shouldPollLivePage(polledPage, { editing:stillEditing, streaming:state.chat.streaming })) renderCurrent();
         }
       } catch (error) {
         document.querySelector('#poll-status').textContent = `刷新失败：${error.message}`;
