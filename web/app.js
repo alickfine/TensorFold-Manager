@@ -17,6 +17,7 @@ import { renderAuth } from './views/auth.js';
 import { renderUpdates } from './views/updates.js';
 import { renderLogs } from './views/logs.js';
 import { renderBenchmark } from './views/benchmark.js';
+import { renderAccuracy } from './views/accuracy.js';
 import { renderChat } from './views/chat.js';
 import { renderCapabilities } from './views/capabilities.js';
 
@@ -24,14 +25,14 @@ const PAGE_LABELS = {
   overview:'运行总览', stats:'统计与用量', cache:'缓存管理', models:'模型库', downloads:'模型下载器',
   'model-config':'模型配置', 'model-tools':'量化与上传', 'engine-config':'推理框架配置', server:'服务器与目录',
   api:'API 与集成', auth:'认证与密钥', updates:'版本与更新', logs:'运行日志', benchmark:'基准测试',
-  chat:'内置聊天', capabilities:'功能适配表',
+  accuracy:'参考答案测试', chat:'内置聊天', capabilities:'功能适配表',
 };
 
 const renderers = {
   overview:renderOverview, stats:renderStats, cache:renderCache, models:renderModels, downloads:renderDownloads,
   'model-config':renderModelConfig, 'model-tools':renderModelTools, 'engine-config':renderEngineConfig, server:renderServer,
   api:renderApi, auth:renderAuth, updates:renderUpdates, logs:renderLogs, benchmark:renderBenchmark,
-  chat:renderChat, capabilities:renderCapabilities,
+  accuracy:renderAccuracy, chat:renderChat, capabilities:renderCapabilities,
 };
 
 const state = {
@@ -131,6 +132,8 @@ async function loadPageData(page = state.page, { render = true } = {}) {
   } else if (page === 'logs') {
     const params = new URLSearchParams({ level:state.filters.logLevel, query:state.filters.logQuery, limit:state.filters.logLimit });
     state.pageData.logs = await api.request(`/api/logs?${params}`);
+  } else if (page === 'accuracy') {
+    state.pageData.accuracy = await api.request('/api/accuracy');
   } else if (page === 'benchmark') {
     state.pageData.benchmark = await api.request('/api/benchmark/results');
   } else if (page === 'chat') {
@@ -176,6 +179,15 @@ async function saveText(path, filename) {
 }
 
 async function handleAction(action, value, element) {
+  if (action === 'accuracy-run') return run('参考测试队列已创建', () => api.request('/api/accuracy/run', {method:'POST',body:{}}));
+  if (action === 'accuracy-delete') {
+    if (confirm('删除这个参考测试题目？已有结果保留。')) return run('题目已删除', () => api.request(`/api/accuracy/cases/${encodeURIComponent(value)}`, {method:'DELETE'}));
+    return;
+  }
+  if (action === 'accuracy-reset') {
+    if (confirm('清空全部参考测试结果？题目保留。')) return run('结果已清空', () => api.request('/api/accuracy/reset', {method:'POST',body:{confirm:true}}));
+    return;
+  }
   if (action === 'logs-export') {
     const records = state.pageData.logs?.logs ?? [];
     const result = await exportTextFile({name:'tensorfold-logs.json',content:JSON.stringify(records,null,2)});
@@ -353,6 +365,7 @@ async function sendChat(message) {
 async function handleForm(form) {
   const action = form.dataset.form;
   const values = formValues(form);
+  if (action === 'accuracy-add') return run('参考题目已添加', () => api.request('/api/accuracy/cases',{method:'POST',body:{...values,max_tokens:Number(values.max_tokens)}}));
   if (action === 'chat-settings') { state.chat.options = parseChatOptions(values,state.snapshot?.settings); toast('生成设置已应用'); return; }
   if (action === 'settings-save') return run('设置已保存', () => api.request('/api/settings', { method:'PUT', body:serializeSettings(values) }));
   if (action === 'model-config-save') {

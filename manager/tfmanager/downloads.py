@@ -1,4 +1,4 @@
-"""Public HF/mirror/ModelScope downloads: pinned identity, private staging, no ambient credentials."""
+"""Pinned downloads with explicit app-owned credentials and private staging."""
 import hashlib
 import json
 import os
@@ -12,7 +12,7 @@ class SafeRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self,req,fp,code,msg,headers,newurl):
         target=urllib.parse.urlsplit(newurl)
         if target.scheme!='https' or target.username or target.password:raise APIError('Unsafe download redirect','unsafe_redirect',502)
-        # There are no credential headers on these public downloads. Strip defensively anyway.
+        # Credentials never follow redirects, including same-origin signed download redirects.
         result=super().redirect_request(req,fp,code,msg,headers,newurl)
         if result:
             for key in ('Authorization','Cookie','Proxy-Authorization'):result.remove_header(key)
@@ -24,8 +24,8 @@ def public_open(url,headers=None,timeout=30):
     request=urllib.request.Request(url,headers={'User-Agent':'TensorFold-Manager/0.1','Accept':'application/json'}|(headers or {}))
     return urllib.request.build_opener(urllib.request.ProxyHandler({}),SafeRedirect()).open(request,timeout=timeout)
 
-def public_json(url):
-    with public_open(url) as response:return json.load(response)
+def public_json(url,headers=None):
+    with public_open(url,headers) as response:return json.load(response)
 
 def safe_target(root,name):
     if not isinstance(name,str) or '\\' in name or '\x00' in name:raise APIError('Unsafe repository filename')
@@ -42,14 +42,19 @@ def safe_target(root,name):
 
 class Downloads:
     SOURCES={'huggingface':'https://huggingface.co','hf-mirror':'https://hf-mirror.com','modelscope':'https://modelscope.cn'}
-    def __init__(self,store,jobs):
+    def __init__(self,store,jobs,credentials=None):
+        self.credentials=credentials
         self.store=store;self.jobs=jobs;self.root=store.root/'models';self.root.mkdir(exist_ok=True,mode=0o700);jobs.register('download',self.run)
     def catalog(self):
         from .models import CATALOG
-        return {'models':CATALOG,'sources':[{'id':id,'url':url,'third_party':id=='hf-mirror','credentials_supported':False} for id,url in self.SOURCES.items()],'default_directory':str(self.root),'revision_policy':'Resolve once to immutable commit; verify each file identity before publish'}
+        return {'models':CATALOG,'sources':[{'id':id,'url':url,'third_party':id=='hf-mirror','credentials_supported':id!='hf-mirror'} for id,url in self.SOURCES.items()],'default_directory':str(self.root),'revision_policy':'Resolve once to immutable commit; verify each file identity before publish'}
     def create(self,data):
         repo=repo_id(data.get('repo'));source=data.get('source','huggingface')
         if source not in self.SOURCES:raise APIError('Unknown download source')
+        use_credentials=data.get('use_credentials',False)
+        if not isinstance(use_credentials,bool):raise APIError('use_credentials must be a boolean')
+        if use_credentials and source=='hf-mirror':raise APIError('Credentials cannot be sent to a third-party mirror','credential_origin_forbidden',409)
+        if use_credentials and self.credentials is None:raise APIError('App credential helper unavailable','credential_helper_unavailable',409)
         revision=data.get('revision') or 'main'
         if not isinstance(revision,str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,127}',revision) or '..' in revision:raise APIError('Invalid revision')
         directory=Path(data.get('directory') or self.root).expanduser()
@@ -59,7 +64,7 @@ class Downloads:
         if str(directory.resolve()) not in scopes:raise APIError('Grant explicit write scope to this download directory first','write_scope_required',409)
         if directory.is_symlink():raise APIError('Download destination cannot be a symlink')
         directory.mkdir(parents=True,exist_ok=True,mode=0o700)
-        return self.jobs.create('download',{'repo':repo,'source':source,'revision':revision,'directory':str(directory.resolve())})
+        return self.jobs.create('download',{'repo':repo,'source':source,'revision':revision,'directory':str(directory.resolve()),'use_credentials':use_credentials})
     def grant_scope(self,data):
         if data.get('confirm') is not True:raise APIError('Explicit directory write confirmation required')
         raw=data.get('directory')
@@ -68,15 +73,26 @@ class Downloads:
         if path.is_symlink() or path.resolve()==Path('/') or self.store.root in path.resolve().parents:raise APIError('Choose a separate model directory')
         scopes=self.store.get('download_scopes',default=[str(self.root)]);scopes=list(dict.fromkeys(scopes+[str(path.resolve())]));self.store.put('download_scopes',scopes)
         return {'directories':scopes}
+    def request_headers(self,params,url):
+        if not params.get('use_credentials'):return {}
+        source=params['source'];parsed=urllib.parse.urlsplit(url)
+        expected={'huggingface':'huggingface.co','modelscope':'modelscope.cn'}.get(source)
+        if not expected or parsed.scheme!='https' or parsed.netloc!=expected or parsed.username or parsed.password:
+            raise APIError('Credential destination is not the exact official source','credential_origin_forbidden',409)
+        if self.credentials is None:raise APIError('App credential helper unavailable','credential_helper_unavailable',409)
+        provider='hf-download' if source=='huggingface' else 'modelscope-download'
+        return {'Authorization':'Bearer '+self.credentials.get(provider)}
     def metadata(self,params):
         repo=params['repo'];base=self.SOURCES[params['source']];rev=urllib.parse.quote(params['revision'],safe='')
         if params['source']=='modelscope':
-            payload=public_json(f'{base}/api/v1/models/{repo}/repo/files?Revision={rev}&Recursive=true')
+            url=f'{base}/api/v1/models/{repo}/repo/files?Revision={rev}&Recursive=true'
+            payload=public_json(url,headers=self.request_headers(params,url))
             data=payload.get('Data',{});revision=data.get('Revision') or params['revision']
             if not re.fullmatch(r'[0-9a-f]{40,64}',revision):raise APIError('ModelScope requires an immutable commit revision','revision_not_pinned',409)
             files=[{'path':f['Path'],'size':f['Size'],'sha256':f.get('Sha256'),'url':f'{base}/api/v1/models/{repo}/repo?Revision={revision}&FilePath='+urllib.parse.quote(f['Path'],safe='')} for f in data.get('Files',[]) if f.get('Type')!='tree']
         else:
-            payload=public_json(f'{base}/api/models/{repo}/revision/{rev}?blobs=true');revision=payload.get('sha','')
+            url=f'{base}/api/models/{repo}/revision/{rev}?blobs=true'
+            payload=public_json(url,headers=self.request_headers(params,url));revision=payload.get('sha','')
             if not re.fullmatch(r'[0-9a-f]{40,64}',revision):raise APIError('Source did not return an immutable commit','revision_not_pinned',502)
             files=[]
             for f in payload.get('siblings',[]):
@@ -112,7 +128,8 @@ class Downloads:
                 try:self.verify_file(target,entry)
                 except APIError:offset=0 # Explicit retry rewrites only this task-owned corrupt partial.
             if offset<entry['size']:
-                headers={'Range':f'bytes={offset}-'} if offset else {}
+                headers=self.request_headers(params,entry['url'])
+                if offset:headers['Range']=f'bytes={offset}-'
                 with public_open(entry['url'],headers) as response:
                     append=bool(offset and response.status==206)
                     if append and not response.headers.get('Content-Range','').startswith(f'bytes {offset}-'):raise APIError('Invalid resume response','integrity_error',502)
