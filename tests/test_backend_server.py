@@ -61,3 +61,31 @@ class BenchmarkTests(unittest.TestCase):
    time.sleep(.02)
   self.assertEqual(job['status'],'completed');self.assertIsInstance(job['result']['results'][0]['ttft'],float)
   self.assertEqual(job['result']['results'][0]['output_tokens'],1)
+
+class StreamEdgeTests(unittest.TestCase):
+ setUp=ServerTests.setUp
+ request=ServerTests.request
+ def start_engine(self):
+  model=self.app.store.root/'models'/'qwen';model.mkdir(parents=True)
+  (model/'config.json').write_text(json.dumps({'_name_or_path':'Vontra/Qwen3.8-27B-MLX-4bit'}));(model/'model.safetensors').write_bytes(b'fixture')
+  self.app.engine.start(str(model));wait_state(self.app.engine,'ready')
+ def test_truncated_stream_records_error(self):
+  self.start_engine();self.request('/api/chat/completions','POST',{'messages':[{'role':'user','content':'incomplete'}],'stream':True})
+  record=self.app.store.stats()['requests'][0]
+  self.assertEqual(record['status'],502);self.assertIn('before completion',record['error'])
+ def test_benchmark_cancel_interrupts_prefill(self):
+  self.start_engine();_,raw=self.request('/api/benchmark','POST',{'prompt':'slow','runs':1,'max_tokens':1});id=json.loads(raw)['id'];time.sleep(.2)
+  self.request('/api/jobs/'+id+'/cancel','POST',{})
+  for _ in range(50):
+   row=self.app.jobs.get(id)
+   if row['status']=='cancelled':break
+   time.sleep(.02)
+  self.assertEqual(row['status'],'cancelled')
+
+class AppVersionTests(unittest.TestCase):
+ def test_native_app_version_is_reported(self):
+  from unittest.mock import patch
+  with tempfile.TemporaryDirectory() as root,patch.dict(os.environ,{'TFM_APP_VERSION':'1.2.3-test'}):
+   app=Application(Path(root)/'data',root,'token')
+   try:self.assertEqual(app.state()['app_version'],'1.2.3-test')
+   finally:app.store.close()

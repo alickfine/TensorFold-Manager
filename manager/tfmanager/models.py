@@ -1,5 +1,7 @@
 """Read-only discovery of local weights and explicit checkpoint compatibility."""
+import hashlib
 import json
+import re
 from pathlib import Path
 from .state import APIError, repo_id
 
@@ -21,8 +23,14 @@ class Models:
             if not isinstance(config,dict): return None
         except (OSError,ValueError): return None
         repo=config.get('_name_or_path')
-        names={p.name for p in path.parents}|{path.name}
-        match=next((r for r in CATALOG if r['repo']==repo or r['name'] in names or ('models--'+r['repo'].replace('/','--')) in names or r['repo'].replace('/','--') in names),None)
+        names={p.name for p in path.parents}
+        owned=path/'.tfmanager-manifest.json'
+        if owned.is_file():
+            try:
+                manifest=json.loads(owned.read_text())
+                if manifest.get('owner')=='tfmanager':repo=manifest.get('repo',repo)
+            except (OSError,ValueError):pass
+        match=next((r for r in CATALOG if r['repo']==repo or ('models--'+r['repo'].replace('/','--')) in names),None)
         # Follow HF blob links for read-only size/completeness only; never write or delete these files.
         weights=list(path.glob('*.safetensors')); installed=bool(weights)
         index=path/'model.safetensors.index.json'
@@ -31,8 +39,23 @@ class Models:
                 files=set(json.loads(index.read_text())['weight_map'].values())
                 installed=bool(files) and all(isinstance(f,str) and not Path(f).is_absolute() and '..' not in Path(f).parts and (path/f).is_file() for f in files)
             except (ValueError,KeyError,TypeError,OSError): installed=False
+        shards=[re.fullmatch(r'model-(\d+)-of-(\d+)\.safetensors',f.name) for f in weights if f.name.startswith('model-')]
+        if shards:
+            if not all(shards):installed=False
+            else:
+                totals={int(m.group(2)) for m in shards};installed=installed and len(totals)==1 and {int(m.group(1)) for m in shards}==set(range(1,next(iter(totals))+1))
+        validation=self.store.get('model_validation',str(path))
+        if validation and validation.get('fingerprint')!=self.fingerprint(path):validation=None
         size=sum(f.stat().st_size for f in path.rglob('*') if f.is_file())
-        return {'id':str(path),'name':match['name'] if match else path.name,'repo':match['repo'] if match else repo,'path':str(path),'size_bytes':size,'family':config.get('model_type'),'installed':installed,'supported':bool(match),'config':self.store.get('model_config',str(path),{})}
+        return {'id':str(path),'name':match['name'] if match else path.name,'repo':match['repo'] if match else repo,'path':str(path),'size_bytes':size,'family':config.get('model_type'),'installed':installed,'supported':bool(match or validation),'validation':validation,'config':self.store.get('model_config',str(path),{})}
+    @staticmethod
+    def fingerprint(path):
+        path=Path(path);digest=hashlib.sha256((path/'config.json').read_bytes())
+        for file in sorted(path.glob('*.safetensors')):
+            stat=file.stat();digest.update(f'{file.name}:{file.resolve()}:{stat.st_ino}:{stat.st_size}:{stat.st_mtime_ns}'.encode())
+        index=path/'model.safetensors.index.json'
+        if index.is_file():digest.update(index.read_bytes())
+        return digest.hexdigest()
     def scan(self):
         seen=set(); rows=[]
         for root in self.roots():

@@ -50,3 +50,29 @@ class EngineProbeTests(unittest.TestCase):
   (self.model/'reject-info').write_text('incompatible quantization')
   with self.assertRaisesRegex(APIError,'incompatible quantization'):self.engine.start(str(self.model))
   self.assertIsNone(self.engine.status()['pid'])
+
+class ModelConfigurationTests(unittest.TestCase):
+ setUp=EngineTests.setUp
+ def test_saved_model_configuration_is_pending_until_restart(self):
+  self.engine.start(str(self.model));wait_state(self.engine,'ready')
+  self.models.configure({'model':str(self.model),'config':{'temperature':0.1}})
+  self.assertTrue(self.engine.status()['pending'])
+
+class LocalVariantTests(unittest.TestCase):
+ setUp=EngineTests.setUp
+ def test_explicit_cli_validation_allows_variant_and_invalidates_changes(self):
+  (self.model/'config.json').write_text(json.dumps({'model_type':'qwen3_5','quantization':{'bits':4}}))
+  variant=self.model.parent/'Local-Qwen-Variant';self.model.rename(variant)
+  self.assertFalse(self.models.describe(variant)['supported'])
+  self.assertTrue(hasattr(self.engine,'validate_model'),'explicit local variant validation missing')
+  result=self.engine.validate_model(str(variant));self.assertEqual(result['validation']['scope'],'cli_compatibility_only')
+  self.assertTrue(self.models.describe(variant)['supported'])
+  self.engine.start(str(variant));wait_state(self.engine,'ready');self.engine.stop()
+  (variant/'config.json').write_text('{"model_type":"unknown"}')
+  self.assertFalse(self.models.describe(variant)['supported'])
+ def test_validation_rejects_out_of_scope_or_upstream_incompatible(self):
+  self.assertTrue(hasattr(self.engine,'validate_model'),'explicit local variant validation missing')
+  with self.assertRaises(APIError):self.engine.validate_model('/tmp/not-a-model')
+  (self.model/'reject-info').write_text('Unsupported quantization')
+  with self.assertRaisesRegex(APIError,'Unsupported quantization'):self.engine.validate_model(str(self.model))
+  self.assertIsNone(self.store.get('model_validation',str(self.model)))

@@ -21,7 +21,7 @@ def clean_env():
     # Allow-list avoids leaking provider keys, manager auth, Python injection or proxy credentials.
     env={k:v for k,v in os.environ.items() if k in ('HOME','USER','LOGNAME','TMPDIR','LANG','LC_ALL','SYSTEMROOT')}
     env['PATH']='/usr/bin:/bin:/usr/sbin:/sbin'
-    env['PYTHONUNBUFFERED']='1'
+    env['PYTHONUNBUFFERED']='1';env['PYTHONNOUSERSITE']='1'
     return env
 
 def redact(message):

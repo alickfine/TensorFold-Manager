@@ -45,7 +45,8 @@ class Updates:
         if obj.get('type')!='commit' or not re.fullmatch('[0-9a-f]{40}',obj.get('sha','')):raise APIError('Official tag did not resolve to commit')
         return obj['sha']
     def _command(self,argv,job):
-        env=clean_env();env.update(UV_CACHE_DIR=str(self.store.root/'uv-cache'),UV_NO_CONFIG='1',UV_NO_PYTHON_DOWNLOADS='1',GIT_TERMINAL_PROMPT='0',HF_HUB_DISABLE_IMPLICIT_TOKEN='1')
+        home=self.store.root/'installer-home';home.mkdir(exist_ok=True,mode=0o700)
+        env=clean_env();env['HOME']=str(home);env.update(UV_CACHE_DIR=str(self.store.root/'uv-cache'),UV_NO_CONFIG='1',UV_NO_PYTHON_DOWNLOADS='1',GIT_TERMINAL_PROMPT='0',HF_HUB_DISABLE_IMPLICIT_TOKEN='1')
         log=self.store.root/('install-'+job.id+'.log')
         with log.open('a') as output:
             os.chmod(log,0o600)

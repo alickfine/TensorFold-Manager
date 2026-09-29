@@ -25,11 +25,22 @@ def usage_into(record,payload):
 
 def completion(engine,store,data,path='/v1/chat/completions',record=True,observe_stream=False,job=None):
     data=validate_payload(data.copy());data['stream']=observe_stream;data.setdefault('model',engine.status()['model'])
+    finished_job=threading.Event()
     start=time.monotonic();metrics={'model':data['model'],'status':502,'error':None,'ttft':None,'prefill_tps':None,'decode_tps':None,'input_tokens':None,'output_tokens':None}
     try:
         with engine.request() as port:
             connection=http.client.HTTPConnection('127.0.0.1',port,timeout=600)
             try:
+                connection.connect();upstream_socket=connection.sock
+                if job:
+                    job.checkpoint()
+                    def watch_job():
+                        while not finished_job.wait(.05):
+                            if job.cancelled:
+                                try:upstream_socket.shutdown(socket.SHUT_RDWR)
+                                except OSError:pass
+                                return
+                    threading.Thread(target=watch_job,daemon=True).start()
                 connection.request('POST',path,json.dumps(data).encode(),{'Content-Type':'application/json'})
                 response=connection.getresponse();metrics['status']=response.status
                 if observe_stream and response.status<400:
@@ -55,8 +66,12 @@ def completion(engine,store,data,path='/v1/chat/completions',record=True,observe
                 if response.status>=400:raise APIError(str(payload.get('error',payload)),'upstream_error',response.status)
                 usage_into(metrics,payload);return payload,metrics
             finally:connection.close()
-    except Exception as exc:metrics['error']=str(exc);metrics['status']=getattr(exc,'status',502);raise
+    except Exception as exc:
+        metrics['error']=str(exc);metrics['status']=getattr(exc,'status',502)
+        if job and job.cancelled:metrics['status']=499;job.checkpoint()
+        raise
     finally:
+        finished_job.set()
         metrics['elapsed']=time.monotonic()-start
         if record:store.record_request(metrics)
 
@@ -81,11 +96,12 @@ def proxy(handler,app,path,data=None):
             connection.request('POST' if data is not None else 'GET',path,json.dumps(data).encode() if data is not None else None,{'Content-Type':'application/json'})
             response=connection.getresponse();metrics['status']=response.status
             if stream and response.status<400:
-                handler.send_response(response.status);handler.send_header('Content-Type','text/event-stream; charset=utf-8');handler.send_header('Cache-Control','no-store');handler.send_header('Connection','close');handler.security_headers();handler.end_headers();handler.close_connection=True;began=True
+                handler.send_response(response.status);handler.send_header('Content-Type','text/event-stream; charset=utf-8');handler.send_header('Cache-Control','no-store');handler.send_header('Connection','close');handler.security_headers();handler.end_headers();handler.close_connection=True;began=True;finished_stream=False
                 while True:
                     line=response.readline(1024*1024+1)
                     if not line:break
                     if len(line)>1024*1024:raise APIError('Upstream SSE event exceeds limit','upstream_error',502)
+                    if line.startswith(b'data:') and line[5:].strip()==b'[DONE]':finished_stream=True
                     if line.startswith(b'data:') and line[5:].strip()!=b'[DONE]':
                         try:
                             payload=json.loads(line[5:]);usage_into(metrics,payload)
@@ -93,6 +109,7 @@ def proxy(handler,app,path,data=None):
                             if metrics['ttft'] is None and any((c.get('delta') or {}).get('content') or (c.get('delta') or {}).get('reasoning_content') or c.get('text') for c in choices):metrics['ttft']=time.monotonic()-start
                         except (ValueError,TypeError):pass
                     handler.wfile.write(line);handler.wfile.flush()
+                if not finished_stream:raise APIError('Stream ended before completion','incomplete_stream',502)
             else:
                 raw=response.read(MAX_RESPONSE+1)
                 if len(raw)>MAX_RESPONSE:raise APIError('Upstream response too large','upstream_error',502)

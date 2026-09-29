@@ -102,3 +102,27 @@ class DownloadRetryTests(unittest.TestCase):
     if row['status'] in ('completed','failed'):break
     time.sleep(.01)
   self.assertEqual(row['status'],'completed',row)
+
+class EmptyFileTests(unittest.TestCase):
+ setUp=TaskTests.setUp
+ def test_empty_repository_file_is_verified_and_published(self):
+  from unittest.mock import patch
+  downloads=Downloads(self.store,self.jobs)
+  manifest={'sha':'e'*40,'siblings':[{'rfilename':'empty.txt','size':0,'blobId':hashlib.sha1(b'blob 0\0').hexdigest()}]}
+  with patch('tfmanager.downloads.public_json',return_value=manifest):
+   job=downloads.create({'repo':'owner/model'})
+   for _ in range(100):
+    row=self.jobs.get(job['id'])
+    if row['status'] in ('completed','failed'):break
+    time.sleep(.01)
+  self.assertEqual(row['status'],'completed',row)
+  self.assertEqual((Path(row['result']['path'])/'empty.txt').read_bytes(),b'')
+
+class InstallerEnvironmentTests(unittest.TestCase):
+ setUp=TaskTests.setUp
+ def test_installer_cannot_read_ambient_home_credentials(self):
+  from tfmanager.jobs import Job
+  updates=Updates(self.store,self.jobs,None);output=Path(self.tmp.name)/'installer-environment.json'
+  job=Job(self.jobs,{'id':'env-test','params':{}})
+  updates._command([sys.executable,'-c','import json,os,sys;open(sys.argv[1],"w").write(json.dumps({k:os.environ.get(k) for k in ("HOME","PYTHONNOUSERSITE","TFM_ADMIN_TOKEN")}))',str(output)],job)
+  env=json.loads(output.read_text());self.assertTrue(Path(env['HOME']).is_relative_to(self.store.root));self.assertEqual(env['PYTHONNOUSERSITE'],'1');self.assertIsNone(env['TFM_ADMIN_TOKEN'])

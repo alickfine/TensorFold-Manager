@@ -20,10 +20,12 @@ class Handler(BaseHTTPRequestHandler):
  def do_POST(self):
   body=json.loads(self.rfile.read(int(self.headers['Content-Length'])))
   if body.get('stream'):
+   prompt=str(body.get('messages'))
    self.send_response(200); self.send_header('Content-Type','text/event-stream'); self.end_headers()
+   if 'slow' in prompt: time.sleep(5)
    for item in [{'choices':[{'delta':{'content':'ok'}}]}, {'choices':[],'usage':{'prompt_tokens':2,'completion_tokens':1}}]:
     self.wfile.write(('data: '+json.dumps(item)+'\n\n').encode()); self.wfile.flush(); time.sleep(.02)
-   self.wfile.write(b'data: [DONE]\n\n')
+   if 'incomplete' not in prompt:self.wfile.write(b'data: [DONE]\n\n')
   else:
    data=json.dumps({'id':'fixture','choices':[{'message':{'role':'assistant','content':'ok'}}],'usage':{'prompt_tokens':2,'completion_tokens':1}}).encode(); self.send_response(200); self.send_header('Content-Length',str(len(data))); self.end_headers(); self.wfile.write(data)
 HTTPServer(('127.0.0.1',args.port),Handler).serve_forever()

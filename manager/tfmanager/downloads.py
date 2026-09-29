@@ -105,6 +105,7 @@ class Downloads:
         content=safe_target(stage,'content');content.mkdir(exist_ok=True,mode=0o700);done=0;total=sum(f['size'] for f in manifest['files'])
         for entry in manifest['files']:
             job.checkpoint();target=safe_target(content,entry['path']);target.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
+            if entry['size']==0 and not target.exists():target.touch(mode=0o600)
             offset=target.stat().st_size if target.exists() else 0
             if offset>entry['size']:raise APIError('Partial file exceeds expected size','integrity_error',409)
             if offset==entry['size'] and target.exists():

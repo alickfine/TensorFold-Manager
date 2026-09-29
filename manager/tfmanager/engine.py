@@ -16,13 +16,14 @@ class Engine:
     def __init__(self,store,models,command=None,startup_timeout=600,stop_timeout=120):
         self.store=store; self.models=models; self.command=command; self.startup_timeout=startup_timeout; self.stop_timeout=stop_timeout
         self.lifecycle=threading.RLock(); self.lock=threading.RLock(); self.condition=threading.Condition(self.lock)
+        self.active_model_id=None;self.running_model_config=None
         self.active_requests=0; self.draining=False; self.proc=None; self.reader=None; self.running_settings=None
         self.data=dict(state='stopped',pid=None,model=None,version=None,health=None,error=None,started_at=None,pending=False)
     def status(self):
         with self.lock:
             if self.proc and self.proc.poll() is not None and self.data['state'] not in ('stopped','failed'):
                 self.data.update(state='failed',health=False,error='Engine supervisor exited',pid=None)
-            result=self.data.copy(); result['pending']=bool(self.running_settings and self.store.settings()!=self.running_settings); return result
+            result=self.data.copy(); result['pending']=bool(self.running_settings and (self.store.settings()!=self.running_settings or self.store.get('model_config',self.active_model_id,{})!=self.running_model_config)); return result
     def executable(self):
         if self.command:return self.command
         pointer=self.store.get('engine_active',default=None)
@@ -45,12 +46,23 @@ class Engine:
         flags=set(re.findall(r'--[a-z][a-z0-9-]*',help_result.stdout))
         if not {'--host','--port','--snapshot-dir'}<=flags: raise APIError('Engine CLI lacks required isolation options','unsupported_engine',409)
         return {'version':version.stdout.strip(),'flags':sorted(flags)}
-    def build_command(self,model,settings):
-        command=self.executable(); probe=self.probe(command); flags=set(probe['flags'])
-        try:
-            info=subprocess.run(command+['info',model['path']],env=clean_env(),capture_output=True,text=True,timeout=30)
+    def inspect_model(self,command,path):
+        env=clean_env();env.update(HF_HUB_OFFLINE='1',HF_HUB_DISABLE_IMPLICIT_TOKEN='1',HF_HOME=str(self.store.root/'hf-runtime'),TENSORFOLD_NO_UPDATE_CHECK='1')
+        try:info=subprocess.run(command+['info',path],env=env,capture_output=True,text=True,timeout=30)
         except (OSError,subprocess.TimeoutExpired) as exc:raise APIError('Model preflight failed: '+str(exc),'model_preflight_failed',409)
         if info.returncode:raise APIError('Model preflight failed: '+(info.stderr or info.stdout)[-4000:],'unsupported_model',409)
+        return info.stdout.strip()[-8000:]
+    def validate_model(self,value):
+        if not isinstance(value,str) or not Path(value).expanduser().is_absolute():raise APIError('An absolute local model path is required')
+        row=self.models.describe(Path(value).expanduser())
+        if not row or not row['installed']:raise APIError('Model weights are incomplete or missing','model_missing',409)
+        command=self.executable();probe=self.probe(command);info=self.inspect_model(command,row['path'])
+        validation={'scope':'cli_compatibility_only','verified_at':time.time(),'engine_version':probe['version'],'cli_info':info,'fingerprint':self.models.fingerprint(row['path']),'loaded':False,'note':'CLI compatibility was checked. Weight provenance and successful model loading have not been verified.'}
+        self.store.put('model_validation',validation,row['id']);self.models.scan()
+        return {'model':self.models.describe(Path(row['path'])),'validation':validation}
+    def build_command(self,model,settings):
+        command=self.executable(); probe=self.probe(command); flags=set(probe['flags'])
+        self.inspect_model(command,model['path'])
         argv=command+['serve',model['path'],'--host','127.0.0.1','--port',str(settings['engine_port']),'--snapshot-dir',str(self.store.snapshots)]
         for key in ('context','max_tokens','temperature','top_p','top_k','parallel','prompt_cache_gib','mlx_cache_gib'):
             flag='--'+key.replace('_','-')
@@ -76,7 +88,7 @@ class Engine:
             self.proc=subprocess.Popen(supervisor,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True,bufsize=1,env=clean_env(),start_new_session=True)
             self.proc.stdin.write(json.dumps({'argv':argv,'env':env,'stop_timeout':self.stop_timeout})+'\n'); self.proc.stdin.flush()
             with self.lock:
-                self.running_settings=settings; self.draining=False
+                self.running_settings=settings;self.active_model_id=row['id'];self.running_model_config=self.store.get('model_config',row['id'],{}); self.draining=False
                 self.data.update(state='starting',pid=None,model=row['repo'] or row['id'],version=probe['version'],health=False,error=None,started_at=time.time())
             self.reader=threading.Thread(target=self._events,args=(self.proc,),daemon=True); self.reader.start()
             threading.Thread(target=self._wait_ready,args=(self.proc,settings['engine_port']),daemon=True).start()

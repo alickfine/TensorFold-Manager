@@ -31,6 +31,7 @@ class Server(ThreadingHTTPServer):
 class Application:
     def __init__(self,data_dir,web_dir,token,engine_command=None):
         if not token:raise ValueError('Admin token required')
+        self.app_version=os.environ.get('TFM_APP_VERSION') or __version__
         self.token=token;self.instance_id=secrets.token_hex(16);self.web_dir=Path(web_dir).resolve();self.store=Store(data_dir)
         self.models=Models(self.store);self.engine=Engine(self.store,self.models,command=engine_command);self.jobs=Jobs(self.store)
         self.downloads=Downloads(self.store,self.jobs);self.updates=Updates(self.store,self.jobs,self.engine)
@@ -58,7 +59,7 @@ class Application:
         for name in ('chat','streaming','benchmark','downloads','profiles','keys','cache','updates'):result[name]={'supported':True,'reason':None}
         return result
     def state(self):
-        return {'app_version':__version__,'instance_id':self.instance_id,'settings':self.store.settings(),'engine':self.engine.status(),'system':self.system(),'models':self.models.rows,'stats':self.store.stats(),'jobs':self.jobs.list(),'keys':self.store.keys(),'capabilities':self.capabilities(),'update':self.updates.status(),'profiles':self.store.profiles(),'gateway':{'port':self.gateway.server_port if self.gateway else None,'error':self.gateway_error,'pending':bool(self.gateway and self.gateway.server_port!=self.store.settings()['gateway_port'])}}
+        return {'app_version':self.app_version,'instance_id':self.instance_id,'settings':self.store.settings(),'engine':self.engine.status(),'system':self.system(),'models':self.models.rows,'stats':self.store.stats(),'jobs':self.jobs.list(),'keys':self.store.keys(),'capabilities':self.capabilities(),'update':self.updates.status(),'profiles':self.store.profiles(),'gateway':{'port':self.gateway.server_port if self.gateway else None,'error':self.gateway_error,'pending':bool(self.gateway and self.gateway.server_port!=self.store.settings()['gateway_port'])}}
     def cache(self):
         root=self.store.snapshots;owned=not root.is_symlink() and root.resolve()==self.store.root/'snapshots' and (root/'.tfmanager-owned').is_file() and not (root/'.tfmanager-owned').is_symlink()
         files=[p for p in root.rglob('*') if p.is_file() and p.name!='.tfmanager-owned' and not p.is_symlink()] if owned else []
@@ -164,6 +165,7 @@ class Application:
                     elif path=='/api/engine/stop':result=app.engine.stop(force=data.get('force') is True)
                     elif path=='/api/engine/restart':result=app.engine.restart(data.get('model'))
                     elif path=='/api/models/scan':result={'models':app.models.scan()}
+                    elif path=='/api/models/validate':result=app.engine.validate_model(data.get('model'))
                     elif path=='/api/profiles':result=app.store.profile_save(data)
                     elif path=='/api/keys':result=app.store.key_create(data)
                     elif path.startswith('/api/keys/') and path.endswith('/toggle'):result=app.store.key_toggle(path.split('/')[3])
