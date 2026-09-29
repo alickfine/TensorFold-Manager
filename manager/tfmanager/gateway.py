@@ -53,9 +53,8 @@ def completion(engine,store,data,path='/v1/chat/completions',record=True,observe
     finished_job=threading.Event()
     start=time.monotonic();metrics={'model':data['model'],'status':502,'error':None,'ttft':None,'prefill_tps':None,'decode_tps':None,'input_tokens':None,'output_tokens':None}
     try:
-        with engine.request() as port:
+        with engine.request() as connection:
             metrics.update(request_metadata(engine,data));metrics['model']=data['model']
-            connection=http.client.HTTPConnection('127.0.0.1',port,timeout=600)
             try:
                 connection.connect();upstream_socket=connection.sock
                 if job:
@@ -110,9 +109,8 @@ def proxy(handler,app,path,data=None):
     stream=bool(data and data.get('stream'));start=time.monotonic();metrics={'model':data.get('model') if data else app.engine.status()['model'],'status':502,'error':None,'ttft':None}
     began=False;done=threading.Event();disconnected=threading.Event();connection=None
     try:
-        with app.engine.request() as port:
+        with app.engine.request() as connection:
             if data is not None:metrics.update(request_metadata(app.engine,data));metrics['model']=data['model']
-            connection=http.client.HTTPConnection('127.0.0.1',port,timeout=600)
             connection.connect();upstream_socket=connection.sock
             def watch_client():
                 # A browser Abort closes the upstream socket immediately, including during prefill.

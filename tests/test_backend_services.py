@@ -23,7 +23,7 @@ class ServicesTests(unittest.TestCase):
  def setUp(self):
   self.store=Mock();self.jobs=Mock();self.jobs.create.side_effect=lambda kind,params:{'kind':kind,'params':params}
   self.engine=Mock();self.engine.data={'state':'stopped'};self.engine.proc=None;self.engine.attachment=None;self.engine.lifecycle=threading.RLock();self.engine.prepare_start.return_value=({'path':'/target'}, {}, {})
-  self.resources=Mock();self.resources.estimate.return_value={'required_bytes':100,'missing':[]};self.resources.preflight_start.return_value={'allowed':True,'attachment':None}
+  self.resources=Mock();self.resources.estimate.return_value={'required_bytes':100,'missing':[]};self.resources.preflight_start.return_value={'allowed':True,'attachment':None};self.resources.preflight_capacity.return_value={'allowed':True}
   self.lease=Mock();self.resources.acquire_switch.return_value=self.lease
   self.service={'pid':42,'uid':os.getuid(),'kind':'tensorfold','executable':'/python','start_time':'today','command_signature':'abc','model_path':'/old','listening_ports':[43219],'port':43219,'health':{'status':'ok'},'argv_verified':True}
   self.resources.snapshot.return_value={'services':[self.service]};self.resources.observer.identity.return_value=self.service
@@ -51,6 +51,11 @@ class ServicesTests(unittest.TestCase):
  def test_permission_error_disables_external_control(self):
   self.native.bind.side_effect=APIError('Permission denied')
   row=self.services.list()['services'][0];self.assertFalse(row['control']['supported']);self.assertIsNone(row['snapshot_id'])
+ def test_physical_capacity_or_missing_probe_does_not_drain_detach_or_signal(self):
+  for report in ({'allowed':False,'missing':[],'blockers':['target_exceeds_physical_capacity_after_system_reserve']},{'allowed':False,'missing':['physical_memory'],'blockers':[]}):
+   self.resources.preflight_capacity.return_value=report;self.engine.attachment={'pid':42}
+   with self.assertRaises(APIError):self.run_confirmed()
+   self.engine.drain.assert_not_called();self.engine.detach.assert_not_called();self.native.terminate.assert_not_called();self.engine.start.assert_not_called()
  def test_unknown_target_budget_leaves_old_service_running(self):
   self.resources.estimate.return_value={'required_bytes':None,'missing':['architecture']}
   with self.assertRaises(APIError):self.run_confirmed()
@@ -111,7 +116,9 @@ class NativeOwnedFixtureTests(unittest.TestCase):
    observer=ControlledObserver();gate=ResourceGate(store,observer=observer,lock_dir=store.root/'locks');engine=Engine(store,Models(store),command=[sys.executable,str(FIXTURE)],resources=gate,startup_timeout=3,stop_timeout=2)
    try:
     for _ in range(60):
-     try:Engine.verify_api(old_port);break
+     try:
+      from tfmanager.peer import BoundHTTPConnection
+      native=NativeInstances();connection=BoundHTTPConnection(old_port,proc.pid,native.bind(proc.pid));connection.request('GET','/health');connection.getresponse().read();connection.close();break
      except Exception:time.sleep(.02)
     else:self.fail('Controlled fixture did not listen')
     services=Services(store,jobs,engine,gate,timeout=3);snapshot=services.list()['services'][0]['snapshot_id'];self.assertTrue(snapshot)

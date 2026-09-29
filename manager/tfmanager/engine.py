@@ -12,10 +12,13 @@ import threading
 import time
 from .state import APIError,clean_env,ADVANCED_OPTIONS
 from .resources import ResourceGate,ResourceBlocked,GIB
+from .peer import BoundHTTPConnection
+from .services import NativeInstances
 
 class Engine:
     def __init__(self,store,models,command=None,startup_timeout=600,stop_timeout=120,resources=None):
         self.resources=resources or ResourceGate(store);self.lease=None;self.attachment=None
+        self.native=NativeInstances();self.peer_token=None;self.child_liveness=None;self.child_exit_confirmed=True
         self.store=store; self.models=models; self.command=command; self.startup_timeout=startup_timeout; self.stop_timeout=stop_timeout
         self.lifecycle=threading.RLock(); self.lock=threading.RLock(); self.condition=threading.Condition(self.lock)
         self.active_model_id=None;self.running_model_config=None;self.running_parameters=None
@@ -24,8 +27,9 @@ class Engine:
     def status(self):
         with self.lock:
             if self.attachment and not self.resources.verify_attachment(self.attachment):self.data.update(state='failed',health=False,error='External service identity or health changed; detach and revalidate')
-            if self.proc and self.proc.poll() is not None and self.data['state'] not in ('stopped','failed'):
-                self.data.update(state='failed',health=False,error='Engine supervisor exited',pid=None)
+            if self.proc and self.proc.poll() is not None:
+                self.data['child_exit_confirmed']=not self._child_alive()
+                if self.data['state'] not in ('stopped','failed'):self.data.update(state='failed',health=False,error='Engine supervisor exited; child exit must be confirmed')
             self._sample_health()
             result=self.data.copy();result['active_requests']=self.active_requests;result['draining']=self.draining; result['pending']=bool(self.running_settings and (self.store.settings()!=self.running_settings or self.store.get('model_config',self.active_model_id,{})!=self.running_model_config)); return result
     def _sample_health(self):
@@ -37,12 +41,12 @@ class Engine:
         now=time.monotonic()
         if getattr(self,'_health_sample_key',None)==key and now-getattr(self,'_health_checked',0)<2:return
         self._health_sample_key=key;self._health_checked=now
-        connection=http.client.HTTPConnection('127.0.0.1',port,timeout=.5)
+        connection=self.connection(port,timeout=.5)
         try:
             connection.request('GET','/health');response=connection.getresponse();raw=response.read(1048577)
             if response.status!=200 or len(raw)>1048576:raise ValueError('health response unavailable')
             payload=json.loads(raw)
-            if not isinstance(payload,dict) or payload.get('status') not in ('ok','ready','healthy') or payload.get('model')!=self.data.get('served_name'):
+            if not isinstance(payload,dict) or payload.get('status') not in ('ok','ready','healthy') or payload.get('model')!=self.data.get('served_name') or payload.get('warming') is not False:
                 raise ValueError('health model identity differs from the selected service')
             memory=payload.get('memory') or {}
             if not isinstance(memory,dict):raise ValueError('health memory response is invalid')
@@ -50,8 +54,8 @@ class Engine:
             detail={k:payload.get(k) for k in ('status','model','warming','max_batch_size')}
             detail['memory']=safe_memory
             self.data.update(health_detail=detail,last_health_at=time.time(),health_error=None)
-        except (OSError,ValueError,http.client.HTTPException):
-            self.data.update(health_detail=None,health_error='Current health model identity or endpoint could not be verified')
+        except (OSError,ValueError,APIError,http.client.HTTPException,subprocess.TimeoutExpired):
+            self.data.update(state='failed',health=False,health_detail=None,health_error='Current health model identity or endpoint could not be verified',error='Current health model identity or endpoint could not be verified')
         finally:connection.close()
     def executable(self):
         if self.command:return self.command
@@ -134,6 +138,7 @@ class Engine:
     def start(self,model,allow_attach=True,_lease=None):
         with self.lifecycle:
             row,settings,effective=self.prepare_start(model)
+            if self.proc and self.proc.poll() is not None and self._child_alive():raise APIError('Prior engine child exit is not confirmed','child_exit_unconfirmed',409)
             if self.attachment or (self.proc and self.proc.poll() is None):
                 if self.active_model_id==row['id'] and self.runtime_config(self.running_parameters)==self.runtime_config(effective):return self.status()
                 raise APIError('Stop the current engine and wait for release before changing model or configuration','engine_busy',409)
@@ -159,12 +164,17 @@ class Engine:
                 mtp=Path(row['path'])/'mtp-4bit.safetensors'
                 env['TF_NEMOTRON_MTP']=str(mtp) if mtp.is_file() and not effective.get('no_drafts') and effective.get('mtp_drafts')!=0 else '0'
                 supervisor=[sys.executable,'-B',str(Path(__file__).with_name('supervisor.py'))]
-                self.proc=subprocess.Popen(supervisor,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True,bufsize=1,env=clean_env(),start_new_session=True,pass_fds=(lease.fd,))
-                self.lease=lease
-                self.proc.stdin.write(json.dumps({'argv':argv,'env':env,'stop_timeout':self.stop_timeout,'lease_fd':lease.fd})+'\n');self.proc.stdin.flush()
+                if self.child_liveness is not None:os.close(self.child_liveness)
+                live_read,live_write=os.pipe();os.set_blocking(live_read,False)
+                self.child_liveness=live_read;self.child_exit_confirmed=False;self.peer_token=None
+                try:
+                    self.proc=subprocess.Popen(supervisor,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True,bufsize=1,env=clean_env(),start_new_session=True,pass_fds=(lease.fd,live_write))
+                    self.lease=lease
+                    self.proc.stdin.write(json.dumps({'argv':argv,'env':env,'stop_timeout':self.stop_timeout,'lease_fd':lease.fd,'liveness_fd':live_write})+'\n');self.proc.stdin.flush()
+                finally:os.close(live_write)
                 with self.lock:
                     self.running_parameters=effective.copy();self.running_settings=settings;self.active_model_id=row['id'];self.running_model_config=self.store.get('model_config',row['id'],{});self.draining=False
-                    self.data.update(control_owner='manager',state='starting',pid=None,model=row['repo'] or row['id'],version=probe['version'],served_name=effective.get('name') or row['repo'] or row['name'],health=False,error=None,started_at=time.time(),resource_admission=lease.report)
+                    self.data.update(cache_ownership='manager',external_snapshot_dir=None,child_exit_confirmed=False,control_owner='manager',state='starting',pid=None,model=row['repo'] or row['id'],version=probe['version'],served_name=effective.get('name') or row['repo'] or row['name'],health=False,error=None,started_at=time.time(),resource_admission=lease.report)
                 self.reader=threading.Thread(target=self._events,args=(self.proc,lease),daemon=True);self.reader.start()
                 threading.Thread(target=self._wait_ready,args=(self.proc,settings['engine_port']),daemon=True).start()
                 self.store.log('info','Starting owned engine: '+row['name']);return self.status()
@@ -175,17 +185,19 @@ class Engine:
     def _attach(self,row,settings,effective,lease):
         service=lease.attachment
         if not self.resources.verify_attachment(service):lease.release();raise ResourceBlocked(lease.report,'External identity changed before attachment')
-        self.attachment=service;self.lease=lease;self.proc=None;self.draining=False
+        token=self.native.bind(service['pid'])
+        if not self.resources.verify_attachment(service) or self.native.bind(service['pid'])!=token:raise ResourceBlocked(lease.report,'External instance changed during attachment')
+        self.peer_token=token;self.attachment=service;self.lease=lease;self.proc=None;self.draining=False
         self.running_settings=settings;self.running_parameters=effective.copy();self.active_model_id=row['id'];self.running_model_config=self.store.get('model_config',row['id'],{})
-        self.data.update(control_owner='external',state='attached',pid=service['pid'],model=row['repo'] or row['id'],version=None,served_name=service['flags']['name'],health=True,error=None,started_at=service.get('started_at'),port=int(service['flags']['port']),resource_admission=lease.report)
+        self.data.update(control_owner='external',state='attached',pid=service['pid'],model=row['repo'] or row['id'],version=None,served_name=service['flags']['name'],health=True,error=None,started_at=service.get('started_at'),port=int(service['flags']['port']),resource_admission=lease.report,cache_ownership='external',external_snapshot_dir=service['flags'].get('snapshot-dir'))
         self.store.log('info','Attached read-only to verified same-user TensorFold service');return self.status()
     def detach(self):
         with self.lifecycle:
             if not self.attachment:return self.status()
-            self.drain();self.attachment=None
+            self.drain();self.attachment=None;self.peer_token=None
             if self.lease:self.lease.release();self.lease=None
             self.running_settings=None;self.running_parameters=None;self.draining=False
-            self.data.update(control_owner=None,state='stopped',pid=None,health=False,error=None)
+            self.data.update(cache_ownership=None,external_snapshot_dir=None,control_owner=None,state='stopped',pid=None,health=False,error=None)
             return self.status()
     def _events(self,proc,lease):
         for line in proc.stdout:
@@ -194,9 +206,11 @@ class Engine:
             with self.lock:
                 if proc is not self.proc: continue
                 if 'pid' in event: self.data['pid']=event['pid']
+                if 'identity' in event:self.peer_token=tuple(event['identity'])
                 if 'log' in event: self.store.log('info',event['log'])
                 if 'error' in event: self.data.update(state='failed',error=event['error'],health=False)
                 if 'exit' in event:
+                    self.child_exit_confirmed=True
                     expected=self.data['state']=='stopping'
                     self.data.update(state='stopped' if expected else 'failed',pid=None,health=False,error=None if expected else f'Engine exited with code {event["exit"]}')
         proc.stdout.close();proc.wait();lease.release()
@@ -205,25 +219,50 @@ class Engine:
         while time.monotonic()<deadline:
             with self.lock:
                 if proc is not self.proc or proc.poll() is not None or self.data['state']!='starting': return
-                pid=self.data['pid']
+                pid=self.data['pid'] if self.peer_token else None
             if pid:
                 try:
                     self.verify_api(port)
                     with self.lock:
                         if proc.poll() is None and self.data['state']=='starting': self.data.update(state='ready',health=True)
                     return
-                except (OSError,ValueError,APIError,http.client.HTTPException): pass
+                except (OSError,ValueError,APIError,http.client.HTTPException,subprocess.TimeoutExpired): pass
             time.sleep(.2)
         with self.lock:
             if proc is self.proc and self.data['state']=='starting': self.data.update(state='failed',health=False,error='Readiness timed out; inspect logs and stop before retrying')
-    @staticmethod
-    def verify_api(port):
-        conn=http.client.HTTPConnection('127.0.0.1',port,timeout=2)
-        try:
-            conn.request('GET','/v1/models'); response=conn.getresponse(); payload=json.loads(response.read(1048576))
-            if response.status!=200 or not isinstance(payload.get('data'),list) or not payload['data']: raise APIError('Engine API is not ready','engine_not_ready',503)
-            return payload
-        finally: conn.close()
+    def connection(self,port,timeout=600):
+        if not self.peer_token or not self.data.get('pid'):raise APIError('No verified engine instance','peer_unverified',503)
+        return BoundHTTPConnection(port,self.data['pid'],self.peer_token,timeout=timeout,native=self.native)
+    def verify_api(self,port):
+        payload=None
+        for path in ('/health','/v1/models'):
+            conn=self.connection(port,timeout=2)
+            try:
+                conn.request('GET',path);response=conn.getresponse();raw=response.read(1048577)
+                if response.status!=200 or len(raw)>1048576:raise APIError('Engine API is not ready','engine_not_ready',503)
+                result=json.loads(raw)
+                if not isinstance(result,dict):raise APIError('Invalid engine identity response','engine_not_ready',503)
+                if path=='/health':
+                    if result.get('status') not in ('ok','ready','healthy') or result.get('model')!=self.data.get('served_name') or result.get('warming') is not False:raise APIError('Health model identity is not ready','engine_not_ready',503)
+                else:
+                    if not isinstance(result.get('data'),list) or self.data.get('served_name') not in [r.get('id') for r in result['data'] if isinstance(r,dict)]:raise APIError('Model API identity differs','engine_not_ready',503)
+                    payload=result
+            finally:conn.close()
+        return payload
+    def _child_alive(self):
+        if self.child_exit_confirmed:
+            if self.child_liveness is not None:os.close(self.child_liveness);self.child_liveness=None
+            return False
+        if self.child_liveness is not None:
+            try:
+                if os.read(self.child_liveness,1)==b'':os.close(self.child_liveness);self.child_liveness=None
+                else:return True
+            except BlockingIOError:return True
+        if self.peer_token:
+            try:
+                if self.native.alive(self.peer_token):return True
+            except APIError:return True
+        self.child_exit_confirmed=True;return False
     def request_metadata(self):
         with self.lock:
             return {'engine_version':self.data['version'],'engine_started_at':self.data['started_at'],'engine_parameters':{k:v for k,v in (self.running_parameters or {}).items() if k in set(ADVANCED_OPTIONS)|{'context','max_tokens','temperature','top_p','top_k','thinking','parallel','prompt_cache_gib','mlx_cache_gib'}},'model':self.data.get('served_name') or self.data['model']}
@@ -231,10 +270,12 @@ class Engine:
     def request(self):
         with self.condition:
             if self.draining or self.status()['state'] not in ('ready','attached'): raise APIError('Engine is not ready','engine_not_ready',503)
-            self.active_requests+=1; port=int(self.attachment['flags']['port']) if self.attachment else self.running_settings['engine_port']
-        try: yield port
+            port=int(self.attachment['flags']['port']) if self.attachment else self.running_settings['engine_port']
+            connection=self.connection(port);self.active_requests+=1
+        try:yield connection
         finally:
-            with self.condition: self.active_requests-=1; self.condition.notify_all()
+            connection.close()
+            with self.condition:self.active_requests-=1;self.condition.notify_all()
     def drain(self,timeout=None):
         with self.condition:
             self.draining=True; deadline=time.monotonic()+(self.stop_timeout if timeout is None else timeout)
@@ -250,7 +291,10 @@ class Engine:
                 if self.proc:
                     if self.reader:self.reader.join(timeout=2)
                     self.proc.stdin.close()
-                with self.lock: self.data.update(state='stopped',pid=None,health=False); self.running_settings=None
+                if self._child_alive():
+                    self.data.update(state='failed',health=False,error='Supervisor exited but child exit is unconfirmed',child_exit_confirmed=False)
+                    raise APIError('Supervisor exited but child exit is unconfirmed; no PID signal fallback','child_exit_unconfirmed',409)
+                with self.lock: self.data.update(state='stopped',pid=None,health=False,child_exit_confirmed=True); self.running_settings=None
                 return self.status()
             if not force:self.drain()
             with self.lock: self.data['state']='stopping'
@@ -263,11 +307,18 @@ class Engine:
                 raise APIError('Engine did not stop; explicit force is required','stop_timeout',409)
             if self.reader:self.reader.join(timeout=2)
             self.proc.stdin.close()
-            with self.lock: self.data.update(state='stopped',pid=None,health=False,error=None); self.running_settings=None
+            if self._child_alive():raise APIError('Engine child exit is not confirmed','child_exit_unconfirmed',409)
+            with self.lock: self.data.update(state='stopped',pid=None,health=False,error=None,child_exit_confirmed=True); self.running_settings=None
             return self.status()
+    def preflight_switch(self,model):
+        row,settings,effective=self.prepare_start(model)
+        report=self.resources.preflight_capacity(row['path'],effective)
+        if not report['allowed']:raise ResourceBlocked(report,'Target exceeds verified physical capacity; current engine left running')
+        return report
     def restart(self,model=None):
         with self.lifecycle:
             selected=model or self.data['model'] or self.store.settings()['selected_model']
+            self.preflight_switch(selected)
             self.stop(); return self.start(selected)
     def await_ready(self,timeout=None):
         deadline=time.monotonic()+(timeout or self.startup_timeout)

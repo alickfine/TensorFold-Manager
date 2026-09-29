@@ -100,8 +100,8 @@ class ResourceLifecycleTests(unittest.TestCase):
   from tfmanager.gateway import completion
   self.engine.start(str(self.model));wait_state(self.engine,'ready')
   observer=Observer();settings=self.store.settings();flags={k.replace('_','-'):str(settings[k]) for k in ('context','max_tokens','temperature','top_p','top_k','parallel','prompt_cache_gib','mlx_cache_gib')}
-  flags.update(host='127.0.0.1',port=str(settings['engine_port']),thinking=settings['thinking'],name='fixture',**{'snapshot-dir':str(self.store.snapshots)})
-  observer.services=[{'pid':self.engine.status()['pid'],'uid':os.getuid(),'kind':'tensorfold','start_time':'fixture','command_signature':'fixture','model_path':str(self.model.resolve()),'flags':flags,'identity_complete':True,'listening_ports':[settings['engine_port']],'health':{'status':'ok'},'model_ids':['fixture']}]
+  flags.update(host='127.0.0.1',port=str(settings['engine_port']),thinking=settings['thinking'],name=self.engine.data['served_name'],**{'snapshot-dir':str(self.store.snapshots)})
+  observer.services=[{'pid':self.engine.status()['pid'],'uid':os.getuid(),'kind':'tensorfold','start_time':'fixture','command_signature':'fixture','model_path':str(self.model.resolve()),'flags':flags,'identity_complete':True,'listening_ports':[settings['engine_port']],'health':{'status':'ok'},'model_ids':[self.engine.data['served_name']]}]
   gate=ResourceGate(self.store,observer=observer,lock_dir=self.store.root/'attached-fixture-locks')
   gate.estimate=lambda *args,**kwargs:{'required_bytes':None,'missing':['fixture'],'components':{}}
   attached=Engine(self.store,self.models,resources=gate);self.addCleanup(attached.detach)
@@ -109,6 +109,12 @@ class ResourceLifecycleTests(unittest.TestCase):
   self.assertEqual(attached.status()['state'],'attached');self.assertIsNone(attached.proc)
   response,_=completion(attached,self.store,{'messages':[{'role':'user','content':'hello'}]});self.assertTrue(response['choices'])
   with self.assertRaisesRegex(APIError,'read-only'):attached.stop()
+  from unittest.mock import patch
+  log=self.model/'fixture-request-log';log.write_text('')
+  for stream in (False,True):
+   with patch.object(attached.native,'bind',return_value=('replacement',)):
+    with self.assertRaises(APIError):completion(attached,self.store,{'messages':[{'role':'user','content':'PRIVATE PROMPT'}]},observe_stream=stream)
+  self.assertEqual(log.read_text(),'')
   attached.detach();self.assertEqual(self.engine.status()['state'],'ready')
 
 class DraftIsolationTests(unittest.TestCase):
@@ -130,8 +136,50 @@ class SupervisorLeaseTests(unittest.TestCase):
   supervisor=self.engine.proc;supervisor.kill();supervisor.wait(timeout=2)
   if self.engine.reader:self.engine.reader.join(timeout=2)
   with self.assertRaises(APIError):self.engine.resources.acquire_quantize(self.model,{})
+  with self.assertRaisesRegex(APIError,'child exit is unconfirmed'):self.engine.stop()
+  self.assertEqual(self.engine.status()['state'],'failed');self.assertFalse(self.engine.status()['child_exit_confirmed'])
   for _ in range(100):
    try:
     lease=self.engine.resources.acquire_quantize(self.model,{});lease.release();break
    except APIError:time.sleep(.03)
   else:self.fail('Naturally exited fixture did not release inherited lease')
+
+class PeerOwnershipTests(unittest.TestCase):
+ setUp=EngineTests.setUp
+ def test_port_winner_is_not_owned_child_and_receives_no_http(self):
+  import socketserver,threading
+  from unittest.mock import patch
+  received=[];servers=[]
+  class Handler(socketserver.BaseRequestHandler):
+   def handle(self):
+    self.request.settimeout(2)
+    try:received.append(self.request.recv(65536))
+    except OSError:received.append(b'')
+  original=self.engine.build_command
+  def reserve(*args):
+   result=original(*args)
+   server=socketserver.ThreadingTCPServer(('127.0.0.1',self.store.settings()['engine_port']),Handler);servers.append(server)
+   threading.Thread(target=server.serve_forever,daemon=True).start();return result
+  (self.model/'fixture-no-listen').write_text('controlled live child without listener');self.engine.startup_timeout=.5
+  try:
+   with patch.object(self.engine,'build_command',side_effect=reserve):self.engine.start(str(self.model))
+   wait_state(self.engine,'failed');self.assertIsNone(self.engine.proc.poll());self.assertFalse(self.engine.status()['health'])
+   with self.assertRaises(APIError):
+    with self.engine.request():pass
+   self.assertTrue(received);self.assertEqual(b''.join(received),b'')
+  finally:
+   self.engine.stop(force=True)
+   for server in servers:server.shutdown();server.server_close()
+ def test_restart_impossible_target_does_not_stop_current_child(self):
+  from unittest.mock import patch
+  self.engine.start(str(self.model));first=wait_state(self.engine,'ready')
+  with patch.object(self.engine.resources,'preflight_capacity',return_value={'allowed':False,'missing':[],'blockers':['physical_capacity']}):
+   with self.assertRaises(APIError):self.engine.restart(str(self.model))
+  self.assertEqual(self.engine.status()['pid'],first['pid']);self.assertEqual(self.engine.status()['state'],'ready')
+
+ def test_request_keeps_original_instance_during_forced_restart(self):
+  self.engine.start(str(self.model));first=wait_state(self.engine,'ready');log=self.model/'fixture-request-log'
+  with self.engine.request() as original_connection:
+   self.engine.stop(force=True);self.engine.start(str(self.model));second=wait_state(self.engine,'ready');self.assertNotEqual(first['pid'],second['pid']);log.write_text('')
+   with self.assertRaises(APIError):original_connection.request('POST','/v1/chat/completions',b'PRIVATE ORIGINAL PROMPT')
+   self.assertEqual(log.read_text(),'')

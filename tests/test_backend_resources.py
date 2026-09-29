@@ -46,6 +46,8 @@ class ResourceTests(unittest.TestCase):
   self.observer.services=[service]
   settings=self.settings|{'name':'qwen'}
   status=self.gate.preflight_start(self.model,settings);self.assertIsNotNone(status['attachment']);self.assertTrue(status['allowed'])
+  flags['snapshot-dir']='/external/read-only-cache';self.assertTrue(self.gate.preflight_start(self.model,settings)['allowed'])
+  flags['snapshot-dir']='relative/cache';self.assertFalse(self.gate.preflight_start(self.model,settings)['allowed']);flags['snapshot-dir']=str(self.store.snapshots)
   flags['context']='2048';self.assertIsNone(self.gate.preflight_start(self.model,settings)['attachment']);flags['context']='1024'
   lease=self.gate.acquire_start(self.model,settings);self.addCleanup(lease.release)
   self.assertTrue(self.gate.verify_attachment(service));self.observer.services[0]=service|{'start_time':'later'};self.assertFalse(self.gate.verify_attachment(service))
@@ -104,3 +106,11 @@ class ResourceTests(unittest.TestCase):
   (self.model/'config.json').write_text(json.dumps(text))
   result=estimate_model(self.model,self.settings);self.assertFalse(result['missing']);self.assertEqual(result['components']['kv_bytes'],(2*512*1024+3*8*256*(1024+128))*4)
   self.assertGreaterEqual(result['components']['kv_allocation_headroom_bytes'],result['components']['kv_bytes'])
+ def test_switch_capacity_is_physical_bound_and_missing_fails_closed(self):
+  from unittest.mock import patch
+  self.observer.available=1
+  self.assertTrue(self.gate.preflight_capacity(self.model,self.settings)['allowed'])
+  with patch.object(self.gate,'estimate',return_value={'required_bytes':250*GIB,'missing':[]}):
+   self.assertFalse(self.gate.preflight_capacity(self.model,self.settings)['allowed'])
+  with patch.object(self.observer,'capture',return_value={'memory':{'physical_bytes':None,'missing':['physical_memory']},'missing':[]}):
+   self.assertFalse(self.gate.preflight_capacity(self.model,self.settings)['allowed'])

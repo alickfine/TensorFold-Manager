@@ -111,6 +111,8 @@ class Services:
                 row,settings,effective=self.engine.prepare_start(job.params['model'])
                 estimate=self.resources.estimate(row['path'],effective)
                 if estimate['missing'] or estimate['required_bytes'] is None:raise ResourceBlocked({'allowed':False,'estimate':estimate,'missing':estimate['missing'],'blockers':['unknown_target_budget']},'Target model has no defensible memory budget; current service left running')
+                capacity=self.resources.preflight_capacity(row['path'],effective)
+                if not capacity['allowed']:raise ResourceBlocked(capacity,'Target exceeds verified physical capacity; current service left running')
                 self.engine.build_command(row,effective) # Verify actual CLI/model before stopping a working service.
                 if self.engine.proc and self.engine.proc.poll() is None:raise APIError('Stop the manager-owned engine before switching an external service','engine_busy',409)
                 if self.engine.attachment and self.engine.attachment['pid']!=service['pid']:raise APIError('Detach the other external service first','engine_busy',409)

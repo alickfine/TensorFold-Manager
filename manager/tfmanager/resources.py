@@ -117,13 +117,14 @@ class MacObserver:
         if result.returncode not in acceptable:raise OSError('Resource probe failed: '+Path(argv[0]).name)
         return result.stdout
     @staticmethod
-    def _json(port,path):
-        connection=http.client.HTTPConnection('127.0.0.1',port,timeout=.5)
+    def _json(port,path,pid,token):
+        from .peer import BoundHTTPConnection
+        connection=BoundHTTPConnection(port,pid,token,timeout=.5)
         try:
             connection.request('GET',path);response=connection.getresponse()
             if response.status!=200:return None
             return json.loads(response.read(1048576))
-        except (OSError,ValueError,http.client.HTTPException):return None
+        except (OSError,ValueError,APIError,http.client.HTTPException,subprocess.TimeoutExpired):return None
         finally:connection.close()
     def identity(self,pid):
         try:
@@ -145,7 +146,11 @@ class MacObserver:
             port=parsed['flags'].get('port')
             if port is None and len(ports)==1:port=ports[0]
             if str(port).isdigit() and int(port) in ports:
-                service['port']=int(port);health=self._json(int(port),'/health');models=self._json(int(port),'/v1/models')
+                service['port']=int(port)
+                from .services import NativeInstances
+                try:token=NativeInstances().bind(pid)
+                except APIError:token=None
+                health=self._json(int(port),'/health',pid,token);models=self._json(int(port),'/v1/models',pid,token)
                 if isinstance(health,dict):service['health']={k:health.get(k) for k in ('status','model','warming','memory','max_batch_size')}
                 if isinstance(models,dict) and isinstance(models.get('data'),list):service['model_ids']=[r['id'] for r in models['data'] if isinstance(r,dict) and isinstance(r.get('id'),str)]
             return service
@@ -326,7 +331,9 @@ class ResourceGate:
         flags=service.get('flags',{});health=service.get('health') or {}
         if health.get('status') not in ('ok','ready','healthy') or health.get('warming') is True:return False
         if flags.get('host')!='127.0.0.1' or not str(flags.get('port','')).isdigit() or int(flags['port']) not in service.get('listening_ports',[]):return False
-        expected={'snapshot-dir':str(self.store.snapshots),'thinking':settings['thinking']}
+        snapshot=flags.get('snapshot-dir')
+        if not isinstance(snapshot,str) or not Path(snapshot).is_absolute():return False
+        expected={'thinking':settings['thinking']}
         for key in ('context','max_tokens','temperature','top_p','top_k','parallel','prompt_cache_gib','mlx_cache_gib'):expected[key.replace('_','-')]=settings[key]
         for key,value in settings.items():
             if key in ADVANCED_OPTIONS and value is not None:expected[key.replace('_','-')]=value
@@ -340,7 +347,7 @@ class ResourceGate:
                 except (TypeError,ValueError):return False
             elif str(actual)!=str(value):return False
         # Unknown extra inference options cannot silently change a supposedly matching configuration.
-        permitted=set(expected)|{'port','host','no-update-check','name'}
+        permitted=set(expected)|{'port','host','no-update-check','name','snapshot-dir'}
         if set(flags)-permitted:return False
         if flags.get('name') not in service.get('model_ids',[]):return False
         return True
@@ -359,6 +366,16 @@ class ResourceGate:
             elif limit is not None and required>limit:blockers.append('insufficient_available_memory_for_conservative_estimate')
         elif limit is not None and limit<=0:blockers.append('insufficient_headroom_for_attached_service')
         return {'allowed':not blockers and not missing,'kind':kind,'snapshot':snapshot,'estimate':estimate,'missing':list(dict.fromkeys(missing)),'blockers':blockers,'attachment':attachment,'system_reserve_bytes':reserve,'memory_limit_bytes':limit}
+    def preflight_capacity(self,path,settings):
+        snapshot=self.snapshot(fresh=True);estimate=self.estimate(path,settings);memory=snapshot.get('memory') or {};physical=memory.get('physical_bytes')
+        missing=list(snapshot.get('missing',[]))+list(memory.get('missing',[]))+list(estimate['missing']);blockers=[]
+        reserve=max(8*GIB,int(physical*.1)) if type(physical) is int and physical>0 else None
+        if reserve is None:missing.append('verified_physical_memory')
+        limit=max(0,physical-reserve) if reserve is not None else None
+        required=estimate['required_bytes']
+        if required is None:missing.append('bounded_model_peak_estimate')
+        elif limit is not None and required>limit:blockers.append('target_exceeds_physical_capacity_after_system_reserve')
+        return {'allowed':not missing and not blockers,'kind':'switch_capacity','snapshot':snapshot,'estimate':estimate,'missing':missing,'blockers':blockers,'physical_capacity_bytes':limit,'system_reserve_bytes':reserve}
     def preflight_start(self,path,settings):return self._preflight(path,settings,'inference')
     def preflight_quantize(self,source_path,options=None):return self._preflight(source_path,options or {},'quantize')
     def _acquire(self,path,settings,kind):

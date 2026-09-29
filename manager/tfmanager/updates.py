@@ -88,7 +88,7 @@ class Updates:
             previous=self.store.get('engine_active');old_settings=self.store.settings();old_state=self.engine.status()
             model=job.params.get('model') or old_state['model'] or old_settings['selected_model']
             if not model:raise APIError('Select an installed model to validate the candidate API','model_required',409)
-            self.engine.models.resolve(model)
+            self.engine.preflight_switch(model)
             self.engine.drain();self.engine.stop()
             self.store.put('engine_recovery',{'active':previous,'settings':old_settings,'model':model})
             self.store.put('engine_active',candidate)

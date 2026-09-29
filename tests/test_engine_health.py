@@ -17,8 +17,12 @@ class HealthTests(unittest.TestCase):
   with self.engine.request():self.assertEqual(self.engine.status()['active_requests'],1)
   self.assertEqual(self.engine.status()['active_requests'],0)
  def test_identity_mismatch_discards_memory_and_reports_probe_error(self):
-  (self.model/'fixture-health-model').write_text('unexpected-model')
-  self.engine.start(str(self.model));state=wait_state(self.engine,'ready')
+  self.engine.start(str(self.model));wait_state(self.engine,'ready')
+  (self.model/'fixture-health-model').write_text('unexpected-model');self.engine._health_checked=0
+  state=self.engine.status()
+  from tfmanager.state import APIError
+  with self.assertRaises(APIError):
+   with self.engine.request():pass
   self.assertIsNone(state.get('health_detail'))
   self.assertIn('identity',state.get('health_error',''))
  def test_stopped_model_does_not_retain_live_memory_measurement(self):

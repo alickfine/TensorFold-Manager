@@ -52,3 +52,13 @@ class RecoveryTests(unittest.TestCase):
    time.sleep(.03)
   else:self.fail('Owned engine remained alive after manager crash')
   with socket.socket() as check:self.assertNotEqual(check.connect_ex(('127.0.0.1',port)),0)
+
+class CapacityBeforeUpdateTests(unittest.TestCase):
+ setUp=fixture_engine.EngineTests.setUp
+ def test_impossible_candidate_model_leaves_previous_running(self):
+  self.engine.start(str(self.model));first=wait_state(self.engine,'ready')
+  jobs=Jobs(self.store);self.addCleanup(jobs.shutdown);updates=Updates(self.store,jobs,self.engine)
+  self.store.put('engine_active',{'version':'old','python':'old'});self.store.put('engine_staged',{'version':'new','python':'new'})
+  with patch.object(self.engine.resources,'preflight_capacity',return_value={'allowed':False,'missing':[],'blockers':['physical_capacity']}):
+   with self.assertRaises(APIError):updates.run_activate(Job(jobs,{'id':'test','params':{'model':str(self.model)}}))
+  self.assertEqual(self.engine.status()['pid'],first['pid']);self.assertEqual(self.store.get('engine_active')['version'],'old')
