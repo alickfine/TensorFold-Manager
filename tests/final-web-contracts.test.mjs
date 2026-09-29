@@ -55,9 +55,66 @@ test('overview renders fresh service switch, attached detach, and explicit owned
   assert.match(attached, /断开连接/);
   assert.doesNotMatch(attached, /data-action="engine-stop"/);
 
-  const timedOut = renderOverview({ snapshot:{ ...baseSnapshot, engine:{ state:'failed', control_owner:'manager', error:'Graceful stop timed out; explicit force is required' } }, pageData:{ services } });
+  const timedOut = renderOverview({ snapshot:{ ...baseSnapshot, engine:{ state:'failed', control_owner:'manager', child_exit_confirmed:false, error:'Graceful stop timed out; explicit force is required' } }, pageData:{ services } });
   assert.match(timedOut, /强制停止自有服务/);
   assert.match(timedOut, /data-action="engine-force-stop"/);
+  assert.doesNotMatch(timedOut, /data-action="engine-stop"/);
+});
+
+test('owned engine controls allow cancellation until child exit is confirmed', () => {
+  const renderEngine = (engine) => renderOverview({
+    snapshot:{ ...baseSnapshot, engine },
+    pageData:{ services:{ services:[] } },
+  });
+
+  for (const engine of [
+    { state:'starting', control_owner:'manager', pid:79282, child_exit_confirmed:false },
+    { state:'ready', control_owner:'manager', pid:79282, child_exit_confirmed:false, started_at:1790645743.93256 },
+    { state:'failed', control_owner:'manager', pid:79282, child_exit_confirmed:false, error:'Health check failed' },
+  ]) {
+    const output = renderEngine(engine);
+    const stopButton = output.match(/<button[^>]*data-action="engine-stop"[^>]*>/)?.[0];
+    assert.ok(stopButton, `${engine.state} must keep a stop control while the owned child may be alive`);
+    assert.doesNotMatch(stopButton, /\sdisabled(?:\s|>)/, `${engine.state} stop must remain actionable`);
+    assert.doesNotMatch(output, /data-action="engine-start"/);
+    assert.doesNotMatch(output, /1790645743\.93256/);
+  }
+
+  const stopping = renderEngine({ state:'stopping', control_owner:'manager', pid:79282, child_exit_confirmed:false });
+  const stoppingButton = stopping.match(/<button[^>]*data-action="engine-stop"[^>]*>/)?.[0];
+  assert.ok(stoppingButton);
+  assert.match(stoppingButton, /\sdisabled(?:\s|>)/);
+
+  const exited = renderEngine({ state:'failed', control_owner:'manager', pid:null, child_exit_confirmed:true, error:'Process exited' });
+  assert.match(exited, /data-action="engine-start"/);
+  assert.match(exited, /data-action="engine-restart"/);
+  assert.doesNotMatch(exited, /data-action="engine-stop"/);
+});
+
+test('owned service remains observable but is excluded from external switch controls', () => {
+  const ownService = {
+    pid:79282, kind:'owned-tensorfold-observation', executable:'/safe/owned', start_time:'2026-09-29T10:00:00Z',
+    model_path:'/Models/OwnedObservation', port:8089, health:{ status:'starting' }, model_ids:['owned'],
+    control:{ supported:false, action:null, reason:'Manager owns this service' }, snapshot_id:'owned-snapshot', expires_in_seconds:30,
+  };
+  const externalService = {
+    pid:81, kind:'external-tensorfold', executable:'/safe/external', start_time:'2026-09-29T09:00:00Z',
+    model_path:'/Models/External', port:8090, health:{ status:'ready' }, model_ids:['external'],
+    control:{ supported:true, action:'stop_and_switch', reason:null }, snapshot_id:'external-snapshot', expires_in_seconds:30,
+  };
+  const output = renderOverview({
+    snapshot:{
+      ...baseSnapshot,
+      engine:{ state:'starting', control_owner:'manager', pid:79282, child_exit_confirmed:false },
+      resources:{ memory:{}, services:[ownService, externalService] },
+    },
+    pageData:{ services:{ services:[ownService, externalService] } },
+  });
+
+  assert.match(output, /owned-tensorfold-observation/);
+  assert.match(output, /\/Models\/OwnedObservation/);
+  assert.doesNotMatch(output, /owned-snapshot/);
+  assert.match(output, /external-snapshot/);
 });
 
 test('attached verified services remain usable for chat and benchmark', () => {
@@ -142,7 +199,7 @@ test('advanced options serialize with strict types and show runtime support reas
   assert.match(output, /启动前由已安装引擎 CLI 验证/);
 });
 
-test('stats and cache display backend aggregates, cache_tokens, sources, parameters and attached read-only limits', () => {
+test('stats and cache display backend aggregates, byte memory values, sources, parameters and attached read-only limits', () => {
   const request = {
     at:1, model:'org/qwen', status:499, elapsed:2, ttft:0.2, prefill_tps:10, decode_tps:20,
     cache_tokens:32, ttft_source:'observed_stream', prefill_tps_source:'reported_prefill_seconds',
@@ -156,13 +213,23 @@ test('stats and cache display backend aggregates, cache_tokens, sources, paramet
   assert.match(stats, /32768/);
 
   const cache = renderCache({
-    snapshot:{ ...baseSnapshot, engine:{ state:'attached', health:true, health_detail:{ memory:{ active_bytes:1024 }, last_health_at:123 } }, stats:{ total:{ cache_tokens:32 }, models:[{ model:'org/qwen', cache_tokens:32 }] } },
+    snapshot:{ ...baseSnapshot, engine:{ state:'attached', health:true, health_detail:{ memory:{ active:14801518380, cache:51235264, peak:15522895064, budget:195827014042, footprint:15438900816 }, last_health_at:1790645743.93256 } }, stats:{ total:{ cache_tokens:32 }, models:[{ model:'org/qwen', cache_tokens:32 }] } },
     pageData:{ cache:{ can_clear:false, owned:true } },
   });
-  assert.match(cache, /1.0 KB/);
+  for (const formatted of ['13.8 GB', '48.9 MB', '14.5 GB', '182.4 GB', '14.4 GB']) assert.match(cache, new RegExp(formatted));
+  assert.doesNotMatch(cache, /14801518380|51235264|15522895064|195827014042|15438900816/);
+  assert.doesNotMatch(cache, /1790645743\.93256/);
+  assert.match(cache, /2026/);
   assert.match(cache, /32/);
   assert.match(cache, /外部服务仅提供只读用量/);
   assert.doesNotMatch(cache, /cached_tokens/);
+
+  const emptyAndZero = renderCache({
+    snapshot:{ ...baseSnapshot, engine:{ state:'stopped', health_detail:{ memory:{ active:0, cache:null } } } },
+    pageData:{ cache:{} },
+  });
+  assert.match(emptyAndZero, /Active[\s\S]*?0 B/);
+  assert.match(emptyAndZero, /Cache[\s\S]*?未采集/);
 });
 
 test('benchmark and accuracy queues expose actual status, parameters, partial results, pause resume and cancel', () => {

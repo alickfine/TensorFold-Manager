@@ -13,8 +13,9 @@ export function renderResourceReport(report = {}) {
  return renderResources(report.snapshot ?? {}) + h.card('准入结果',h.kv('允许启动',report.allowed)+h.kv('预估需求',formatBytes(report.estimate?.required_bytes))+h.kv('可分配上限',formatBytes(report.memory_limit_bytes))+h.kv('系统预留',formatBytes(report.system_reserve_bytes))+h.kv('阻断原因',report.blockers?.join('、'))+h.kv('缺失信息',report.missing?.join('、'))+h.note('模型预算为保守估计，并非实测峰值。'));
 }
 
-export function renderServiceControls(data = {}, models = [], jobs = []) {
- const services = data.services ?? [];
+export function renderServiceControls(data = {}, models = [], jobs = [], engine = {}) {
+ const ownPid = engine.control_owner === 'manager' ? engine.pid : null;
+ const services = (data.services ?? []).filter(service => ownPid == null || String(service.pid) !== String(ownPid));
  const options = models.filter(model => model.installed && model.supported).map(model => [model.id, model.name ?? model.id]);
  const rows = services.map(service => {
   const supported = service.control?.supported === true && service.control?.action === 'stop_and_switch';
