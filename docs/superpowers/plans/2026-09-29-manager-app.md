@@ -73,3 +73,12 @@ Startup Python module tfmanager.server --data-dir PATH --web-dir PATH --port 0 a
 - [ ] Source/download/update failure isolation; port conflicts, unauthorized API refusal, restart persistence and App cleanup tests.
 - [ ] DMG install/launch and source no credential check; publish public source and versioned Release DMG/SHA256.
 - [ ] Record fresh evidence, limitations, signing status and installer link for user acceptance.
+
+## Binding security preflight additions (apply to all tasks)
+- Exact Host `127.0.0.1:<actual-port>` only; reject duplicate Host; Origin if present exactly `http://127.0.0.1:<actual-port>`, reject null/cross origin. No CORS wildcard, CSP self only. Token mandatory even without Origin.
+- WKWebView same host and exact management port only, HTTP(S) external link in browser; no arbitrary schemes. Parent stdin keepalive: server --parent-pipe watches EOF and shuts down owned processes.
+- Popen current handle/process group only; never recovered PID/killall/port kill. Bind conflict cannot be treated as external health readiness. Engine shutdown allows120s graceful cleanup; timeout markedfailed, forcedkill only explicit.
+- Upgrade stages/install do not touch active environment. Exclusive lifecycle lock, drain timeout abort, pinned official release/commit only, atomic pointer/config backup, candidate fails => restart old model and prove API readiness. No parallel candidate/old model loads.
+- Download roots require explicit write scope; private staging and owned manifests, reject traversal/symlink escape. Cancel retains task files for resume, never deletes external weights. Cache clear only owned manifest snapshot and stopped engine.
+- Clean runtime env including PYTHONHOME/PYTHONPATH, admin token stripped from children. Arbitrary engine_python ordinary setting rejected; explicit TFM_ALLOW_EXTERNAL_ENGINE=1 development only. Bundle standalone Python3.12.9, uv0.9.5 provenance/SHA recorded; no claim Gatekeeper if ad hoc.
+- Test auth/Host/Origin, conflict/oldPID/AppEOF, traversal/symlink/cancel, failed upgrade true old API recovery, DMG startup without global runtimes, preserve8089.
