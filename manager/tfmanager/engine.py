@@ -11,7 +11,7 @@ import sys
 import threading
 import time
 from .state import APIError,clean_env,ADVANCED_OPTIONS
-from .resources import ResourceGate,ResourceBlocked,GIB
+from .resources import ResourceGate,ResourceBlocked,GIB,Lease
 from .peer import BoundHTTPConnection
 from .services import NativeInstances
 
@@ -143,10 +143,10 @@ class Engine:
                 if self.active_model_id==row['id'] and self.runtime_config(self.running_parameters)==self.runtime_config(effective):return self.status()
                 raise APIError('Stop the current engine and wait for release before changing model or configuration','engine_busy',409)
             lease=_lease or self.resources.acquire_start(row['path'],effective)
-            if _lease:
-                lease.report=self.resources.preflight_start(row['path'],effective)
-                if not lease.report['allowed']:raise ResourceBlocked(lease.report)
             try:
+                if _lease:
+                    lease.report=self.resources.preflight_start(row['path'],effective)
+                    if not lease.report['allowed']:raise ResourceBlocked(lease.report)
                 if lease.attachment:
                     if not allow_attach:raise ResourceBlocked(lease.report,'Upgrade validation requires an owned candidate; external service is active')
                     return self._attach(row,settings,effective,lease)
@@ -315,11 +315,28 @@ class Engine:
         report=self.resources.preflight_capacity(row['path'],effective)
         if not report['allowed']:raise ResourceBlocked(report,'Target exceeds verified physical capacity; current engine left running')
         return report
+    @contextlib.contextmanager
+    def transition_lease(self):
+        # A duplicate shares the flock's open file description. Child exit and
+        # the event reader can close their descriptors without opening a gap.
+        current=self.lease
+        guard=Lease(current.path,os.dup(current.fd),current.report.copy()) if current and not current.released else self.resources.acquire_switch()
+        try:yield guard
+        finally:guard.release()
+    @staticmethod
+    def transition_child_lease(guard):
+        return Lease(guard.path,os.dup(guard.fd),guard.report.copy())
+    def start_transition(self,model,guard):
+        lease=self.transition_child_lease(guard)
+        try:return self.start(model,allow_attach=False,_lease=lease)
+        finally:
+            if self.lease is not lease:lease.release()
     def restart(self,model=None):
         with self.lifecycle:
             selected=model or self.data['model'] or self.store.settings()['selected_model']
             self.preflight_switch(selected)
-            self.stop(); return self.start(selected)
+            with self.transition_lease() as guard:
+                self.stop(); return self.start_transition(selected,guard)
     def await_ready(self,timeout=None):
         deadline=time.monotonic()+(timeout or self.startup_timeout)
         while time.monotonic()<deadline:

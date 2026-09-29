@@ -5,8 +5,8 @@ const livePollPages = new Set([
   'stats', 'cache', 'logs', 'benchmark', 'accuracy', 'server',
 ]);
 
-export function shouldPollLivePage(page, { editing = false, streaming = false } = {}) {
-  return !editing && !streaming && livePollPages.has(page);
+export function shouldPollLivePage(page, { editing = false, dirty = false, streaming = false } = {}) {
+  return !editing && !dirty && !streaming && livePollPages.has(page);
 }
 
 export function isPollEditingTarget(element) {

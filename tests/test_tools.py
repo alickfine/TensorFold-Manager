@@ -153,7 +153,7 @@ class ToolTests(unittest.TestCase):
         child = json.loads(self.capture.read_text())
         self.assertEqual(child["args"][:4], ["-I", "-B", "-m", "mlx_lm"])
         self.assertNotIn("--trust-remote-code", child["args"])
-        self.assertEqual(Path(self.engine.inspected[0][1]), output.parent / (".staging-" + row["id"]))
+        self.assertEqual(Path(self.engine.inspected[-1][1]), output.parent / (".staging-" + row["id"]))
         self.assertIn(str(self.store.root / "converted"), self.store.settings()["model_dirs"])
         with patch.object(tools, "_external_service_running", return_value=False):
             with self.assertRaisesRegex(APIError, "already exists"):

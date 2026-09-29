@@ -11,6 +11,36 @@ from tfmanager.gateway import completion
 
 class RecoveryTests(unittest.TestCase):
  setUp=fixture_engine.EngineTests.setUp
+ def test_upgrade_and_rollback_keep_os_lease_through_candidate_and_recovery(self):
+  for action in ('activate','rollback'):
+   for fail in (False,True):
+    with self.subTest(action=action,failed_candidate=fail):
+     self.engine.start(str(self.model));wait_state(self.engine,'ready')
+     jobs=Jobs(self.store);updates=Updates(self.store,jobs,self.engine)
+     self.store.put('engine_active',{'version':'old','python':'fixture-old'})
+     self.store.put('engine_staged' if action=='activate' else 'engine_previous',{'version':'new','python':'fixture-new'})
+     original_put=self.store.put;original_executable=self.engine.executable;blocked=[]
+     def put(kind,*args,**kwargs):
+      if kind=='engine_recovery':
+       with self.assertRaises(APIError):self.engine.resources.acquire_quantize(str(self.model),{})
+       blocked.append('after-stop')
+      return original_put(kind,*args,**kwargs)
+     def executable():
+      with self.assertRaises(APIError):self.engine.resources.acquire_quantize(str(self.model),{})
+      blocked.append(self.store.get('engine_active')['version'])
+      if fail and self.store.get('engine_active')['version']=='new':return [sys.executable,'-c','import sys;sys.exit(7)']
+      return original_executable()
+     with patch.object(self.store,'put',side_effect=put),patch.object(self.engine,'executable',side_effect=executable):
+      job=Job(jobs,{'id':'lease-'+action,'status':'completed','params':{'model':str(self.model)}})
+      if fail:
+       with self.assertRaisesRegex(APIError,'previous engine API restored'):getattr(updates,'run_'+action)(job)
+      else:getattr(updates,'run_'+action)(job)
+     self.assertIn('after-stop',blocked);self.assertIn('new',blocked)
+     if fail:self.assertIn('old',blocked)
+     self.assertEqual(self.engine.status()['state'],'ready')
+     self.assertEqual(self.store.get('engine_active')['version'],'old' if fail else 'new')
+     self.engine.stop();jobs.shutdown()
+     with self.engine.resources.acquire_quantize(str(self.model),{}):pass
  def test_failed_candidate_restores_real_previous_completion(self):
   self.engine.start(str(self.model));wait_state(self.engine,'ready')
   jobs=Jobs(self.store);self.addCleanup(jobs.shutdown);updates=Updates(self.store,jobs,self.engine)

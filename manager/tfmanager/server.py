@@ -80,7 +80,7 @@ class Application:
             'ane':'No verified upstream ANE execution capability.','omlx_kernels':'oMLX-specific kernels and cache policies are not TensorFold APIs.',
             'accuracy_queue':'No reference dataset or scoring adapter configured.'}.items()}
         for name in ('chat','streaming','benchmark','downloads','profiles','keys','cache','updates'):result[name]={'supported':True,'reason':None}
-        installed=bool(self.tools.status()['active'])
+        installed=bool(self.tools.status(include_quantization=False)['active'])
         for name in ('quantize','upload'):result[name]={'supported':True,'ready':installed,'requires_install':not installed,'reason':None if installed else 'Install the pinned MLX tools environment first'}
         result['accuracy']={'supported':True,'scoring':'reference_text_agreement','reason':None}
         result['accuracy_queue']=result['accuracy']

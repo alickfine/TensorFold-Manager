@@ -11,6 +11,7 @@ import select
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
@@ -99,6 +100,8 @@ class Tools:
         self.credentials = credentials
         self.resources = resources if resources is not None else getattr(engine, "resources", None)
         self.install_lock = threading.Lock()
+        self.capability_lock = threading.Lock()
+        self.quantization_cache = {}
         self.tools_root = store.root / "tools"
         self.converted_root = store.root / "converted"
         self.upload_root = store.root / "uploads"
@@ -109,11 +112,82 @@ class Tools:
         jobs.register("quantize", self.run_quantize)
         jobs.register("upload", self.run_upload)
 
-    def status(self):
-        return {
+    def status(self, include_quantization=True):
+        result = {
             "active": self.store.get("tools_active"),
             "pins": {"mlx-lm": MLX_LM_VERSION, "huggingface-hub": HUGGINGFACE_HUB_VERSION},
         }
+        if include_quantization:
+            result["quantization"] = self.quantization_capabilities()
+        return result
+
+    def _target_preflight(self, source, target, command=None, config=None):
+        """TensorFold info checks this config-only candidate; no weights exist here."""
+        command = command or self.engine.executable()
+        if config is None:
+            config = json.loads((Path(source) / "config.json").read_text())
+        candidate = json.loads(json.dumps(config))
+        # Source per-layer overrides describe the old packed weights. The actual
+        # converter regenerates its model's protected-layer recipe; that output
+        # still gets full config validation and CLI inspection before publication.
+        candidate["quantization"] = dict(target)
+        candidate["quantization_config"] = dict(target)
+        text = candidate.get("text_config")
+        if isinstance(text, dict):
+            for key in ("quantization", "quantization_config"):
+                if key in text:
+                    text[key] = dict(target)
+        with tempfile.TemporaryDirectory(prefix=".target-config-", dir=self.tools_root) as directory:
+            path = Path(directory)
+            (path / "config.json").write_text(json.dumps(candidate))
+            return self.engine.inspect_model(command, str(path))
+
+    def quantization_capabilities(self):
+        result = {"scope": "engine_config_preflight_only", "models": [],
+            "note": "Config compatibility only; actual converted weights and protected-layer overrides are validated before publication."}
+        try:
+            command = self.engine.executable()
+        except APIError as exc:
+            result["reason"] = str(exc)
+            return result
+        # Engine activation changes the slot path. File identity also invalidates
+        # development commands; a short TTL bounds in-place package changes.
+        identity = [command]
+        for argument in command:
+            try:
+                info = Path(argument).stat()
+                identity.append((argument, info.st_ino, info.st_size, info.st_mtime_ns))
+            except OSError:
+                pass
+        with self.capability_lock:
+            for model in self.models.scan():
+                if not model["installed"] or not model["supported"]:
+                    continue
+                path = Path(model["path"])
+                try:
+                    raw = (path / "config.json").read_bytes()
+                    config = json.loads(raw)
+                    key = hashlib.sha256(raw + json.dumps(identity).encode()).hexdigest()
+                    cached = self.quantization_cache.get(model["id"])
+                    if cached and cached[0] == key and time.monotonic() - cached[1] < 60:
+                        result["models"].append(cached[2])
+                        continue
+                    row = {"model": model["id"], "choices": [], "rejected": [], "reason": None, "checked_at": time.time()}
+                    for bits in (2, 3, 4, 6, 8):
+                        for group in (32, 64, 128):
+                            target = {"bits": bits, "group_size": group, "mode": "affine"}
+                            try:
+                                self._target_preflight(path, target, command, config)
+                                row["choices"].append(target)
+                            except APIError as exc:
+                                row["rejected"].append(target | {"reason": str(exc)})
+                    if not row["choices"]:
+                        row["reason"] = "The current TensorFold engine accepted no target configuration"
+                    self.quantization_cache[model["id"]] = (key, time.monotonic(), row)
+                    result["models"].append(row)
+                except (OSError, ValueError) as exc:
+                    result["models"].append({"model": model["id"], "choices": [], "rejected": [], "reason": str(exc)})
+        return result
 
     def install(self, data=None):
         if data not in (None, {}):
@@ -411,6 +485,7 @@ class Tools:
         output = self.converted_root / name
         if output.exists():
             raise APIError("The converted output already exists", "output_exists", 409)
+        self._target_preflight(model["path"], {"bits": bits, "group_size": group_size, "mode": mode})
         self._check_conversion_disk(self._conversion_plan(Path(model["path"])))
         options = {"bits": bits, "group_size": group_size}
         self._ensure_heavy_available(model["path"], options)
@@ -565,6 +640,7 @@ class Tools:
         intermediate = intermediate_root / "float"
         if stage.exists() or intermediate_root.exists() or output.exists():
             raise APIError("The converted output already exists", "output_exists", 409)
+        self._target_preflight(source, {key: params[key] for key in ("bits", "group_size", "mode")})
         lease = self._quantize_lease(str(source), options)
         with lease:
             # The resource coordinator already validated its own lease. Recheck only

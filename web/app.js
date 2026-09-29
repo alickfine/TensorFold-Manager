@@ -11,7 +11,7 @@ import { renderCache } from './views/cache.js';
 import { renderModels } from './views/models.js';
 import { renderDownloads } from './views/downloads.js';
 import { renderModelConfig } from './views/model-config.js';
-import { renderModelTools } from './views/model-tools.js';
+import { renderModelTools, quantizationChoices, quantizationOptions } from './views/model-tools.js';
 import { renderEngineConfig } from './views/engine-config.js';
 import { renderServer } from './views/server.js';
 import { renderApi } from './views/api-integration.js';
@@ -46,6 +46,7 @@ const state = {
 const pageElement = document.querySelector('#page');
 const toastElement = document.querySelector('#toast');
 let toastTimer;
+let pageDirty = false;
 
 function toast(message, error = false) {
   toastElement.textContent = message;
@@ -67,6 +68,7 @@ function closeModal() {
 }
 
 function routeFromHash() {
+  pageDirty = false;
   const raw = location.hash.replace(/^#/, '');
   const [candidate, query = ''] = raw.split('?');
   state.page = renderers[candidate] ? candidate : 'overview';
@@ -166,6 +168,7 @@ async function refreshAll() {
 async function run(label, operation, { refresh = true } = {}) {
   try {
     const result = await operation();
+    pageDirty = false;
     if (refresh) await refreshAll();
     toast(label);
     return result;
@@ -489,6 +492,22 @@ document.addEventListener('click', (event) => {
   handleAction(button.dataset.action, button.dataset.value ?? '', button).catch(() => {});
 });
 
+for (const type of ['input', 'change']) pageElement.addEventListener(type, (event) => {
+  if (isPollEditingTarget(event.target)) pageDirty = true;
+  const form = event.target.closest('[data-form="tool-quantize"]');
+  if (type === 'change' && form && ['model', 'target'].includes(event.target.name)) {
+    const choices = quantizationChoices(state.pageData.tools, form.elements.model.value);
+    const select = form.elements.target;
+    if (event.target.name === 'model') select.innerHTML = quantizationOptions(choices);
+    const choice = choices.find(row => `${row.bits}:${row.group_size}` === select.value);
+    select.disabled = !choice;
+    form.elements.bits.value = choice?.bits ?? '';
+    form.elements.group_size.value = choice?.group_size ?? '';
+    form.querySelector('button[type="submit"]').disabled = !choice;
+    form.querySelector('[data-role="quantization-reason"]').textContent = choice ? '来自当前引擎的配置兼容预检；转换后仍需核验实际权重。' : '当前模型没有已验证的可用目标格式。';
+  }
+});
+
 document.addEventListener('submit', (event) => {
   const form = event.target.closest('[data-form]');
   if (!form) return;
@@ -518,10 +537,10 @@ async function initialize() {
         await refreshSnapshot({ render:false });
         const polledPage = state.page;
         const editing = isPollEditingTarget(document.activeElement);
-        if (shouldPollLivePage(polledPage, { editing, streaming:state.chat.streaming })) {
+        if (shouldPollLivePage(polledPage, { editing, dirty:pageDirty, streaming:state.chat.streaming })) {
           await loadPageData(polledPage, { render:false });
           const stillEditing = isPollEditingTarget(document.activeElement);
-          if (state.page === polledPage && shouldPollLivePage(polledPage, { editing:stillEditing, streaming:state.chat.streaming })) renderCurrent();
+          if (state.page === polledPage && shouldPollLivePage(polledPage, { editing:stillEditing, dirty:pageDirty, streaming:state.chat.streaming })) renderCurrent();
         }
       } catch (error) {
         document.querySelector('#poll-status').textContent = `刷新失败：${error.message}`;

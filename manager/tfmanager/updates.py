@@ -89,30 +89,31 @@ class Updates:
             model=job.params.get('model') or old_state['model'] or old_settings['selected_model']
             if not model:raise APIError('Select an installed model to validate the candidate API','model_required',409)
             self.engine.preflight_switch(model)
-            self.engine.drain();self.engine.stop()
-            self.store.put('engine_recovery',{'active':previous,'settings':old_settings,'model':model})
-            self.store.put('engine_active',candidate)
-            try:
-                job.progress(phase='validating_candidate');self.engine.start(model,allow_attach=False);self.engine.await_ready()
-                # Health alone does not prove inference compatibility. Perform a tiny actual completion.
-                from .gateway import completion
-                response,_=completion(self.engine,self.store,{'model':self.engine.status().get('served_name') or self.engine.status()['model'],'messages':[{'role':'user','content':'Reply OK'}],'max_tokens':1,'temperature':0},record=True)
-                if not isinstance(response.get('choices'),list) or not response['choices']:raise APIError('Candidate did not complete a real request','candidate_failed',409)
-                candidate=candidate|{'api_verified':True};self.store.put('engine_active',candidate)
-                if previous:self.store.put('engine_previous',previous)
-                self.store.delete('engine_staged','default');return {'active':candidate,'recovered':False}
-            except Exception as error:
-                # Never load the old model while an unresponsive candidate still owns resources.
-                self.engine.stop()
-                if previous:self.store.put('engine_active',previous)
-                else:self.store.delete('engine_active','default')
-                self.store.settings_update(old_settings)
-                if previous:
-                    job.progress(phase='recovering_previous');self.engine.start(model,allow_attach=False);self.engine.await_ready()
+            with self.engine.transition_lease() as guard:
+                self.engine.drain();self.engine.stop()
+                self.store.put('engine_recovery',{'active':previous,'settings':old_settings,'model':model})
+                self.store.put('engine_active',candidate)
+                try:
+                    job.progress(phase='validating_candidate');self.engine.start_transition(model,guard);self.engine.await_ready()
+                    # Health alone does not prove inference compatibility. Perform a tiny actual completion.
                     from .gateway import completion
-                    completion(self.engine,self.store,{'model':self.engine.status().get('served_name') or self.engine.status()['model'],'messages':[{'role':'user','content':'Reply OK'}],'max_tokens':1},record=True)
-                    self.store.put('update_recovery',{'at':time.time(),'api_verified':True,'error':str(error)})
-                    raise APIError('Candidate failed; previous engine API restored: '+str(error),'candidate_failed_recovered',409)
-                raise APIError('Candidate failed; no previous environment existed: '+str(error),'candidate_failed',409)
+                    response,_=completion(self.engine,self.store,{'model':self.engine.status().get('served_name') or self.engine.status()['model'],'messages':[{'role':'user','content':'Reply OK'}],'max_tokens':1,'temperature':0},record=True)
+                    if not isinstance(response.get('choices'),list) or not response['choices']:raise APIError('Candidate did not complete a real request','candidate_failed',409)
+                    candidate=candidate|{'api_verified':True};self.store.put('engine_active',candidate)
+                    if previous:self.store.put('engine_previous',previous)
+                    self.store.delete('engine_staged','default');return {'active':candidate,'recovered':False}
+                except Exception as error:
+                    # Never load the old model while an unresponsive candidate still owns resources.
+                    self.engine.stop()
+                    if previous:self.store.put('engine_active',previous)
+                    else:self.store.delete('engine_active','default')
+                    self.store.settings_update(old_settings)
+                    if previous:
+                        job.progress(phase='recovering_previous');self.engine.start_transition(model,guard);self.engine.await_ready()
+                        from .gateway import completion
+                        completion(self.engine,self.store,{'model':self.engine.status().get('served_name') or self.engine.status()['model'],'messages':[{'role':'user','content':'Reply OK'}],'max_tokens':1},record=True)
+                        self.store.put('update_recovery',{'at':time.time(),'api_verified':True,'error':str(error)})
+                        raise APIError('Candidate failed; previous engine API restored: '+str(error),'candidate_failed_recovered',409)
+                    raise APIError('Candidate failed; no previous environment existed: '+str(error),'candidate_failed',409)
     def run_activate(self,job):return self._switch(self.store.get('engine_staged'),job)
     def run_rollback(self,job):return self._switch(self.store.get('engine_previous'),job)

@@ -328,6 +328,24 @@ test('poll policy refreshes live routes without replacing focused editors or str
   assert.match(pollSource, /await loadPageData\(polledPage, \{ render:false \}\)[\s\S]*renderCurrent\(\)/, 'live route data loads before rendering');
 });
 
+test('dirty edits remain protected after blur and target formats come from model preflight', async () => {
+  const { shouldPollLivePage } = await import('../web/contracts.js');
+  for (const page of ['server','overview','downloads','model-tools']) {
+    assert.equal(shouldPollLivePage(page, { editing:false, dirty:true }), false);
+    assert.equal(shouldPollLivePage(page, { editing:false, dirty:false }), true);
+  }
+  const { quantizationChoices, quantizationOptions } = await import('../web/views/model-tools.js');
+  const tools = { quantization:{ models:[{ model:'gemma', choices:[{bits:4,group_size:32,mode:'affine'},{bits:4,group_size:64,mode:'affine'}] }] } };
+  const output = quantizationOptions(quantizationChoices(tools,'gemma'));
+  assert.match(output,/4:32/);assert.match(output,/4:64/);
+  assert.doesNotMatch(output,/3 bit|128/);
+  assert.deepEqual(quantizationChoices(tools,'unknown'),[]);
+  const source = readFileSync(new URL('../web/app.js',import.meta.url),'utf8');
+  assert.match(source,/pageElement.addEventListener\(type/);
+  assert.match(source,/dirty:pageDirty/g);
+  assert.match(source,/const result = await operation\(\);\s*pageDirty = false/);
+});
+
 test('every shipped page renders and every visible action or form has an application handler', async () => {
   const { renderResources } = await import('../web/views/resources.js');
   const { renderCache: cache } = await import('../web/views/cache.js');

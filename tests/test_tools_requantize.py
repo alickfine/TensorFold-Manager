@@ -83,7 +83,7 @@ class RequantizeTests(unittest.TestCase):
                 self.assertEqual(result['status'],'failed',result)
                 self.assertIn('quantization',result['error'].lower())
                 self.assert_clean(tools,name)
-        self.assertFalse(self.engine.inspected)
+        self.assertFalse([path for _, path in self.engine.inspected if Path(path).name.startswith('.staging-')])
 
     def test_source_mutation_during_processing_prevents_publish(self):
         self.source_config(mutate_source=str(self.model/'model.safetensors'))
