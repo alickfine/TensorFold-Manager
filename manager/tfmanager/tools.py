@@ -4,11 +4,13 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import queue
 import re
+import select
 import shutil
-import signal
 import socket
 import subprocess
+import sys
 import threading
 import time
 import urllib.error
@@ -16,6 +18,7 @@ import urllib.parse
 import urllib.request
 import uuid
 
+from .jobs import Cancelled
 from .state import APIError, clean_env, identifier, repo_id
 
 
@@ -125,64 +128,150 @@ class Tools:
             raise APIError("Bundled uv and stable runtime Python are required", "runtime_unavailable", 409)
         return uv.resolve(), runtime.resolve()
 
-    def _run(self, argv, job, env=None, secrets=(), log_output=True):
-        output = []
-        output_size = 0
-        output_overflow = False
-        output_lock = threading.Lock()
-        process = subprocess.Popen(
-            [str(item) for item in argv],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            errors="replace",
-            env=env or clean_env(),
-            start_new_session=True,
-        )
+    @staticmethod
+    def _wait_pipe_eof(fd, timeout):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            ready, _, _ = select.select([fd], [], [], min(0.1, max(0, deadline - time.monotonic())))
+            if ready and os.read(fd, 1) == b"":
+                return True
+        return False
 
-        def read_output():
-            nonlocal output_size, output_overflow
-            while True:
-                chunk = process.stdout.read(4096)
-                if not chunk:
-                    return
-                with output_lock:
-                    encoded_size = len(chunk.encode("utf-8", errors="replace"))
-                    if output_size + encoded_size <= MAX_CHILD_OUTPUT:
-                        output.append(chunk)
-                        output_size += encoded_size
-                    else:
-                        output_overflow = True
-
-        reader = threading.Thread(target=read_output, daemon=True, name="tool-output-" + job.id)
-        reader.start()
+    def _run(self, argv, job, env=None, secrets=(), log_output=True, lease=None, stop_timeout=10):
+        argv = [str(item) for item in argv]
+        secrets = tuple(secret for secret in secrets if secret)
+        if any(secret in argument for secret in secrets for argument in argv):
+            raise APIError("A credential cannot be passed on a tool command line", "unsafe_tool_command", 409)
+        lease_fd = getattr(lease, "fd", None)
+        if lease_fd is not None:
+            try:
+                os.fstat(lease_fd)
+            except OSError:
+                raise APIError("The heavy-work lease is invalid", "resource_blocked", 409)
+        live_read, live_write = os.pipe()
+        inherited = [live_write]
+        if lease_fd is not None:
+            inherited.append(lease_fd)
+        supervisor = None
+        events = queue.Queue()
+        reader = None
         try:
-            while process.poll() is None:
-                job.checkpoint()
-                time.sleep(0.1)
-            reader.join(timeout=5)
+            supervisor = subprocess.Popen(
+                [sys.executable, "-I", "-B", str(Path(__file__).with_name("tool_supervisor.py"))],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                errors="replace",
+                env=clean_env(),
+                start_new_session=True,
+                pass_fds=tuple(inherited),
+            )
+            config = {
+                "argv": argv,
+                "env": env or clean_env(),
+                "lease_fd": lease_fd,
+                "liveness_fd": live_write,
+                "stop_timeout": stop_timeout,
+                "capture_output": not secrets,
+                "max_output": MAX_CHILD_OUTPUT,
+                "sensitive": bool(secrets),
+            }
+            supervisor.stdin.write(json.dumps(config, separators=(",", ":")) + "\n")
+            supervisor.stdin.flush()
+        except Exception:
+            if supervisor is not None and supervisor.poll() is None:
+                supervisor.kill()
+                supervisor.wait()
+            raise APIError("Tool supervisor could not start", "tool_failed", 409)
         finally:
-            if process.poll() is None:
-                os.killpg(process.pid, signal.SIGTERM)
+            os.close(live_write)
+
+        def read_events():
+            try:
+                for line in supervisor.stdout:
+                    try:
+                        event = json.loads(line)
+                    except ValueError:
+                        events.put({"event": "protocol_error"})
+                        continue
+                    events.put(event if isinstance(event, dict) else {"event": "protocol_error"})
+            finally:
+                events.put(None)
+
+        reader = threading.Thread(target=read_events, daemon=True, name="tool-supervisor-" + job.id)
+        reader.start()
+        child_pid = None
+        exit_event = None
+        fatal = None
+        cancelled = None
+        reader_closed = False
+        try:
+            while exit_event is None and fatal is None and not reader_closed:
+                if cancelled is None:
+                    try:
+                        job.checkpoint()
+                    except Cancelled as error:
+                        cancelled = error
+                        try:
+                            supervisor.stdin.write('{"action":"cancel"}\n')
+                            supervisor.stdin.flush()
+                        except (BrokenPipeError, OSError, ValueError):
+                            pass
                 try:
-                    process.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    os.killpg(process.pid, signal.SIGKILL)
-                    process.wait()
-            reader.join(timeout=5)
-            if process.stdout:
-                process.stdout.close()
-        text = "".join(output)
+                    event = events.get(timeout=0.1)
+                except queue.Empty:
+                    if supervisor.poll() is not None and not reader.is_alive():
+                        reader_closed = True
+                    continue
+                if event is None:
+                    reader_closed = True
+                elif event.get("event") == "started" and type(event.get("pid")) is int:
+                    child_pid = event["pid"]
+                elif event.get("event") == "exit":
+                    exit_event = event
+                elif event.get("event") in ("fatal", "protocol_error"):
+                    fatal = event.get("message") or "Tool supervisor protocol failed"
+        finally:
+            try:
+                supervisor.stdin.close()
+            except (BrokenPipeError, OSError):
+                pass
+
+        try:
+            supervisor.wait(timeout=stop_timeout + 5)
+        except subprocess.TimeoutExpired:
+            supervisor.kill()
+            supervisor.wait()
+
+        child_exited = self._wait_pipe_eof(live_read, 0.2)
+        # A dead supervisor no longer provides a trustworthy process handle.
+        # Never signal its reported numeric PID/group from the manager: it may
+        # have been reused. The inherited liveness descriptor and lease stay
+        # fail-closed until the real child exits naturally.
+        while not child_exited:
+            child_exited = self._wait_pipe_eof(live_read, 1)
+        os.close(live_read)
+        reader.join(timeout=5)
+        supervisor.stdout.close()
+        if not child_exited:
+            raise APIError("Tool child exit could not be verified; the resource lease remains fail-closed", "tool_failed", 409)
+        if cancelled is not None:
+            raise cancelled
+        if exit_event is None:
+            raise APIError(fatal or "Tool supervisor exited unexpectedly", "tool_failed", 409)
+        output = exit_event.get("output")
+        if not isinstance(output, str) or not isinstance(exit_event.get("overflow"), bool) or type(exit_event.get("returncode")) is not int:
+            raise APIError("Tool supervisor returned an invalid result", "tool_failed", 409)
         for secret in secrets:
-            if secret:
-                text = text.replace(secret, "[REDACTED]")
-        if output_overflow:
+            output = output.replace(secret, "[REDACTED]")
+        if exit_event["overflow"]:
             raise APIError("Tool output exceeded the safe capture limit", "tool_failed", 409)
-        if log_output and text:
-            self.store.log("info", text[-16000:])
-        if process.returncode:
-            raise APIError(f"Tool process exited with code {process.returncode}", "tool_failed", 409)
-        return text
+        if log_output and output:
+            self.store.log("info", output[-16000:])
+        if exit_event["returncode"]:
+            raise APIError(f"Tool process exited with code {exit_event['returncode']}", "tool_failed", 409)
+        return output
 
     def run_install(self, job):
         if not self.install_lock.acquire(blocking=False):
@@ -421,6 +510,7 @@ class Tools:
                     ],
                     job,
                     env,
+                    lease=lease,
                 )
                 job.checkpoint()
                 self._validate_weights(stage)
