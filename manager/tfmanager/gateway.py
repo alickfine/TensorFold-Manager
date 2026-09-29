@@ -12,6 +12,22 @@ MAX_RESPONSE=32*1024*1024
 
 def validate_payload(data):
     if not isinstance(data,dict):raise APIError('JSON object required')
+    # TensorFold reads this switch from template kwargs, not the top-level alias.
+    # Copy both mappings so adaptation never changes the caller's request.
+    data=data.copy()
+    if 'chat_template_kwargs' in data:
+        if not isinstance(data['chat_template_kwargs'],dict):raise APIError('chat_template_kwargs must be an object')
+        data['chat_template_kwargs']=data['chat_template_kwargs'].copy()
+    kwargs=data.get('chat_template_kwargs',{})
+    if 'enable_thinking' in kwargs and type(kwargs['enable_thinking']) is not bool:
+        raise APIError('chat_template_kwargs.enable_thinking must be boolean')
+    if 'enable_thinking' in data:
+        thinking=data.pop('enable_thinking')
+        if type(thinking) is not bool:raise APIError('enable_thinking must be boolean')
+        if 'enable_thinking' in kwargs and kwargs['enable_thinking']!=thinking:
+            raise APIError('Conflicting enable_thinking values')
+        kwargs['enable_thinking']=thinking
+        data['chat_template_kwargs']=kwargs
     if 'stream' in data and not isinstance(data['stream'],bool):raise APIError('stream must be boolean')
     if 'max_tokens' in data and (isinstance(data['max_tokens'],bool) or not isinstance(data['max_tokens'],int) or not 1<=data['max_tokens']<=2097152):raise APIError('Invalid max_tokens')
     if 'messages' in data and (not isinstance(data['messages'],list) or not data['messages']):raise APIError('messages must be a non-empty array')
@@ -42,14 +58,14 @@ def usage_into(record,payload):
         record['prefill_tps']=(count-cached)/seconds
         record['prefill_tps_source']='uncached_prompt_tokens/prefill_seconds'
 
-REQUEST_PARAMETERS={'max_tokens','temperature','top_p','top_k','seed','stop','presence_penalty','frequency_penalty','stream','enable_thinking','reasoning_effort','thinking_budget','logprobs'}
+REQUEST_PARAMETERS={'max_tokens','temperature','top_p','top_k','seed','stop','presence_penalty','frequency_penalty','stream','chat_template_kwargs','reasoning_effort','thinking_budget','logprobs'}
 
 def request_metadata(engine,data):
     return engine.request_metadata() | {'parameters':{key:value for key,value in data.items() if key in REQUEST_PARAMETERS}}
 
 
 def completion(engine,store,data,path='/v1/chat/completions',record=True,observe_stream=False,job=None):
-    data=validate_payload(data.copy());data['stream']=observe_stream;data.setdefault('model',engine.status().get('served_name') or engine.status()['model'])
+    data=validate_payload(data);data['stream']=observe_stream;data.setdefault('model',engine.status().get('served_name') or engine.status()['model'])
     finished_job=threading.Event()
     start=time.monotonic();metrics={'model':data['model'],'status':502,'error':None,'ttft':None,'prefill_tps':None,'decode_tps':None,'input_tokens':None,'output_tokens':None}
     try:
@@ -105,7 +121,7 @@ def completion(engine,store,data,path='/v1/chat/completions',record=True,observe
 
 
 def proxy(handler,app,path,data=None):
-    if data is not None:validate_payload(data);data=data.copy();data.setdefault('model',app.engine.status().get('served_name') or app.engine.status()['model'])
+    if data is not None:data=validate_payload(data);data.setdefault('model',app.engine.status().get('served_name') or app.engine.status()['model'])
     stream=bool(data and data.get('stream'));start=time.monotonic();metrics={'model':data.get('model') if data else app.engine.status()['model'],'status':502,'error':None,'ttft':None}
     began=False;done=threading.Event();disconnected=threading.Event();connection=None
     try:
