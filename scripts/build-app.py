@@ -43,6 +43,37 @@ def validate_runtime(runtime: Path) -> Path:
     return runtime
 
 
+def trim_runtime_tools(runtime: Path) -> None:
+    # Only the bundled interpreter is a supported launcher. Optional IDE/pip
+    # shell entrypoints are not runtime dependencies and cannot remain unsigned
+    # executable nested components in a signed Frameworks directory.
+    for path in (runtime / 'bin').iterdir():
+        if path.name not in {'python', 'python3', 'python3.12'}:
+            if path.is_dir() and not path.is_symlink():
+                raise ValueError('Unexpected runtime bin directory')
+            path.unlink()
+
+
+def copy_runtime_framework(runtime: Path, frameworks: Path) -> Path:
+    framework = frameworks / 'PythonRuntime.framework'
+    version = framework / 'Versions/A'
+    resources = version / 'Resources'
+    resources.mkdir(parents=True, exist_ok=True)
+    standalone = resources / 'runtime'
+    shutil.copytree(runtime, standalone, symlinks=True, ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
+    trim_runtime_tools(standalone)
+    (resources / 'Info.plist').write_bytes(plistlib.dumps({
+        'CFBundleIdentifier': 'io.github.alickfine.tensorfold-manager.python',
+        'CFBundleName': 'PythonRuntime', 'CFBundleExecutable': 'PythonRuntime',
+        'CFBundlePackageType': 'FMWK', 'CFBundleVersion': '3.12.9',
+    }))
+    shutil.copy2(standalone / 'lib/libpython3.12.dylib', version / 'PythonRuntime')
+    (framework / 'Versions/Current').symlink_to('A')
+    (framework / 'Resources').symlink_to('Versions/Current/Resources')
+    (framework / 'PythonRuntime').symlink_to('Versions/Current/PythonRuntime')
+    return framework
+
+
 def copy_source(source: Path, target: Path) -> None:
     target.mkdir(parents=True, exist_ok=True)
     for path in sorted(source.iterdir()):
@@ -88,8 +119,7 @@ def build(runtime: Path, uv: Path, output: Path, dmg: bool = True, version: str 
     resources.mkdir()
     helpers.mkdir()
     frameworks.mkdir()
-    shutil.copytree(runtime, frameworks / 'PythonRuntime', symlinks=True,
-                    ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
+    python_framework = copy_runtime_framework(runtime, frameworks)
     shutil.copy2(uv, helpers / 'uv')
     copy_source(ROOT / 'manager', resources / 'manager')
     copy_source(ROOT / 'web', resources / 'web')
@@ -115,13 +145,14 @@ def build(runtime: Path, uv: Path, output: Path, dmg: bool = True, version: str 
         '-O', '-framework', 'Cocoa', '-framework', 'WebKit', '-framework', 'Security',
         str(ROOT / 'macos/Bootstrap.swift'), str(ROOT / 'macos/main.swift'), '-o', str(contents / 'MacOS/TensorFoldManager'))
     for path in sorted(contents.rglob('*'), key=lambda p: len(p.parts), reverse=True):
-        if macho(path):
+        if macho(path) and path not in {contents / 'MacOS/TensorFoldManager', python_framework / 'Versions/A/PythonRuntime'}:
             args = ['/usr/bin/codesign', '--force', '--sign', signing]
             if signing != '-':
                 args += ['--options', 'runtime', '--timestamp']
                 if path.name.startswith('python3'):
                     args += ['--entitlements', str(ROOT / 'macos/python.entitlements')]
             run(*args, str(path))
+    run('/usr/bin/codesign', '--force', '--sign', signing, str(python_framework))
     run('/usr/bin/codesign', '--force', '--sign', signing, str(app))
     run('/usr/bin/codesign', '--verify', '--deep', '--strict', str(app))
     if dmg:

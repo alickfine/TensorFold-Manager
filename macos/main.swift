@@ -72,7 +72,7 @@ final class ManagerApp: NSObject, NSApplicationDelegate, WKNavigationDelegate, W
             let runtime = runtimes.appendingPathComponent(fingerprint, isDirectory: true)
             if !FileManager.default.fileExists(atPath: runtime.appendingPathComponent("bin/python3").path) {
                 let stage = runtimes.appendingPathComponent("staging-" + UUID().uuidString)
-                try FileManager.default.copyItem(at: contents.appendingPathComponent("Frameworks/PythonRuntime"), to: stage)
+                try FileManager.default.copyItem(at: contents.appendingPathComponent("Frameworks/PythonRuntime.framework/Resources/runtime"), to: stage)
                 do { try FileManager.default.moveItem(at: stage, to: runtime) }
                 catch { try? FileManager.default.removeItem(at: stage); if !FileManager.default.fileExists(atPath: runtime.path) { throw error } }
             }

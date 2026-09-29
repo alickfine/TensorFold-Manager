@@ -18,6 +18,36 @@ class BundleSafetyTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 build.get_version(value)
 
+    def test_runtime_bin_has_only_interpreter_aliases(self):
+        with tempfile.TemporaryDirectory() as name:
+            root = pathlib.Path(name)
+            binary = root / 'bin'
+            binary.mkdir()
+            for filename in ('python3.12', 'idle3.12', 'pip', 'python3.12-config'):
+                (binary / filename).write_text('fixture')
+            (binary / 'python3').symlink_to('python3.12')
+            self.builder().trim_runtime_tools(root)
+            self.assertEqual(sorted(p.name for p in binary.iterdir()), ['python3', 'python3.12'])
+            self.assertTrue((binary / 'python3').resolve().is_file())
+
+    def test_python_framework_is_a_signable_versioned_bundle(self):
+        import plistlib
+        with tempfile.TemporaryDirectory() as name:
+            root = pathlib.Path(name)
+            runtime = root / 'vendor'
+            (runtime / 'bin').mkdir(parents=True)
+            (runtime / 'lib').mkdir()
+            (runtime / 'bin/python3.12').write_bytes(b'fixture interpreter')
+            (runtime / 'bin/python3').symlink_to('python3.12')
+            (runtime / 'lib/libpython3.12.dylib').write_bytes(b'fixture library')
+            framework = self.builder().copy_runtime_framework(runtime, root / 'Frameworks')
+            self.assertEqual(framework.name, 'PythonRuntime.framework')
+            self.assertEqual((framework / 'Versions/Current').readlink(), pathlib.Path('A'))
+            info = plistlib.loads((framework / 'Resources/Info.plist').read_bytes())
+            self.assertEqual(info['CFBundlePackageType'], 'FMWK')
+            self.assertEqual((framework / 'PythonRuntime').read_bytes(), b'fixture library')
+            self.assertTrue((framework / 'Resources/runtime/bin/python3').resolve().is_file())
+
     def test_missing_runtime_rejected_before_build(self):
         with tempfile.TemporaryDirectory() as name:
             with self.assertRaises(ValueError):
