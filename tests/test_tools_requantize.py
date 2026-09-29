@@ -49,6 +49,8 @@ class RequantizeTests(unittest.TestCase):
         self.assertIs(leases[0][0], leases[1][0])
         self.assertEqual(leases[0][1], leases[1][1])
         first, second = (x['args'] for x in calls)
+        self.assertEqual(first[first.index('--dtype')+1], 'bfloat16')
+        self.assertEqual(second[second.index('--dtype')+1], 'bfloat16')
         self.assertNotIn('--quantize', first)
         self.assertNotIn('--dequantize', second)
         intermediate = Path(first[first.index('--mlx-path')+1])

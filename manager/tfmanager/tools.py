@@ -600,7 +600,7 @@ class Tools:
             raise APIError("Canonical MLX quantization metadata is required for the memory budget", "resource_blocked", 409)
         minimum = min([effective["bits"], *(value["bits"] for value in effective["overrides"].values())]) if effective else 16
         weight_bytes = sum(path.stat().st_size for path in weights)
-        # Request float16 but reserve float32 expansion: a model's cast predicate
+        # Request bfloat16 but reserve float32 expansion: a model's cast predicate
         # can protect individual layers. The final output is bounded as float too,
         # because quantization may skip layers whose shape is not group-aligned.
         float_bytes = (weight_bytes * 32 + minimum - 1) // minimum
@@ -672,7 +672,7 @@ class Tools:
                     job.checkpoint()
                     job.progress(phase="dequantize", source=str(source), output=str(output), disk_budget=plan)
                     self._run([python, "-I", "-B", "-m", "mlx_lm", "convert",
-                        "--hf-path", source, "--mlx-path", intermediate, "--dequantize", "--dtype", "float16"],
+                        "--hf-path", source, "--mlx-path", intermediate, "--dequantize", "--dtype", "bfloat16"],
                         job, env, lease=lease)
                     job.checkpoint()
                     float_config, _ = self._validate_weights(intermediate)
@@ -696,7 +696,7 @@ class Tools:
                         stage,
                         "--quantize",
                         "--dtype",
-                        "float16",
+                        "bfloat16",
                         "--q-bits",
                         params["bits"],
                         "--q-group-size",
