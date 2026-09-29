@@ -8,7 +8,10 @@ const LABELS = {
 
 function normalize(name, raw) {
   if (raw === true || raw === false) return { name, enabled:raw, reason:'' };
-  if (raw && typeof raw === 'object') return { name, enabled:Boolean(raw.enabled ?? raw.available ?? raw.supported), reason:raw.reason ?? raw.message ?? '', source:raw.source };
+  if (raw && typeof raw === 'object') {
+    const enabled = Boolean(raw.enabled ?? raw.available ?? raw.supported) && raw.ready !== false && raw.available !== false;
+    return { name, enabled, reason:raw.reason ?? raw.message ?? (enabled ? '' : '能力尚未准备完成'), source:raw.source };
+  }
   return { name, enabled:false, reason:typeof raw === 'string' ? raw : '当前运行时未报告支持' };
 }
 

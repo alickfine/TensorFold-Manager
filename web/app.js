@@ -1,6 +1,7 @@
 import { api } from './api.js';
 import { exportTextFile } from './export.js';
 import { parseChatOptions, chatRequest } from './chat-options.js';
+import { serviceSwitchRequest, engineStopRequest, engineDetachRequest, credentialRequest, credentialDeleteRequest, quantizeRequest, uploadPrepareRequest, uploadConfirmRequest, downloadRequest, optionalCredentialStatus } from './contracts.js';
 import { formValues, escapeHtml, capability } from './views/shared.js';
 import { serializeSettings, partitionProfileConfig } from './views/settings.js';
 import { renderOverview } from './views/overview.js';
@@ -114,15 +115,23 @@ async function refreshSnapshot({ render = true } = {}) {
 }
 
 async function loadPageData(page = state.page, { render = true } = {}) {
-  if (page === 'stats') {
+  if (page === 'overview') {
+    state.pageData.services = await api.request('/api/services');
+  } else if (page === 'stats') {
     const params = new URLSearchParams({ range:state.filters.statsRange });
     if (state.filters.statsModel) params.set('model', state.filters.statsModel);
     state.pageData.stats = await api.request(`/api/stats?${params}`);
   } else if (page === 'cache') {
     state.pageData.cache = await api.request('/api/cache');
   } else if (page === 'downloads') {
-    const [catalog, jobs] = await Promise.all([api.request('/api/downloads/catalog'), api.request('/api/jobs')]);
+    const [catalog, jobs, credentials] = await Promise.all([api.request('/api/downloads/catalog'), api.request('/api/jobs'), optionalCredentialStatus(path => api.request(path), state.pageData.credentials)]);
     state.pageData.catalog = catalog;
+    state.pageData.jobs = jobs;
+    state.pageData.credentials = credentials;
+  } else if (page === 'model-tools') {
+    const [tools, credentials, jobs] = await Promise.all([api.request('/api/tools'), optionalCredentialStatus(path => api.request(path), state.pageData.credentials), api.request('/api/jobs')]);
+    state.pageData.tools = tools;
+    state.pageData.credentials = credentials;
     state.pageData.jobs = jobs;
   } else if (page === 'model-config') {
     state.pageData.profiles = await api.request('/api/profiles');
@@ -171,7 +180,7 @@ async function engineAction(action, explicitModel = '') {
   const selected = document.querySelector('[data-role="engine-model"]')?.value || explicitModel || state.snapshot?.settings?.selected_model;
   if ((action === 'start' || action === 'restart') && !selected) throw new Error('请先选择模型');
   const path = `/api/engine/${action}`;
-  const body = action === 'stop' ? { force:false } : { model:selected };
+  const body = action === 'stop' ? engineStopRequest(false).options.body : { model:selected };
   await run(action === 'stop' ? '已提交停止请求' : action === 'restart' ? '已提交重启请求' : '已提交启动请求', () => api.request(path, { method:'POST', body }));
 }
 
@@ -204,6 +213,15 @@ async function handleAction(action, value, element) {
   if (action === 'engine-stop') {
     if (confirm('停止 TensorFold 推理服务？在途请求将按后端排空策略处理。')) return engineAction('stop');
     return;
+  }
+  if (action === 'engine-force-stop') {
+    if (!confirm('仅强制停止 TensorFold Manager 当前持有的自有引擎进程？此操作不会按 PID 或端口定位其他服务。')) return;
+    const request = engineStopRequest(true);
+    return run('自有服务强制停止请求已提交', () => api.request(request.path, request.options));
+  }
+  if (action === 'engine-detach') {
+    const request = engineDetachRequest();
+    return run('已断开只读外部服务连接；外部进程继续运行', () => api.request(request.path, request.options));
   }
   if (action === 'engine-restart') return engineAction('restart', value);
   if (action === 'model-default') return run('默认模型已保存', () => api.request('/api/settings', { method:'PUT', body:{ selected_model:value } }));
@@ -275,6 +293,25 @@ async function handleAction(action, value, element) {
     return;
   }
   if (action === 'engine-install') return run('官方引擎安装任务已创建', () => api.request('/api/engine/install', { method:'POST', body:{} }));
+  if (action === 'tool-install') return run('模型工具安装任务已创建', () => api.request('/api/tools/install', { method:'POST', body:{} }));
+  if (action === 'credential-delete') {
+    if (!confirm('删除这个 App 凭据？后续对应来源任务将不能使用认证访问。')) return;
+    const request = credentialDeleteRequest(value);
+    return run('凭据已删除', () => api.request(request.path, request.options));
+  }
+  if (action === 'upload-confirm') {
+    const plan = state.pageData.uploadPlan;
+    if (!plan || plan.plan_id !== value) throw new Error('上传预览已失效，请重新准备');
+    const message = plan.visibility === 'public' && !plan.existing
+      ? `确认新建公开仓库 ${plan.repo} 并公开发布预览中的 ${plan.files?.length ?? 0} 个文件？`
+      : `确认上传预览中的 ${plan.files?.length ?? 0} 个文件到 ${plan.repo}（实际可见性：${plan.visibility}）？`;
+    if (!confirm(message)) return;
+    const request = uploadConfirmRequest(value);
+    const result = await run('上传任务已创建', () => api.request(request.path, request.options));
+    state.pageData.uploadPlan = null;
+    renderCurrent();
+    return result;
+  }
   if (action === 'logs-filter') return loadPageData('logs');
   if (action === 'chat-abort') {
     state.chat.controller?.abort();
@@ -388,18 +425,13 @@ async function handleForm(form) {
     return run('配置档已导入', () => api.request('/api/profiles', { method:'POST', body:{ name:profile.name.trim(), config:settings } }));
   }
   if (action === 'download-create') {
-    if (!/^[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*$/.test(values.repo) || values.repo.includes('..')) {
-      throw new Error('仓库必须是精确的 owner/model 标识');
-    }
-    if (values.source === 'modelscope' && !/^[0-9a-f]{40,64}$/i.test(values.revision)) {
-      throw new Error('ModelScope 必须填写 40–64 位不可变 commit SHA；不能使用 main 或猜测映射');
-    }
     const defaultDirectory = state.pageData.catalog?.default_directory;
     if (values.directory !== defaultDirectory) {
       if (!confirm(`允许 TensorFold Manager 写入这个模型目录？\n${values.directory}\n\n该授权只用于下载任务，不会删除外部权重。`)) return;
       await api.request('/api/downloads/scope', { method:'POST', body:{ directory:values.directory, confirm:true } });
     }
-    return run('下载任务已创建', () => api.request('/api/downloads', { method:'POST', body:values }));
+    const request = downloadRequest(values);
+    return run('下载任务已创建', () => api.request(request.path, request.options));
   }
   if (action === 'stats-filter') {
     state.filters.statsModel = values.model;
@@ -419,16 +451,28 @@ async function handleForm(form) {
     return;
   }
   if (action === 'benchmark-run') return run('基准任务已提交', () => api.request('/api/benchmark', { method:'POST', body:{ prompt:values.prompt, max_tokens:Number(values.max_tokens), runs:Number(values.runs) } }));
+  if (action === 'service-switch') {
+    if (!confirm(`停止所选已识别服务，等待端点和内存释放，再启动目标模型 ${values.model}？确认快照最多有效 30 秒；超时不会强杀。`)) return;
+    const request = serviceSwitchRequest(values.snapshot_id, values.model);
+    return run('停止后切换任务已创建', () => api.request(request.path, request.options));
+  }
+  if (action === 'credential-save') {
+    const request = credentialRequest(values.provider, values.token);
+    return run('凭据已交给系统凭据助手；页面只保留已配置状态', () => api.request(request.path, request.options));
+  }
   if (action === 'tool-quantize') {
     const gate = capability(state.snapshot?.capabilities, 'quantize');
     if (!gate.enabled) throw new Error(gate.reason);
-    return run('量化任务已创建', () => api.request('/api/tools/quantize', { method:'POST', body:{ ...values, bits:Number(values.bits) } }));
+    const request = quantizeRequest(values);
+    return run('量化任务已创建', () => api.request(request.path, request.options));
   }
-  if (action === 'tool-upload') {
+  if (action === 'tool-upload-prepare') {
     const gate = capability(state.snapshot?.capabilities, 'upload');
     if (!gate.enabled) throw new Error(gate.reason);
-    if (values.visibility === 'public' && !confirm('确认创建公开仓库上传任务？该操作可能向外发布模型文件。')) return;
-    return run('上传任务已创建', () => api.request('/api/tools/upload', { method:'POST', body:values }));
+    const request = uploadPrepareRequest(values);
+    state.pageData.uploadPlan = await run('上传预览已准备；尚未上传', () => api.request(request.path, request.options), { refresh:false });
+    renderCurrent();
+    return;
   }
   if (action === 'chat-send') return sendChat(values.message.trim());
 }
@@ -473,8 +517,8 @@ async function initialize() {
       try {
         const editing = document.activeElement?.closest?.('form');
         await refreshSnapshot({ render:false });
-        if (!editing && !state.chat.streaming && ['overview', 'models', 'downloads', 'updates'].includes(state.page)) {
-          if (state.page === 'downloads') await loadPageData('downloads', { render:false });
+        if (!editing && !state.chat.streaming && ['overview', 'models', 'downloads', 'model-tools', 'updates'].includes(state.page)) {
+          if (['overview', 'downloads', 'model-tools'].includes(state.page)) await loadPageData(state.page, { render:false });
           renderCurrent();
         }
       } catch (error) {

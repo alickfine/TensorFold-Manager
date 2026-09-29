@@ -9,7 +9,7 @@ function messages(items) {
 export function renderChat(state) {
   const settings = state.snapshot?.settings ?? {};
   const options = parseChatOptions(state.chat.options ?? {},settings);
-  const ready = state.snapshot?.engine?.state === 'ready';
+  const ready = ['ready', 'attached'].includes(state.snapshot?.engine?.state);
   const chatGate = capability(state.snapshot?.capabilities, 'chat');
   const streamGate = capability(state.snapshot?.capabilities, 'streaming');
   const disabledReason = !ready ? '引擎尚未就绪' : !chatGate.enabled ? chatGate.reason : !streamGate.enabled ? streamGate.reason : '';

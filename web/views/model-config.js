@@ -1,4 +1,5 @@
 import { h, html, escapeHtml } from './shared.js';
+import { renderAdvancedOptions } from './advanced-options.js';
 
 export function renderModelConfig(state) {
   const models = state.snapshot?.models ?? [];
@@ -19,7 +20,8 @@ export function renderModelConfig(state) {
       + h.field('并发数', 'parallel', config.parallel ?? '', { hint:'填写 auto 或 1–128 的整数' })
       + h.select('Thinking', 'thinking', [['true', '启用'], ['false', '停用']], String(Boolean(config.thinking)))
       + h.field('Prompt cache GiB', 'prompt_cache_gib', config.prompt_cache_gib ?? '', { type:'number', min:0, step:'0.1' })
-      + h.field('MLX cache GiB', 'mlx_cache_gib', config.mlx_cache_gib ?? '', { type:'number', min:0, step:'0.1' }),
+      + h.field('MLX cache GiB', 'mlx_cache_gib', config.mlx_cache_gib ?? '', { type:'number', min:0, step:'0.1' })
+      + renderAdvancedOptions(config),
     '保存模型配置'))
     + h.card('配置档', `${h.note(`应用目标：${model.name ?? model.id}。配置档没有模型元数据时不会猜测来源。`)}${h.form('profile-create', h.field('名称', 'name', '', { required:true }) + `<input type="hidden" name="model" value="${escapeHtml(model.id)}">`, '保存当前配置为档案')}${h.table(['名称', '默认模型字段', '字段数', '操作'], profiles.map((profile) => [profile.name ?? profile.id, profile.config?.selected_model, Object.keys(profile.config ?? {}).length, html(`<div class="tf-actions">${h.button('应用到当前模型', 'profile-apply', profile.id, 'compact primary')}${h.button('导出', 'profile-export', profile.id, 'compact')}${h.button('删除', 'profile-delete', profile.id, 'compact danger')}</div>`)]))}`)
     + h.card('导入配置档', h.form('profile-import', h.textarea('配置档 JSON', 'json', '', { required:true, hint:'接受 {name,config} 或本页面导出的 {schema,profile}；未知字段会拒绝。' }), '校验并导入'));

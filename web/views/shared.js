@@ -66,6 +66,9 @@ export const h = {
   select(label, name, options, selected = '', { hint = '', full = false } = {}) {
     return `<div class="tf-field${full ? ' full' : ''}"><label for="field-${escapeHtml(name)}">${escapeHtml(label)}</label><select id="field-${escapeHtml(name)}" name="${escapeHtml(name)}">${options.map(([value, text]) => `<option value="${escapeHtml(value)}"${String(value) === String(selected ?? '') ? ' selected' : ''}>${escapeHtml(text)}</option>`).join('')}</select>${hint ? `<div class="tf-sub">${escapeHtml(hint)}</div>` : ''}</div>`;
   },
+  checkbox(label, name, checked = false, { hint = '', disabled = false } = {}) {
+    return `<div class="tf-field full"><label class="tf-check"><input name="${escapeHtml(name)}" type="checkbox"${checked ? ' checked' : ''}${disabled ? ' disabled' : ''}> ${escapeHtml(label)}</label>${hint ? `<div class="tf-sub">${escapeHtml(hint)}</div>` : ''}</div>`;
+  },
   form(action, fields, submit = '保存', extra = '') {
     return `<form data-form="${escapeHtml(action)}"><div class="tf-form-grid">${fields}</div><div class="tf-actions form-actions">${extra}<button type="submit" class="primary">${escapeHtml(submit)}</button></div></form>`;
   },
@@ -79,7 +82,9 @@ export function capability(capabilities, name) {
   const raw = capabilities?.[name];
   if (raw === true) return { enabled: true, reason: '' };
   if (raw && typeof raw === 'object') {
-    return { enabled: Boolean(raw.enabled ?? raw.available ?? raw.supported), reason: raw.reason ?? raw.message ?? '' };
+    const reported = Boolean(raw.enabled ?? raw.available ?? raw.supported);
+    const ready = raw.ready !== false && raw.available !== false;
+    return { enabled: reported && ready, reason: raw.reason ?? raw.message ?? (ready ? '' : '能力尚未准备完成') };
   }
   return { enabled: false, reason: typeof raw === 'string' ? raw : '当前运行时未报告支持' };
 }

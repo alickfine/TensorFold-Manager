@@ -1,4 +1,5 @@
 import { h, capability } from './shared.js';
+import { renderAdvancedOptions } from './advanced-options.js';
 
 export function renderEngineConfig(state) {
   const settings = state.snapshot?.settings ?? {};
@@ -15,5 +16,6 @@ export function renderEngineConfig(state) {
       + h.field('Prompt cache GiB', 'prompt_cache_gib', settings.prompt_cache_gib ?? '', { type:'number', min:0, step:'0.1' })
       + h.field('MLX cache GiB', 'mlx_cache_gib', settings.mlx_cache_gib ?? '', { type:'number', min:0, step:'0.1' })
       + h.field('Engine Python', 'engine_python', settings.engine_python ?? '', { disabled:!external.enabled, hint:external.enabled ? '仅显式开发模式可更改' : external.reason }),
-    '保存配置'));
+    '保存配置'))
+    + h.card('高级参数', h.form('settings-save', renderAdvancedOptions(settings), '保存高级配置'));
 }
