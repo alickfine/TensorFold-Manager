@@ -31,6 +31,15 @@ final class BootstrapTests {
             XCTAssertFalse(Handshake.permits(URL(string: url)!, port: 45678))
         }
     }
+    func testExportRejectsPathsAndUnsupportedTypes() throws {
+        for name in ["../data.json", "a/b.csv", "a\\b.csv", "program.sh", "nul\0.csv", ".hidden.json"] {
+            XCTAssertThrowsError(try ExportDocument.parse(["name": name, "content": "text"]))
+        }
+        XCTAssertThrowsError(try ExportDocument.parse(["name": "safe.csv", "content": String(repeating: "x", count: 10 * 1024 * 1024 + 1)]))
+        let file = try ExportDocument.parse(["name": "usage.csv", "content": "model,tokens\nqwen,42"])
+        XCTAssertEqual(file.name, "usage.csv")
+        XCTAssertEqual(String(data: file.bytes, encoding: .utf8), "model,tokens\nqwen,42")
+    }
     static var allTests = [("testRejectsForeignPID", testRejectsForeignPID), ("testRejectsNonceAndInvalidPorts", testRejectsNonceAndInvalidPorts), ("testAcceptsMatchingHandshake", testAcceptsMatchingHandshake), ("testNavigationExactOrigin", testNavigationExactOrigin)]
 }
 let suite = BootstrapTests()
@@ -38,4 +47,5 @@ try suite.testRejectsForeignPID()
 try suite.testRejectsNonceAndInvalidPorts()
 try suite.testAcceptsMatchingHandshake()
 suite.testNavigationExactOrigin()
-print("PASS: 4 native bootstrap and exact-origin checks")
+try suite.testExportRejectsPathsAndUnsupportedTypes()
+print("PASS: 5 native bootstrap, exact-origin and export checks")

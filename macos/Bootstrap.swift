@@ -22,3 +22,20 @@ struct Handshake: Decodable {
         url.scheme == "http" && url.host == "127.0.0.1" && url.port == port && url.user == nil && url.password == nil
     }
 }
+
+struct ExportDocument {
+    let name: String
+    let bytes: Data
+
+    static func parse(_ value: [String: Any]) throws -> ExportDocument {
+        guard let name = value["name"] as? String, let content = value["content"] as? String,
+              !name.isEmpty, name.utf8.count <= 200, !name.hasPrefix("."),
+              !name.contains("/"), !name.contains("\\"), !name.contains(".."),
+              name.rangeOfCharacter(from: .controlCharacters) == nil,
+              ["csv", "json", "txt", "md"].contains(URL(fileURLWithPath: name).pathExtension.lowercased()),
+              content.utf8.count <= 10 * 1024 * 1024 else {
+            throw NSError(domain: "TensorFoldManager", code: 2, userInfo: [NSLocalizedDescriptionKey: "Invalid export document"])
+        }
+        return ExportDocument(name: name, bytes: Data(content.utf8))
+    }
+}

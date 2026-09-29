@@ -181,19 +181,15 @@ final class ManagerApp: NSObject, NSApplicationDelegate, WKNavigationDelegate, W
         if message.name == "bootstrap" {
             replyHandler(["token": token, "instance_id": instance!], nil)
         } else if message.name == "exportFile" {
-            guard let body = message.body as? [String: Any], let name = body["name"] as? String,
-                  let content = body["content"] as? String, name.count <= 100,
-                  !name.contains("/"), !name.contains("\\"), !name.contains(".."),
-                  ["csv", "json", "txt", "md"].contains(URL(fileURLWithPath: name).pathExtension.lowercased()),
-                  content.utf8.count <= 10 * 1024 * 1024 else {
+            guard let body = message.body as? [String: Any], let file = try? ExportDocument.parse(body) else {
                 replyHandler(nil, "Invalid export request"); return
             }
             let panel = NSSavePanel()
-            panel.nameFieldStringValue = name
+            panel.nameFieldStringValue = file.name
             panel.canCreateDirectories = true
             panel.beginSheetModal(for: window) { response in
                 guard response == .OK, let url = panel.url else { replyHandler(["saved": false], nil); return }
-                do { try Data(content.utf8).write(to: url, options: .atomic); replyHandler(["saved": true], nil) }
+                do { try file.bytes.write(to: url, options: .atomic); replyHandler(["saved": true], nil) }
                 catch { replyHandler(nil, "Export write failed") }
             }
         } else { replyHandler(nil, "Unknown native operation") }
