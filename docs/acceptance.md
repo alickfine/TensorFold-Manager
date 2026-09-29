@@ -11,6 +11,8 @@
 | 引擎安装 | 官方 v0.3.6.1 / v0.3.6.2 固定提交、独立环境，实际 CLI / HTTP 推理验证 |
 | 模型下载 | Gemma 官方固定 revision，12 文件 / 15,373,588,575 bytes，逐文件摘要校验后完成；ModelScope 文件树及 config 实际验证 |
 | 聊天 | 本地 Qwen、下载的 Gemma 实际推理；Gemma 中文回答及关闭 thinking 的参数映射验证 |
+| 最终安装版切换 | Gemma → Qwen → Gemma 均就绪；旧 PID 退出后加载目标，Qwen 内置聊天返回 2，正常退出后所有验收 PID 和 18080 端口释放 |
+| API 网关 | 真实量化模型：无密钥请求 401，隔离验收数据中的一次性测试密钥请求 200、回答 2；测试密钥随后移除 |
 | 基准 / 参考答案 | 两次真实基准请求完成；1+1 参考测试实际返回 2、通过。评分仅为参考文本一致性 |
 | 统计 / 缓存 | 网关真实请求指标、上游 health 实际 active / cache / peak / footprint；无来源的指标显示未采集 |
 | 量化 | 真实 Gemma 4 bit / group 64 经两阶段转换为 4 bit / group 32，bfloat16 scales；源文件指纹不变、中间目录清理、实际加载及推理返回 2 |
@@ -40,4 +42,10 @@
 - TensorFold 未提供的 oMLX 专属能力、音视频、embedding、ANE 等显示明确不可用原因；不展示模拟运行指标。
 - 独立审查发现的未保存表单和升级租约空窗已修复并加入回归。后续多 agent 复审遇到账号用量限制，由主线程接手实际验证。
 
-GitHub CI 与公开 Release 结果在发布完成后补充。
+## 公开安装包验收
+
+- [GitHub CI](https://github.com/alickfine/TensorFold-Manager/actions/runs/36510596995) 全部通过：macOS 14 arm64 运行器，149 Python / 38 Web 测试与原生检查、DMG 构建、附件上传、Release 发布成功。
+- [v0.1.0-alpha.1 Release](https://github.com/alickfine/TensorFold-Manager/releases/tag/v0.1.0-alpha.1) 已公开，包含 DMG 和 SHA256SUMS.txt。
+- 实际从该 Release 下载 DMG，摘要与文件、GitHub asset digest 一致：`2a9a717b8fa3639a64f8564c9757186026ec8c1b87b7fea7e03fb4e614ec54cf`。
+- 公开 DMG 的 manager / Web 源文件与已验证源码逐字节一致。实际只读挂载、复制、卸载后启动，Gemma 就绪、内置聊天回答 2+2=4；正常退出后引擎 PID 消失、端口关闭，严格签名检查通过。
+- 当前实现和安装包的开发方验收完成；用户验收意见、真实 provider 凭据 / HF 上传以及 Apple 公证分别按上述边界处理。

@@ -99,3 +99,12 @@ Startup Python module tfmanager.server --data-dir PATH --web-dir PATH --port 0 a
 - Independent task3 review found startup writes pyc into signed App, runtime fingerprint incompleteness, unbounded quiet quit, uv license/provenance/CI gaps. Fix: native and child Python -B; manifest of all actual signed runtime files/links/modes + signing identity, verify stable copy before use; timeout explains state and offers explicit stop of own Process; package uv licenses; fixed archive checksum; actual build OS; hardened runtime/timestamp for future DeveloperID.
 - Native WebKit confirm delegate required for actual stop/update/download-scope actions; main-frame exact origin only with visible native confirmation.
 - Fresh local native engine bootstrap v0.3.6.2 commit71377a5373ed7b394f1b480ba2a6a3986b03af1c succeeded. Qwen compatible local variant CLI preflight and real inference returned status200; owned test process exited after App parent EOF. External8089 no longer listening during later readback; no signal was sent to it. No further heavyweight model loads until memory gates are implemented.
+
+## 最终执行记录（2026-09-29，取代早期未勾选的任务状态）
+
+- Task 1 / 2 / 3 已实施：真实管理层、17 页 Web、原生 App、隔离运行时、DMG / GitHub 发布流程。
+- Task 4 开发方验收完成：149 Python / 38 Web / 原生检查本机及 GitHub CI 通过；真实模型下载、量化及产物推理、双向模型切换、API 401/200、基准、参考答案、主引擎升级和回退。
+- 全局 OS 租约通过重复描述符保持至升级、候选失败恢复及模型切换完成；旧子进程退出与资源重新采样后才加载目标，重任务无空窗。
+- 独立审查的两项 P2 已由主线程修复并回归；后续 agent 用量限制已披露。实际转换进一步发现 scales dtype 必须 bfloat16，已修复并验证真实推理。
+- 公开 v0.1.0-alpha.1 的 DMG / SHA256 已发布，实际下载、摘要核对、安装、聊天、退出和签名验收通过。完整证据与限制见 docs/acceptance.md。
+- 未操作用户既有外部服务、未写入真实 provider token、未真实上传模型。用户安装验收等待反馈，Developer ID / 公证未提供。
