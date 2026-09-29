@@ -11,11 +11,16 @@ if len(sys.argv)>2 and sys.argv[1]=='info':
  if marker.exists():
   print(marker.read_text(),file=sys.stderr);sys.exit(2)
  print('compatible fixture model');sys.exit()
-parser=argparse.ArgumentParser(); parser.add_argument('serve'); parser.add_argument('model'); parser.add_argument('--port',type=int); args,_=parser.parse_known_args()
+parser=argparse.ArgumentParser(); parser.add_argument('serve'); parser.add_argument('model'); parser.add_argument('--port',type=int); parser.add_argument('--name',default='fixture'); args,_=parser.parse_known_args()
 if 'fail-model' in args.model: sys.exit(7)
 class Handler(BaseHTTPRequestHandler):
  def log_message(self,*args): pass
  def do_GET(self):
+  if self.path=='/health':
+   from pathlib import Path
+   marker=Path(args.model)/'fixture-health-model'
+   model=marker.read_text() if marker.is_file() else args.name
+   data=json.dumps({'status':'ok','model':model,'model_ids':[model],'warming':False,'max_batch_size':2,'memory':{'active':1048576,'cache':2097152,'peak':3145728}}).encode();self.send_response(200);self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data);return
   data=json.dumps({'object':'list','data':[{'id':'fixture','object':'model'}],'fixture_mtp_source':os.environ.get('TF_NEMOTRON_MTP')}).encode(); self.send_response(200); self.send_header('Content-Length',str(len(data))); self.end_headers(); self.wfile.write(data)
  def do_POST(self):
   body=json.loads(self.rfile.read(int(self.headers['Content-Length'])))

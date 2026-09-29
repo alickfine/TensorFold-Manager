@@ -26,7 +26,33 @@ class Engine:
             if self.attachment and not self.resources.verify_attachment(self.attachment):self.data.update(state='failed',health=False,error='External service identity or health changed; detach and revalidate')
             if self.proc and self.proc.poll() is not None and self.data['state'] not in ('stopped','failed'):
                 self.data.update(state='failed',health=False,error='Engine supervisor exited',pid=None)
-            result=self.data.copy(); result['pending']=bool(self.running_settings and (self.store.settings()!=self.running_settings or self.store.get('model_config',self.active_model_id,{})!=self.running_model_config)); return result
+            self._sample_health()
+            result=self.data.copy();result['active_requests']=self.active_requests;result['draining']=self.draining; result['pending']=bool(self.running_settings and (self.store.settings()!=self.running_settings or self.store.get('model_config',self.active_model_id,{})!=self.running_model_config)); return result
+    def _sample_health(self):
+        if self.data['state'] not in ('ready','attached'):
+            self.data.update(health_detail=None,last_health_at=None,health_error=None)
+            self._health_sample_key=None;return
+        port=int(self.attachment['flags']['port']) if self.attachment else self.running_settings['engine_port']
+        key=(port,self.data['started_at'],self.data.get('served_name'))
+        now=time.monotonic()
+        if getattr(self,'_health_sample_key',None)==key and now-getattr(self,'_health_checked',0)<2:return
+        self._health_sample_key=key;self._health_checked=now
+        connection=http.client.HTTPConnection('127.0.0.1',port,timeout=.5)
+        try:
+            connection.request('GET','/health');response=connection.getresponse();raw=response.read(1048577)
+            if response.status!=200 or len(raw)>1048576:raise ValueError('health response unavailable')
+            payload=json.loads(raw)
+            if not isinstance(payload,dict) or payload.get('status') not in ('ok','ready','healthy') or payload.get('model')!=self.data.get('served_name'):
+                raise ValueError('health model identity differs from the selected service')
+            memory=payload.get('memory') or {}
+            if not isinstance(memory,dict):raise ValueError('health memory response is invalid')
+            safe_memory={k:v for k,v in memory.items() if k in ('active','cache','peak','budget','mlx_budget','footprint') and type(v) is int and v>=0}
+            detail={k:payload.get(k) for k in ('status','model','warming','max_batch_size')}
+            detail['memory']=safe_memory
+            self.data.update(health_detail=detail,last_health_at=time.time(),health_error=None)
+        except (OSError,ValueError,http.client.HTTPException):
+            self.data.update(health_detail=None,health_error='Current health model identity or endpoint could not be verified')
+        finally:connection.close()
     def executable(self):
         if self.command:return self.command
         pointer=self.store.get('engine_active',default=None)
