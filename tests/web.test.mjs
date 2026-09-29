@@ -8,6 +8,27 @@ import { exportTextFile } from '../web/export.js';
 import { chooseLaunchModel, getLaunchGate } from '../web/views/overview.js';
 import { canValidateModel } from '../web/views/models.js';
 import { renderCache } from '../web/views/cache.js';
+import { parseChatOptions, chatRequest } from '../web/chat-options.js';
+
+test('chat request validates sampling and strips UI metadata from inference', () => {
+  const options = parseChatOptions({system_prompt:'be concise',temperature:'0',max_tokens:'8',enable_thinking:'false',seed:'42'});
+  const request = chatRequest('local',[{role:'assistant',content:'answer',metrics:{private:true}}],options);
+  assert.equal(request.temperature,0);
+  assert.equal(request.enable_thinking,false);
+  assert.equal(request.seed,42);
+  assert.equal(request.messages[0].role,'system');
+  assert.equal(request.messages[1].metrics,undefined);
+  assert.equal(request.system_prompt,undefined);
+  assert.throws(() => parseChatOptions({tools_json:'{"execute":"shell"}'}), /工具/);
+  assert.throws(() => parseChatOptions({max_tokens:'Infinity'}), /范围/);
+});
+
+test('streaming chat keeps reasoning, tool calls and usage distinct from answer', async () => {
+  const seen = [];
+  const client = createApiClient({getToken:async()=> 'fixture', fetchImpl:async()=>new Response('data: {"choices":[{"delta":{"reasoning_content":"reason","tool_calls":[{"index":0,"function":{"name":"test"}}]}}]}\n\ndata: {"usage":{"completion_tokens":3},"choices":[]}\n\ndata: [DONE]\n\n',{headers:{'content-type':'text/event-stream'}})});
+  await client.streamChat({}, {onReasoning:value=>seen.push(value),onToolCalls:value=>seen.push(value[0].function.name),onUsage:value=>seen.push(value.usage.completion_tokens)});
+  assert.deepEqual(seen,['reason','test',3]);
+});
 
 test('stopped engine with null health still renders cache controls', () => {
   assert.match(renderCache({snapshot:{engine:{state:'stopped',health:null}},pageData:{cache:{can_clear:true}}}), /清理受管快照/);

@@ -25,7 +25,8 @@ export function renderDownloads(state) {
     + h.card('来源目录', h.table(['名称', '仓库', '来源', '兼容性', '操作'], catalogRows.map((item) => [item.name ?? item.id, item.repo, item.source, item.supported ? '受支持' : '未确认', html(h.button('填入', 'catalog-select', JSON.stringify({ repo:item.repo, source:item.source }), 'compact'))]), '目录暂无条目；可手动输入经过核验的仓库。'))
     + h.card('下载任务', jobs.length ? jobs.map((job) => {
       const progress = job.progress ?? {};
-      const ratio = progress.total_bytes ? Math.min(100, progress.downloaded_bytes / progress.total_bytes * 100) : 0;
-      return `<div class="tf-download-job"><div class="tf-row"><div><strong>${h.tag(job.params?.repo ?? job.kind ?? job.id, 'blue')}</strong><div class="tf-sub">${h.kv('任务类型', job.kind)}${h.kv('来源', job.params?.source)}${h.kv('状态', job.status)}${h.kv('错误', job.error)}</div></div><div class="tf-actions">${jobActions(job)}</div></div><progress max="100" value="${ratio}"></progress><div class="tf-sub">${ratio.toFixed(1)}% · ${formatBytes(progress.downloaded_bytes)} / ${formatBytes(progress.total_bytes)}</div></div>`;
+      const ratio = progress.total_bytes ? Math.min(100, progress.downloaded_bytes / progress.total_bytes * 100) : null;
+      const bar = ratio == null ? '' : `<progress max="100" value="${ratio}"></progress><div class="tf-sub">${ratio.toFixed(1)}% · ${formatBytes(progress.downloaded_bytes)} / ${formatBytes(progress.total_bytes)}</div>`;
+      return `<div class="tf-download-job"><div class="tf-row"><div><strong>${h.tag(job.params?.repo ?? job.kind ?? job.id, 'blue')}</strong><div class="tf-sub">${h.kv('任务类型', job.kind)}${h.kv('来源', job.params?.source)}${h.kv('状态', job.status)}${h.kv('阶段', progress.phase)}${h.kv('错误', job.error)}</div></div><div class="tf-actions">${jobActions(job)}</div></div>${bar}</div>`;
     }).join('') : '<div class="tf-empty">暂无下载任务</div>');
 }

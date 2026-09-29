@@ -112,7 +112,7 @@ export function createApiClient({ getToken = getAdminToken, fetchImpl = globalTh
     return response.blob();
   }
 
-  async function streamChat(payload, { signal, onDelta } = {}) {
+  async function streamChat(payload, { signal, onDelta, onReasoning, onToolCalls, onUsage } = {}) {
     const response = await authenticatedFetch('/api/chat/completions', {
       method: 'POST',
       body: { ...payload, stream: true },
@@ -149,7 +149,12 @@ export function createApiClient({ getToken = getAdminToken, fetchImpl = globalTh
         } catch {
           throw new ApiError('流式响应包含无效 JSON', { code: 'invalid_stream' });
         }
-        const delta = event?.choices?.[0]?.delta?.content ?? event?.delta ?? '';
+        if (event.error) throw new ApiError(event.error.message ?? '推理流返回错误', {code:'upstream_error'});
+        const value = event?.choices?.[0]?.delta ?? {};
+        if (typeof value.reasoning_content === 'string') onReasoning?.(value.reasoning_content);
+        if (Array.isArray(value.tool_calls)) onToolCalls?.(value.tool_calls);
+        if (event.usage || event.tensorfold) onUsage?.(event);
+        const delta = value.content ?? event?.delta ?? '';
         if (typeof delta === 'string' && delta) {
           result += delta;
           onDelta?.(delta, event);

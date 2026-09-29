@@ -1,5 +1,6 @@
 import { api } from './api.js';
 import { exportTextFile } from './export.js';
+import { parseChatOptions, chatRequest } from './chat-options.js';
 import { formValues, escapeHtml, capability } from './views/shared.js';
 import { serializeSettings, partitionProfileConfig } from './views/settings.js';
 import { renderOverview } from './views/overview.js';
@@ -36,7 +37,7 @@ const renderers = {
 const state = {
   page:'overview', routeQuery:new URLSearchParams(), snapshot:null, pageData:{}, loading:true, lastUpdated:null,
   filters:{ statsModel:'', statsRange:'24h', logLevel:'', logQuery:'', logLimit:'500' },
-  chat:{ messages:[], streaming:false, controller:null },
+  chat:{ messages:[], options:{}, streaming:false, controller:null },
 };
 
 const pageElement = document.querySelector('#page');
@@ -135,6 +136,7 @@ async function loadPageData(page = state.page, { render = true } = {}) {
   } else if (page === 'chat') {
     const history = await api.request('/api/chat/history');
     state.chat.messages = history.messages ?? [];
+    state.chat.options = state.chat.messages.findLast(message => message.options)?.options ?? state.chat.options;
   } else if (page === 'capabilities') {
     const result = await api.request('/api/capabilities');
     state.snapshot.capabilities = result.capabilities ?? result;
@@ -174,6 +176,12 @@ async function saveText(path, filename) {
 }
 
 async function handleAction(action, value, element) {
+  if (action === 'logs-export') {
+    const records = state.pageData.logs?.logs ?? [];
+    const result = await exportTextFile({name:'tensorfold-logs.json',content:JSON.stringify(records,null,2)});
+    if (result.saved) toast('脱敏日志已导出');
+    return;
+  }
   if (action === 'refresh') return refreshAll();
   if (action === 'goto') return navigate(value);
   if (action === 'load-page') return loadPageData(value || state.page);
@@ -258,6 +266,11 @@ async function handleAction(action, value, element) {
     state.chat.controller?.abort();
     return;
   }
+  if (action === 'chat-export') {
+    const result = await exportTextFile({name:'tensorfold-chat.json',content:JSON.stringify({schema:1,messages:state.chat.messages},null,2)});
+    if (result.saved) toast('对话已导出');
+    return;
+  }
   if (action === 'chat-new') {
     state.chat.controller?.abort();
     state.chat.messages = [];
@@ -286,15 +299,32 @@ async function sendChat(message) {
   state.chat.controller = new AbortController();
   renderCurrent();
   const assistant = state.chat.messages.at(-1);
+  const options = parseChatOptions(state.chat.options,state.snapshot?.settings);
+  assistant.options = options;
+  assistant.reasoning = '';
+  assistant.tool_calls = [];
+  const started = performance.now();
+  assistant.status = 'generating';
   try {
-    await api.streamChat({
-      model:state.snapshot?.engine?.model,
-      messages:state.chat.messages.slice(0, -1),
-      temperature:state.snapshot?.settings?.temperature,
-      top_p:state.snapshot?.settings?.top_p,
-      max_tokens:state.snapshot?.settings?.max_tokens,
-    }, {
+    await api.streamChat(chatRequest(state.snapshot?.engine?.model,state.chat.messages.slice(0,-1),options), {
       signal:state.chat.controller.signal,
+      onReasoning(delta) {
+        assistant.reasoning += delta;
+        const body = document.querySelector('#chat-messages .tf-message:last-child .tf-message-body');
+        if (body && !assistant.content) body.textContent = '正在思考…\n'+assistant.reasoning.slice(-1200);
+      },
+      onToolCalls(calls) {
+        for (const delta of calls) {
+          if (!Number.isInteger(delta.index) || delta.index < 0 || delta.index >= 64) throw new Error('无效工具调用索引');
+          const item = assistant.tool_calls[delta.index] ?? {id:'',type:'function',function:{name:'',arguments:''}};
+          if (delta.id) item.id = delta.id;
+          if (delta.function?.name) item.function.name += delta.function.name;
+          if (delta.function?.arguments) item.function.arguments += delta.function.arguments;
+          if (item.function.arguments.length > 1048576) throw new Error('工具参数过长');
+          assistant.tool_calls[delta.index] = item;
+        }
+      },
+      onUsage(event) { assistant.metrics = {...event.usage,...event.tensorfold}; },
       onDelta(delta) {
         assistant.content += delta;
         const body = document.querySelector('#chat-messages .tf-message:last-child .tf-message-body');
@@ -303,13 +333,16 @@ async function sendChat(message) {
         if (box) box.scrollTop = box.scrollHeight;
       },
     });
+    assistant.status = 'completed';
   } catch (error) {
+    assistant.status = error.name === 'AbortError' ? 'cancelled' : 'failed';
     if (error.name !== 'AbortError') {
-      if (!assistant.content) state.chat.messages.pop();
+      if (!assistant.content && !assistant.reasoning && !assistant.tool_calls.length) state.chat.messages.pop();
       throw error;
     }
     assistant.content ||= '生成已取消。';
   } finally {
+    assistant.metrics = {...assistant.metrics,elapsed_seconds:(performance.now()-started)/1000};
     state.chat.streaming = false;
     state.chat.controller = null;
     await persistChat();
@@ -320,6 +353,7 @@ async function sendChat(message) {
 async function handleForm(form) {
   const action = form.dataset.form;
   const values = formValues(form);
+  if (action === 'chat-settings') { state.chat.options = parseChatOptions(values,state.snapshot?.settings); toast('生成设置已应用'); return; }
   if (action === 'settings-save') return run('设置已保存', () => api.request('/api/settings', { method:'PUT', body:serializeSettings(values) }));
   if (action === 'model-config-save') {
     const model = values.model;
