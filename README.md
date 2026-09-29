@@ -2,7 +2,7 @@
 
 独立 macOS App 中的 Web 管理工作台，面向 [TensorFold](https://github.com/ashhart/TensorFold)。参考本机 oMLX 的可适配管理功能，自主设计界面与管理层。
 
-**当前阶段：完整交互原型 v0.2，等待用户验收；真实服务控制尚未实施，GitHub 尚无可安装 DMG。**
+**当前阶段：原型已确认，正式 App 开发与真实验收进行中，最终 DMG 尚未发布。** 当前真实验证见 [验收记录](docs/acceptance.md)。
 
 ## 最终交付：GitHub Releases 中的 DMG
 
@@ -10,7 +10,9 @@
 - 打开 DMG，将 App 拖入“应用程序”，以独立 macOS App 运行。
 - Release 提供 SHA256、App / 引擎版本、macOS 要求、兼容性及已知限制。
 - 签名与 Apple 公证状态按真实证书条件和打包结果披露。
-- 计划使用隔离引擎运行环境，不依赖或修改现有 oMLX。具体打包方案待正式设计确认。
+- App 内置独立 Python / uv，主引擎安装在 App 自有版本环境。模型目录可只读扫描既有模型。
+- 升级策略：自动检查、手动升级；固定官方 GitHub 提交、候选环境兼容验证、失败恢复旧版本。
+- 大模型启动前检查系统内存压力、容量预算与正在运行的推理服务。模型切换采用先停止、确认资源释放、再加载；兼容服务优先复用。
 - 最终验收从 GitHub 下载 DMG，安装、启动、启停服务、切换模型，完成真实 API / 聊天请求。
 
 ## 原型预览
@@ -44,13 +46,13 @@
 
 ## 持续跟进上游
 
-建议架构（待验收）：桌面 App → 独立管理层 / API 网关 → 版本适配器 → 原版 TensorFold。
+已批准架构：Swift AppKit / WKWebView → 独立管理层 / API 网关 → 版本适配器 → 原版 TensorFold。
 
 - App / 引擎独立版本，不侵入上游核心。CLI、服务协议、模型规则和日志格式分别维护兼容测试。
 - 上游已有 `tensorfold update --check` / `tensorfold update`，管理层补充隔离环境、版本固定、兼容验证与回退，不直接覆盖当前环境。
 - 管理层独立存活；停止引擎后仍可打开界面。模型切换需要停止旧进程，以新模型重启并验证 readiness。
 - 统计由管理网关和 runtime / speculative 汇总；缺失值显示“未采集”。保存、启动进程、加载与 API 就绪分别记录。
-- 配置原型保存到当前页面内存，刷新即重置；不写真实配置、不保存真实凭据。
+- 实际管理层配置、统计、日志与历史位于 App 自有数据目录；管理令牌通过原生桥传入，不放在 URL 或浏览器存储。
 
 ## 国内下载与引擎兼容性
 
@@ -79,4 +81,17 @@
 - [HF 下载文档](https://huggingface.co/docs/huggingface_hub/en/guides/download)、[ModelScope 下载实现](https://github.com/modelscope/modelscope/blob/master/modelscope/hub/snapshot_download.py)
 - 本机 oMLX admin 路由、模板、下载、量化、统计、缓存、benchmark 和聊天源码只读盘点；未读用户凭据，未改动现有部署。
 
-Superpowers 负责规划。原型验收后以 grill-me 逐项审核升级、排空请求、下载来源、App 生命周期、数据保留和 DMG 打包；用户确认后正式实施。
+Superpowers 负责规划与实施流程，grill-me 审核升级和交付决策；独立子代理并行开发、测试与审查。原型中的模拟数据仅用于设计参考，不能作为实际 App 的运行或验收证据。
+
+## 开发验证
+
+使用 Python 3.12：
+
+```sh
+python3.12 -B -m unittest discover -s tests
+node --test tests/web.test.mjs
+swiftc macos/Bootstrap.swift macos/CredentialRequest.swift macos/tests/main.swift -o /tmp/tfm-native-tests
+/tmp/tfm-native-tests
+```
+
+打包入口为 `scripts/build-app.py`，需要固定版本的独立 Python 3.12.9 和 uv 0.9.5；GitHub 工作流负责标签对应的 DMG / SHA256。当前测试构建使用 ad hoc 签名，未进行 Apple 公证；不能等同 Developer ID 发行包。
