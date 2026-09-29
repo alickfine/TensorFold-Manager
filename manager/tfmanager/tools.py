@@ -3,12 +3,12 @@
 import hashlib
 import json
 import os
+import stat
 from pathlib import Path
 import queue
 import re
 import select
 import shutil
-import socket
 import subprocess
 import sys
 import threading
@@ -349,24 +349,22 @@ class Tools:
         return python
 
     def _external_service_running(self):
-        checker = getattr(self.resources, "external_services", None)
-        if callable(checker):
-            return bool(checker())
-        try:
-            with socket.create_connection(("127.0.0.1", 8089), timeout=0.2):
-                return True
-        except OSError:
-            return False
+        snapshot=getattr(self.resources,'snapshot',None)
+        if not callable(snapshot):raise APIError('Complete resource coordinator is required','resource_blocked',409)
+        report=snapshot(fresh=True)
+        if not isinstance(report,dict) or report.get('missing'):
+            raise APIError('Resource discovery evidence is incomplete','resource_blocked',409)
+        return bool(report.get('services'))
 
     def _ensure_heavy_available(self, source=None, options=None):
         self._ensure_engine_stopped()
         preflight = getattr(self.resources, "preflight_quantize", None)
-        if callable(preflight):
-            report = preflight(source, options=options or {})
-            if isinstance(report, dict) and not report.get("allowed"):
-                from .resources import ResourceBlocked
-
-                raise ResourceBlocked(report)
+        if not callable(preflight) or not callable(getattr(self.resources,'acquire_quantize',None)):
+            raise APIError('Complete resource coordinator is required','resource_blocked',409)
+        report = preflight(source, options=options or {})
+        if not isinstance(report,dict) or report.get('allowed') is not True:
+            from .resources import ResourceBlocked
+            raise ResourceBlocked(report if isinstance(report,dict) else {'allowed':False,'missing':['resource_admission_report']})
         self._ensure_no_external_service()
 
     def _ensure_engine_stopped(self):
@@ -380,9 +378,20 @@ class Tools:
 
     def _quantize_lease(self, source, options):
         acquire = getattr(self.resources, "acquire_quantize", None)
-        if callable(acquire):
-            return acquire(source, options=options)
-        return self.engine.lifecycle
+        if not callable(acquire):raise APIError('OS resource lease is required','resource_blocked',409)
+        lease=acquire(source,options=options)
+        fd=getattr(lease,'fd',None)
+        try:
+            if type(fd) is not int or fd<0:raise ValueError('missing fd')
+            info=os.fstat(fd)
+            if info.st_uid!=os.getuid() or not stat.S_ISREG(info.st_mode):raise ValueError('invalid fd')
+        except (OSError,ValueError):
+            release=getattr(lease,'release',None)
+            if callable(release) and type(fd) is int:
+                try:release()
+                except (OSError,RuntimeError):pass
+            raise APIError('Valid OS resource lease is required','resource_blocked',409)
+        return lease
 
     def quantize(self, data):
         if not isinstance(data, dict):

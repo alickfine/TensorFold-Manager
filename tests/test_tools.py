@@ -85,6 +85,7 @@ class ToolTests(unittest.TestCase):
             "args=sys.argv[1:]\n"
             "if '-m' in args and args[args.index('-m')+1]=='mlx_lm':\n"
             " source=pathlib.Path(args[args.index('--hf-path')+1]); output=pathlib.Path(args[args.index('--mlx-path')+1])\n"
+            " capture.write_text(json.dumps({'started':True,'pid':os.getpid()}))\n"
             " if json.loads((source/'config.json').read_text()).get('slow'): time.sleep(30)\n"
             " output.mkdir(); shutil.copy2(source/'config.json',output/'config.json'); (output/'model.safetensors').write_bytes(b'converted')\n"
             " capture.write_text(json.dumps({'args':args,'token':os.environ.get('TFM_HF_UPLOAD_TOKEN')}))\n"
@@ -102,7 +103,8 @@ class ToolTests(unittest.TestCase):
     def make_tools(self, resources=None):
         from tfmanager.tools import Tools
 
-        return Tools(self.store, self.jobs, self.engine, self.models, FakeCredentials(), resources=resources)
+        from fixtures.resources import FixtureGate
+        return Tools(self.store, self.jobs, self.engine, self.models, FakeCredentials(), resources=resources or FixtureGate(self.store))
 
     def test_quantize_validates_options_and_all_heavy_service_gates(self):
         tools = self.make_tools()
@@ -146,40 +148,27 @@ class ToolTests(unittest.TestCase):
                     {"model": str(self.model), "name": "source-model-q4", "bits": 4, "group_size": 64, "mode": "affine"}
                 )
 
-    def test_quantize_holds_shared_engine_lifecycle_and_cancel_kills_owned_child(self):
-        tools = self.make_tools()
-        (self.model / "config.json").write_text(
-            json.dumps({"model_type": "qwen3_5", "_name_or_path": "Vontra/Qwen3.8-27B-MLX-4bit", "slow": True})
-        )
-        self.engine.lifecycle.acquire()
-        try:
-            with patch.object(tools, "_external_service_running", return_value=False):
-                row = tools.quantize(
-                    {"model": str(self.model), "name": "cancelled-q4", "bits": 4, "group_size": 64, "mode": "affine"}
-                )
-                time.sleep(0.15)
-                self.assertIn(self.jobs.get(row["id"])["status"], ("queued", "running"))
-        finally:
-            self.engine.lifecycle.release()
-        deadline = time.monotonic() + 3
-        while not self.capture.exists() and time.monotonic() < deadline:
-            time.sleep(0.02)
-        self.jobs.action(row["id"], "cancel")
-        result = wait_job(self.jobs, row["id"])
-        self.assertEqual(result["status"], "cancelled", result)
-        self.assertFalse((self.store.root / "converted" / "cancelled-q4").exists())
+    def test_quantize_cancel_waits_for_owned_child_and_releases_os_lease(self):
+        tools=self.make_tools()
+        (self.model/'config.json').write_text(json.dumps({'model_type':'qwen3_5','_name_or_path':'Vontra/Qwen3.8-27B-MLX-4bit','slow':True}))
+        row=tools.quantize({'model':str(self.model),'name':'cancelled-q4','bits':4,'group_size':64,'mode':'affine'})
+        deadline=time.monotonic()+3
+        while not self.capture.exists() and time.monotonic()<deadline:time.sleep(.02)
+        self.assertTrue(self.capture.exists(),'controlled conversion did not start')
+        child=json.loads(self.capture.read_text())['pid']
+        with self.assertRaises(APIError):tools.resources.acquire_quantize(str(self.model),{})
+        self.jobs.action(row['id'],'cancel');result=wait_job(self.jobs,row['id'])
+        self.assertEqual(result['status'],'cancelled',result)
+        with self.assertRaises(ProcessLookupError):os.kill(child,0)
+        with tools.resources.acquire_quantize(str(self.model),{}):pass
+        self.assertFalse((self.store.root/'converted'/'cancelled-q4').exists())
 
     def test_quantize_rejects_source_changed_after_job_creation(self):
         tools = self.make_tools()
-        self.engine.lifecycle.acquire()
-        try:
-            with patch.object(tools, "_external_service_running", return_value=False):
-                row = tools.quantize(
-                    {"model": str(self.model), "name": "changed-q4", "bits": 4, "group_size": 64, "mode": "affine"}
-                )
-                (self.model / "model.safetensors").write_bytes(b"changed weights")
-        finally:
-            self.engine.lifecycle.release()
+        with patch.object(self.jobs,'_start',return_value=None):
+            row=tools.quantize({"model":str(self.model),"name":"changed-q4","bits":4,"group_size":64,"mode":"affine"})
+        (self.model / "model.safetensors").write_bytes(b"changed weights")
+        self.jobs._start(self.jobs.get(row['id']))
         result = wait_job(self.jobs, row["id"])
         self.assertEqual(result["status"], "failed", result)
         self.assertIn("source changed", result["error"].lower())
