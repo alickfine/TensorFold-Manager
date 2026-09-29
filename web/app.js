@@ -4,6 +4,7 @@ import { parseChatOptions, chatRequest } from './chat-options.js';
 import { formValues, escapeHtml, capability } from './views/shared.js';
 import { serializeSettings, partitionProfileConfig } from './views/settings.js';
 import { renderOverview } from './views/overview.js';
+import { renderResourceReport } from './views/resources.js';
 import { renderStats } from './views/stats.js';
 import { renderCache } from './views/cache.js';
 import { renderModels } from './views/models.js';
@@ -161,6 +162,7 @@ async function run(label, operation, { refresh = true } = {}) {
     return result;
   } catch (error) {
     toast(error.message ?? String(error), true);
+    if (error.details?.resources) showModal('内存与服务检查未通过', renderResourceReport(error.details.resources));
     throw error;
   }
 }

@@ -26,7 +26,7 @@ export async function parseApiError(response) {
     {
       code: typeof protocolError?.code === 'string' ? protocolError.code : 'http_error',
       status: response.status,
-      details: protocolError?.details ?? null,
+      details: payload?.resources ? {...protocolError?.details,resources:payload.resources} : protocolError?.details ?? null,
     },
   );
 }
