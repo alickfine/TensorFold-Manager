@@ -2,7 +2,8 @@ import { api, getAdminToken, getBootstrapLanguage } from './api.js';
 import { exportTextFile } from './export.js';
 import { parseChatOptions, prepareChatTurn, prepareRetryTurn, chatRequest, isUntitledConversation, conversationTitleFromMessage, applySavedConversation } from './chat-options.js';
 import { renderChatMarkdown } from './chat-markdown.js';
-import { serviceSwitchRequest, engineStopRequest, engineDetachRequest, catalogDownloadRequest, shouldPollLivePage, isPollEditingTarget, assertChatCanSubmit, isChatSubmitKey } from './contracts.js';
+import { serviceSwitchRequest, engineStopRequest, engineDetachRequest, catalogDownloadRequest, shouldPollLivePage, isPollEditingTarget, isChatSubmitKey } from './contracts.js';
+import { withChatSubmitLock } from './chat-submit.js';
 import { formValues, escapeHtml, capability } from './views/shared.js';
 import { serializeSettings, partitionProfileConfig } from './views/settings.js';
 import { renderOverview } from './views/overview.js';
@@ -118,6 +119,25 @@ function renderCurrent() {
   pageElement.focus({ preventScroll:true });
 }
 
+function renderCurrentPreservingDraft(submittedMessage = null) {
+  const draft = captureFormDraft(pageElement);
+  if (submittedMessage !== null) {
+    const composer = draft.find((item) => item.name === 'message');
+    if (composer && composer.value.trim() === submittedMessage) {
+      composer.value = '';
+      composer.selectionStart = 0;
+      composer.selectionEnd = 0;
+    }
+  }
+  const messages = pageElement.querySelector('#chat-messages');
+  const scrollTop = messages?.scrollTop;
+  const follow = messages && messages.scrollHeight - messages.scrollTop - messages.clientHeight < 120;
+  renderCurrent();
+  restoreFormDraft(pageElement, draft);
+  const next = pageElement.querySelector('#chat-messages');
+  if (next && scrollTop !== undefined) next.scrollTop = follow ? next.scrollHeight : scrollTop;
+}
+
 function applyLanguage(locale) {
   const draft = captureFormDraft(pageElement);
   const messageScroll = pageElement.querySelector('#chat-messages')?.scrollTop;
@@ -188,7 +208,7 @@ async function loadPageData(page = state.page, { render = true } = {}) {
 }
 
 async function openChatSession(id, { render = true } = {}) {
-  if (state.chat.streaming) throw new Error(t('请先停止当前生成'));
+  if (state.chat.streaming || state.chat.submitting) throw new Error(t('请先停止当前生成'));
   const sequence = ++state.chat.openSequence;
   if (state.chat.pendingSaves.has(id)) await state.chat.pendingSaves.get(id);
   if (sequence !== state.chat.openSequence) return;
@@ -369,7 +389,7 @@ async function handleAction(action, value, element) {
     return;
   }
   if (action === 'chat-new') {
-    if (state.chat.streaming) throw new Error(t('请先停止当前生成'));
+    if (state.chat.streaming || state.chat.submitting) throw new Error(t('请先停止当前生成'));
     const session = await api.request('/api/chat/sessions', { method:'POST', body:{ title:t('新对话') } });
     state.chat.sessions = [session, ...state.chat.sessions];
     state.chat.activeId = session.id;
@@ -414,10 +434,23 @@ async function persistChat() {
 }
 
 async function sendChat(message, { retry = false } = {}) {
+  let acquired = false;
+  try {
+    return await withChatSubmitLock(state.chat, () => {
+      acquired = true;
+      return performChatSend(message, { retry });
+    });
+  } finally {
+    if (acquired && state.page === 'chat') renderCurrentPreservingDraft();
+  }
+}
+
+async function performChatSend(message, { retry = false } = {}) {
+  const submitButton = pageElement.querySelector('.tf-composer button[data-action=""]');
+  if (submitButton) submitButton.disabled = true;
   const originalSessionId = state.chat.activeId;
   if (originalSessionId && state.chat.pendingSaves.has(originalSessionId)) await state.chat.pendingSaves.get(originalSessionId);
   if (state.chat.activeId !== originalSessionId) throw new Error(t('对话已切换，请重新发送'));
-  assertChatCanSubmit(state.chat.streaming);
   const streamCapability = capability(state.snapshot?.capabilities, 'streaming');
   const chatCapability = capability(state.snapshot?.capabilities, 'chat');
   if (!streamCapability.enabled || !chatCapability.enabled) throw new Error(!chatCapability.enabled ? chatCapability.reason : streamCapability.reason);
@@ -429,8 +462,7 @@ async function sendChat(message, { retry = false } = {}) {
   state.chat.messages = messages;
   state.chat.streaming = true;
   state.chat.controller = new AbortController();
-  const sessionId = state.chat.activeId;
-  renderCurrent();
+  renderCurrentPreservingDraft(retry ? null : message);
   const started = performance.now();
   try {
     await api.streamChat(chatRequest(state.snapshot?.engine?.model,state.chat.messages.slice(0,-1),options), {
@@ -473,11 +505,7 @@ async function sendChat(message, { retry = false } = {}) {
     assistant.metrics = {...assistant.metrics,elapsed_seconds:(performance.now()-started)/1000};
     state.chat.streaming = false;
     state.chat.controller = null;
-    try {
-      await persistChat();
-    } finally {
-      if (state.chat.activeId === sessionId && state.page === 'chat') renderCurrent();
-    }
+    await persistChat();
   }
 }
 
@@ -555,17 +583,14 @@ for (const type of ['input', 'change']) pageElement.addEventListener(type, (even
 });
 
 pageElement.addEventListener('keydown', (event) => {
-  if (event.target?.id !== 'chat-input' || !isChatSubmitKey(event, { streaming:state.chat.streaming })) return;
+  if (event.target?.id !== 'chat-input' || !isChatSubmitKey(event, { streaming:state.chat.streaming || state.chat.submitting })) return;
   event.preventDefault();
   event.target.form?.requestSubmit();
 });
 pageElement.addEventListener('input', (event) => {
   if (event.target?.id !== 'model-search') return;
   state.modelSearch = event.target.value;
-  const query = state.modelSearch.trim().normalize('NFKC').toLocaleLowerCase();
-  pageElement.querySelectorAll('.tf-model-list tbody tr').forEach((row) => {
-    row.hidden = !row.textContent.normalize('NFKC').toLocaleLowerCase().includes(query);
-  });
+  renderCurrentPreservingDraft();
 });
 pageElement.addEventListener('input', (event) => {
   if (event.target?.id !== 'chat-search') return;

@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import { renderChat } from '../web/views/chat.js';
 import { renderChatMarkdown } from '../web/chat-markdown.js';
 import { prepareRetryTurn, chatRequest, isUntitledConversation, conversationTitleFromMessage, applySavedConversation } from '../web/chat-options.js';
+import { withChatSubmitLock } from '../web/chat-submit.js';
 
 test('chat Markdown escapes untrusted HTML and unsafe links but keeps code blocks', () => {
   const html = renderChatMarkdown('Hello **world**\n\n```js\n<script>alert(1)</script>\n```\n[bad](javascript:alert(1)) [good](https://example.com)');
@@ -123,4 +124,24 @@ test('language rerender saves and restores composer and generation drafts', () =
   assert.match(app,/renderCurrent\(\);\s*restoreFormDraft\(pageElement, draft\)/);
   assert.match(app,/const messageScroll = pageElement\.querySelector\('#chat-messages'\)\?\.scrollTop/);
   assert.match(app,/pageElement\.querySelector\('#chat-messages'\)\.scrollTop = messageScroll/);
+});
+
+test('first chat submit locks before the first awaited session creation', async () => {
+  const chat={streaming:false,submitting:false};
+  let release;
+  const pending=withChatSubmitLock(chat,()=>new Promise((resolve)=>{release=resolve;}));
+  assert.equal(chat.submitting,true);
+  await assert.rejects(withChatSubmitLock(chat,async()=>{}),/生成|generation/);
+  release();
+  await pending;
+  assert.equal(chat.submitting,false);
+});
+
+test('chat completion rerender preserves next draft and unsaved generation settings', () => {
+  const app=readFileSync(new URL('../web/app.js',import.meta.url),'utf8');
+  assert.match(app,/function renderCurrentPreservingDraft\(/);
+  assert.match(app,/captureFormDraft\(pageElement\)/);
+  assert.match(app,/restoreFormDraft\(pageElement, draft\)/);
+  assert.match(app,/composer\.value\.trim\(\) === submittedMessage/);
+  assert.match(app,/finally\s*\{[^}]*renderCurrentPreservingDraft\(\)/s);
 });

@@ -29,6 +29,12 @@ test('model search matches name, repository and path without mutating source', a
   assert.deepEqual(filterModels(models,'org/qwen'),[qwen]);
   assert.deepEqual(filterModels(models,'very-long-'),[evil]);
   assert.deepEqual(models,[qwen,evil]);
+  const {renderModelWorkspace}=await import('../web/views/model-workspace.js');
+  const byPath=renderModelWorkspace({...state,modelSearch:'very-long-'});
+  assert.match(byPath,/&lt;model&gt;/);
+  assert.doesNotMatch(byPath.match(/<tbody>(.*?)<\/tbody>/s)?.[1] ?? '',/>Qwen</);
+  const noMatch=renderModelWorkspace({...state,modelSearch:'no-such-model'});
+  assert.doesNotMatch(noMatch.match(/<tbody>(.*?)<\/tbody>/s)?.[1] ?? '',/>Qwen</);
 });
 
 test('model text is escaped and long paths scroll inside their table', async () => {

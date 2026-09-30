@@ -103,4 +103,7 @@ test('workspace typography and focus have readable minimums', () => {
   assert.match(css,/\.tf-tag[^}]*font-size:12px/);
   assert.match(css,/button:focus-visible/);
   assert.match(css,/main\s*\{[^}]*max-width:1360px/);
+  assert.match(css,/\.tf-message-body,\s*\.tf-message-body code[^}]*font-size:14px/);
+  assert.match(css,/\.tf-chat-current span,\s*\.tf-message-actions button[^}]*font-size:12px/);
+  assert.match(css,/\.tf-chat-metrics,\s*\.tf-code-toolbar[^}]*font-size:12px/);
 });

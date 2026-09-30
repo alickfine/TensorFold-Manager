@@ -232,3 +232,6 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline:3px solid
 .tf-composed-section .tf-heading.has-actions > .tf-actions { margin:0 0 12px auto; }
 main:focus { outline:none; }
 .tf-chat-settings { position:static; height:auto; }
+.tf-message-body, .tf-message-body code, .tf-empty, .tf-loading { font-size:14px; }
+.tf-chat-current span, .tf-message-actions button, .tf-code-toolbar button, .tf-chat-detail summary, .tf-table th, .tf-alert, .tf-avatar, .tf-topbar .tf-brand small { font-size:12px; }
+.tf-chat-metrics, .tf-code-toolbar { font-size:12px; }
