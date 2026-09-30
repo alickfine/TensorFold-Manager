@@ -1,7 +1,7 @@
 # TensorFold Manager: selective oMLX-inspired redesign
 
 Date: 2026-09-30
-Status: awaiting written-spec review
+Status: approved for implementation planning
 Reference observed locally: `http://127.0.0.1:8000/admin/dashboard` and its model, settings, activity, and chat views.
 
 ## Intent
@@ -81,4 +81,4 @@ Before editing, establish the current branch/worktree baseline and preserve exis
 - **Can the layout work at 1000×700 and with long chat history?** The top bar has a compact mode, tables scroll locally, chat drawers collapse, and the composer receives explicit viewport acceptance.
 - **Could the redesign erase conversations or weaken security?** The current SQLite and API contracts, origin/token checks, and service ownership rules are retained; migration is not repeated.
 
-The user approved the in-chat selective-reproduction direction. This written specification remains subject to user review before an implementation plan is created.
+The user approved the in-chat selective-reproduction direction and then approved this written specification. The implementation plan may now be written.
