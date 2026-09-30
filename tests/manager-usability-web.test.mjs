@@ -224,14 +224,14 @@ test('benchmark presets submit concrete real request parameters and keep advance
   assert.match(output, /data-form="benchmark-run"/);
 });
 
-test('chat keeps readable messages above a bottom composer with model and collapsed parameters', () => {
+test('chat keeps readable messages above a bottom composer with separate generation settings', () => {
   const current = state();
   current.chat.messages = [{ role:'user', content:'Hello' }, { role:'assistant', content:'Hi' }];
   const output = renderChat(current);
   assert.match(output, /class="tf-chat-toolbar"/);
   assert.match(output, /class="tf-chat-current"/);
   assert.match(output, /data-action="chat-new"/);
-  assert.match(output, /<details[^>]*class="tf-chat-parameters"/);
+  assert.match(output, /class="tf-chat-settings"/);
   assert.ok(output.indexOf('id="chat-messages"') < output.indexOf('class="tf-composer"'));
   assert.match(output, /Hello/);
   assert.match(output, /Hi/);

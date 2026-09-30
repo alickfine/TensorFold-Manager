@@ -204,3 +204,21 @@ main[data-view="chat"] { max-width:none; height:calc(100vh - 72px); }
 .tf-model-list .tf-table { min-width:720px; }
 .tf-model-list tbody tr[hidden] { display:none; }
 .tf-model-list .tf-table td:nth-child(2) { max-width:300px; overflow-wrap:anywhere; }
+/* Focused chat: conversations, messages, generation settings */
+main[data-view="chat"] { display:flex; flex-direction:column; min-height:0; overflow:hidden; }
+main[data-view="chat"] > .tf-heading { flex-shrink:0; margin-bottom:10px; }
+.tf-chat-layout { display:grid; grid-template-columns:220px minmax(0,1fr) 280px; min-height:0; flex:1; gap:12px; }
+.tf-chat-layout.closed { grid-template-columns:220px minmax(0,1fr); }
+.tf-chat-layout.closed .tf-chat-settings { display:none; }
+.tf-chat-main { min-height:0; }
+.tf-chat-settings { min-height:0; overflow:auto; }
+.tf-chat-settings .tf-chat-parameters { max-height:none; overflow:visible; border:0; padding:0; background:none; }
+.tf-chat-settings .tf-form-grid { grid-template-columns:1fr; gap:10px; }
+.tf-chat-settings .tf-field.full { grid-column:auto; }
+.tf-chat-settings textarea { min-height:68px; }
+.tf-chat-settings .tf-row { margin-bottom:12px; }
+.tf-chat-settings .tf-row button { font-size:12px; }
+main[data-view="chat"] .tf-composer { position:sticky; bottom:0; z-index:2; background:#fff; }
+@media (max-width:1100px) { .tf-chat-layout.auto { grid-template-columns:220px minmax(0,1fr); } .tf-chat-layout.auto .tf-chat-settings { display:none; } .tf-chat-layout.open { grid-template-columns:190px minmax(0,1fr) 250px; } }
+@media (max-width:760px) { .tf-chat-layout,.tf-chat-layout.closed,.tf-chat-layout.auto,.tf-chat-layout.open { display:flex; flex-direction:column; min-height:0; overflow:auto; } .tf-chat-sidebar { flex-shrink:0; max-height:160px; } .tf-chat-layout.auto .tf-chat-settings { display:none; } .tf-chat-layout.open .tf-chat-settings { display:block; order:1; max-height:45vh; } .tf-chat-main { order:2; min-height:400px; } main[data-view="chat"] { height:calc(100dvh - 110px); } }
+@media (max-height:720px) and (min-width:761px) { main[data-view="chat"] { display:flex; height:calc(100vh - 72px); overflow:hidden; } .tf-chat-layout { min-height:0; } .tf-chat-main { overflow:hidden; } .tf-messages { min-height:0; max-height:none; } }

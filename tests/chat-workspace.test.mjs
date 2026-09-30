@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { renderChat } from '../web/views/chat.js';
 import { renderChatMarkdown } from '../web/chat-markdown.js';
 import { prepareRetryTurn, chatRequest, isUntitledConversation, conversationTitleFromMessage, applySavedConversation } from '../web/chat-options.js';
@@ -93,4 +94,29 @@ test('late save from another session does not overwrite active revision', () => 
   assert.equal(chat.activeId,'B');
   assert.equal(chat.revision,4);
   assert.equal(chat.sessions.find((session) => session.id === 'A').revision,1);
+});
+
+test('chat has named conversation, message and generation regions with drawer controls', () => {
+  const html = renderChat({snapshot:{engine:{state:'ready',model:'Qwen'},settings:{},capabilities:{chat:true,streaming:true}},chat:{sessions:[],messages:[],options:{},settingsOpen:null}});
+  for (const name of ['对话列表','消息','生成设置']) assert.match(html,new RegExp(`aria-label="${name}"`));
+  assert.match(html,/data-action="chat-settings-toggle"/);
+  assert.match(html,/data-action="chat-settings-close"/);
+  assert.doesNotMatch(html,/data-action="(?:upload|web-search|tool-execute)"/);
+  const css=readFileSync(new URL('../web/app.css',import.meta.url),'utf8');
+  assert.match(css,/\.tf-chat-layout\s*\{[^}]*grid-template-columns:[^}]*minmax\(0,1fr\)[^}]*280px/);
+});
+
+test('stopped chat explains the saved conversation is available but inference is not', () => {
+  const html=renderChat({snapshot:{engine:{state:'stopped'},settings:{},capabilities:{chat:true,streaming:true}},chat:{sessions:[{id:'one',title:'Saved'}],activeId:'one',messages:[{role:'user',content:'Remember this'}],options:{}}});
+  assert.match(html,/Remember this/);
+  assert.match(html,/引擎尚未就绪/);
+  assert.match(html,/data-action="goto" data-value="models"/);
+});
+
+test('language rerender saves and restores composer and generation drafts', () => {
+  const app=readFileSync(new URL('../web/app.js',import.meta.url),'utf8');
+  assert.match(app,/const draft = captureFormDraft\(pageElement\)/);
+  assert.match(app,/renderCurrent\(\);\s*restoreFormDraft\(pageElement, draft\)/);
+  assert.match(app,/const messageScroll = pageElement\.querySelector\('#chat-messages'\)\?\.scrollTop/);
+  assert.match(app,/pageElement\.querySelector\('#chat-messages'\)\.scrollTop = messageScroll/);
 });

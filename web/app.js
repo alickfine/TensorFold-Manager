@@ -33,7 +33,7 @@ const renderers = {
 const state = {
   page:'overview', routeQuery:new URLSearchParams(), snapshot:null, pageData:{}, loading:true,
   filters:{ statsModel:'', statsRange:'24h', logLevel:'', logQuery:'', logLimit:'500' }, launchTarget:'', modelSearch:'',
-  chat:{ sessions:[], activeId:null, revision:null, messages:[], options:{}, streaming:false, controller:null, pendingSaves:new Map(), openSequence:0 }, modelConfigTarget:'',
+  chat:{ sessions:[], activeId:null, revision:null, messages:[], options:{}, streaming:false, controller:null, pendingSaves:new Map(), openSequence:0, settingsOpen:null }, modelConfigTarget:'',
 };
 
 const pageElement = document.querySelector('#page');
@@ -120,6 +120,7 @@ function renderCurrent() {
 
 function applyLanguage(locale) {
   const draft = captureFormDraft(pageElement);
+  const messageScroll = pageElement.querySelector('#chat-messages')?.scrollTop;
   const modalBody = document.querySelector('#modal-body');
   const modalDraft = captureFormDraft(modalBody);
   if (!setLocale(locale)) return false;
@@ -128,6 +129,7 @@ function applyLanguage(locale) {
   if (state.snapshot) {
     renderCurrent();
     restoreFormDraft(pageElement, draft);
+    if (messageScroll !== undefined) pageElement.querySelector('#chat-messages').scrollTop = messageScroll;
     refreshModelConfigModal();
     restoreFormDraft(modalBody, modalDraft);
   }
@@ -350,6 +352,13 @@ async function handleAction(action, value, element) {
   }
   if (action === 'engine-install') return run('官方引擎安装任务已创建', () => api.request('/api/engine/install', { method:'POST', body:{} }));
   if (action === 'logs-filter') return loadPageData('activity');
+  if (action === 'chat-settings-toggle' || action === 'chat-settings-close') {
+    const draft = captureFormDraft(pageElement);
+    state.chat.settingsOpen = action === 'chat-settings-close' ? false : !(state.chat.settingsOpen ?? window.matchMedia('(min-width:1101px)').matches);
+    renderCurrent();
+    restoreFormDraft(pageElement, draft);
+    return;
+  }
   if (action === 'chat-abort') {
     state.chat.controller?.abort();
     return;

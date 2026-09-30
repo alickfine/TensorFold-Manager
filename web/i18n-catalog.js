@@ -3,6 +3,10 @@ const entries = `
 由 Manager 管理	Managed by Manager
 外部只读接入	External read-only attachment
 尚未启动	Not started
+聊天工作区	Chat workspace
+对话列表	Conversations
+生成设置	Generation settings
+关闭生成设置	Close generation settings
 搜索模型	Search models
 新对话	New conversation
 搜索对话	Search conversations
