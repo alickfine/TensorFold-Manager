@@ -163,6 +163,53 @@ class Store:
         if not isinstance(messages,list) or len(messages)>2000: raise APIError('Invalid history')
         if any(not isinstance(m,dict) or m.get('role') not in ('system','developer','user','assistant','tool') or not isinstance(m.get('content'),(str,list,type(None))) for m in messages): raise APIError('Invalid history message')
         return self.put('chat',{'messages':messages})
+    def _chat_sessions_migrate(self):
+        with self.lock,self.db:
+            if self.db.execute("SELECT 1 FROM documents WHERE kind='chat_session_migration' AND id='default'").fetchone():return
+            legacy=self.history().get('messages',[])
+            if legacy:
+                now=time.time();id=uuid.uuid4().hex
+                first=next((m.get('content') for m in legacy if m.get('role')=='user' and isinstance(m.get('content'),str) and m.get('content').strip()),'Imported conversation')
+                session=dict(id=id,title=first.strip()[:120],created_at=now,updated_at=now,revision=0,messages=legacy)
+                self.db.execute('INSERT INTO documents VALUES (?,?,?)',('chat_session',id,json.dumps(session,ensure_ascii=False,allow_nan=False)))
+            self.db.execute('INSERT INTO documents VALUES (?,?,?)',('chat_session_migration','default','{"complete":true}'))
+    def chat_sessions(self):
+        self._chat_sessions_migrate()
+        rows=self.all('chat_session')
+        return sorted(({k:v for k,v in row.items() if k!='messages'} for row in rows),key=lambda row:row['updated_at'],reverse=True)
+    def chat_session(self,id):
+        identifier(id)
+        self._chat_sessions_migrate()
+        result=self.get('chat_session',id)
+        if result is None:raise APIError('Conversation not found','not_found',404)
+        return result
+    def chat_session_create(self,data):
+        self._chat_sessions_migrate()
+        title=data.get('title','New conversation')
+        if not isinstance(title,str) or not 1<=len(title.strip())<=120 or any(ord(ch)<32 for ch in title):raise APIError('Conversation title must be 1–120 characters')
+        now=time.time();id=uuid.uuid4().hex
+        return self.put('chat_session',dict(id=id,title=title.strip(),created_at=now,updated_at=now,revision=0,messages=[]),id)
+    def chat_session_update(self,id,data):
+        identifier(id)
+        with self.lock:
+            current=self.chat_session(id)
+            revision=data.get('revision')
+            if type(revision) is not int or revision!=current['revision']:raise APIError('Conversation changed; reload before saving','conflict',409)
+            if not any(key in data for key in ('title','messages')):raise APIError('No conversation changes supplied')
+            if 'title' in data:
+                title=data['title']
+                if not isinstance(title,str) or not 1<=len(title.strip())<=120 or any(ord(ch)<32 for ch in title):raise APIError('Conversation title must be 1–120 characters')
+                current['title']=title.strip()
+            if 'messages' in data:
+                messages=data['messages']
+                if not isinstance(messages,list) or len(messages)>2000:raise APIError('Invalid conversation messages')
+                if any(not isinstance(m,dict) or m.get('role') not in ('system','developer','user','assistant','tool') or not isinstance(m.get('content'),(str,list,type(None))) or isinstance(m.get('content'),str) and len(m['content'])>1000000 for m in messages):raise APIError('Invalid conversation message')
+                try:serialized=json.dumps(messages,ensure_ascii=False,allow_nan=False)
+                except (TypeError,ValueError):raise APIError('Invalid conversation message')
+                if len(serialized.encode())>8*1024*1024:raise APIError('Conversation too large')
+                current['messages']=messages
+            current['revision']+=1;current['updated_at']=time.time()
+            return self.put('chat_session',current,id)
     def log(self,level,message):
         with self.lock,self.db:
             self.db.execute('INSERT INTO logs (at,level,message) VALUES (?,?,?)',(time.time(),level,redact(message)[:16000]))

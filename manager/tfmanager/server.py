@@ -238,6 +238,8 @@ class Application:
                     elif path=='/api/jobs':result={'jobs':app.jobs.list()}
                     elif path=='/api/capabilities':result=app.capabilities()
                     elif path=='/api/chat/history':result=app.store.history()
+                    elif path=='/api/chat/sessions':result={'sessions':app.store.chat_sessions()}
+                    elif path.startswith('/api/chat/sessions/') and len(path.split('/'))==5:result=app.store.chat_session(path.rsplit('/',1)[1])
                     elif path=='/api/benchmark/results':result={'results':app.store.all('benchmark')}
                     elif path=='/api/downloads/catalog':result=app.downloads.catalog()
                     elif path=='/api/updates':result=app.updates.status()
@@ -253,6 +255,7 @@ class Application:
                         app.credentials.set(path.rsplit('/',1)[1],data.get('token'));result=app.credentials.status(path.rsplit('/',1)[1])
                     elif path=='/api/settings':result={'settings':app.store.settings_update(data),'pending':app.engine.status()['pending']}
                     elif path=='/api/models/config':result={'config':app.models.configure(data)}
+                    elif path.startswith('/api/chat/sessions/') and len(path.split('/'))==5:result=app.store.chat_session_update(path.rsplit('/',1)[1],data)
                 elif method=='POST':
                     if path=='/api/engine/start':result=app.engine.start(data.get('model') or app.store.settings()['selected_model'])
                     elif path=='/api/services/switch':result=app.services.switch(data)
@@ -283,6 +286,7 @@ class Application:
                     elif path=='/api/updates/rollback':result=app.updates.rollback()
                     elif path=='/api/cache/clear':result=app.clear_cache(data)
                     elif path=='/api/chat/history':result=app.store.history_save(data)
+                    elif path=='/api/chat/sessions':result=app.store.chat_session_create(data)
                     elif path=='/api/chat/completions':proxy(self,app,'/v1/chat/completions',data);return
                     elif path=='/api/benchmark':
                         prompt=data.get('prompt');runs=data.get('runs',1);tokens=data.get('max_tokens',128)
