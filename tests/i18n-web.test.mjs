@@ -25,6 +25,8 @@ import { renderUpdates } from '../web/views/updates.js';
 import { renderLogs } from '../web/views/logs.js';
 import { renderBenchmark } from '../web/views/benchmark.js';
 import { renderChat } from '../web/views/chat.js';
+import { renderActivity } from '../web/views/activity.js';
+import { renderWorkspaceSettings } from '../web/views/workspace-settings.js';
 
 globalThis.location ??= { origin:'http://127.0.0.1:43123' };
 
@@ -129,6 +131,7 @@ test('all shipped pages and the model dialog render explicit English UI without 
     ['Server', renderServer], ['API', renderApi],
     ['Versions', renderUpdates], ['Logs', renderLogs], ['Benchmark', renderBenchmark],
     ['Built-in Chat', renderChat],
+    ['Activity', renderActivity], ['Settings', renderWorkspaceSettings],
   ];
   const untranslated = [];
   for (const [heading, renderer] of pages) {
@@ -171,7 +174,7 @@ test('English catalog covers populated service, job, result, credential, and upl
     accuracy:{ cases:[{ id:'case', name:'Case', prompt:'Question', expected:'Answer', match:'contains', max_tokens:8 }], results:[{ id:'result', status:'completed', completed:1, total:1, passed:1, agreement_rate:1, model:'Qwen', engine_version:'v1', results:[{ case:{ name:'Case', expected:'Answer' }, output:'Answer', passed:true, metrics:{ output_tokens:1 } }] }] },
   };
   state.chat = { options:{}, streaming:true, controller:{ marker:'must-survive' }, messages:[{ role:'user', content:'Hello' }, { role:'assistant', content:'Hi', reasoning:'Reasoning', tool_calls:[{ function:{ name:'lookup', arguments:'{}' } }], metrics:{ elapsed_seconds:1, completion_tokens:1, tokens_per_second:1 } }] };
-  const renderers = [renderOverview, renderStats, renderCache, renderModels, renderDownloads, renderEngineConfig, renderServer, renderApi, renderUpdates, renderLogs, renderBenchmark, renderChat];
+  const renderers = [renderOverview, renderStats, renderCache, renderModels, renderDownloads, renderEngineConfig, renderServer, renderApi, renderUpdates, renderLogs, renderBenchmark, renderChat, renderActivity, renderWorkspaceSettings];
   const untranslated = renderers.flatMap((renderer) => renderer(state).match(/[\u3400-\u9fff][^<>]*/g) ?? []);
   untranslated.push(...(renderModelConfigDialog(state, state.snapshot.models[0].id).match(/[\u3400-\u9fff][^<>]*/g) ?? []));
   assert.deepEqual([...new Set(untranslated)], []);

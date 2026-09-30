@@ -110,3 +110,18 @@ footer { display:flex; justify-content:space-between; padding:14px 32px 22px; co
 @media (max-width:1100px) { .tf-metrics { grid-template-columns:1fr 1fr; } .tf-grid.three { grid-template-columns:1fr 1fr; } .tf-layout { grid-template-columns:205px minmax(0,1fr); } .tf-chat-layout { grid-template-columns:1fr; } }
 @media (max-height:720px) { main[data-view="chat"] { display:block; height:auto; min-height:calc(100vh - 59px); overflow:visible; } main[data-view="chat"] > .tf-chat-main { min-height:560px; overflow:visible; } .tf-messages { min-height:240px; max-height:45vh; } }
 @media (max-width:760px) { .tf-layout { display:block; } aside { position:static; height:auto; max-height:290px; } .tf-side-bottom { display:none; } nav { display:flex; overflow:auto; padding-bottom:10px; } .tf-nav-group { display:none; } .tf-nav { width:auto; white-space:nowrap; } main { padding:17px; } main[data-view="chat"] { display:block; height:auto; min-height:0; overflow:visible; } main[data-view="chat"] > .tf-chat-main { min-height:560px; overflow:visible; } header { padding:0 18px; } .tf-heading { align-items:flex-start; flex-direction:column; } .tf-form-grid,.tf-grid.two,.tf-grid.three,.tf-grid.split,.tf-log-toolbar { grid-template-columns:1fr; } .tf-chat-toolbar { align-items:stretch; flex-direction:column; } }
+.tf-section-tabs { display:flex; gap:6px; overflow-x:auto; margin:0 0 20px; padding:4px; width:max-content; max-width:100%; background:#eaf0f6; border-radius:10px; }
+.tf-section-tabs button { flex:none; border:0; background:transparent; white-space:nowrap; }
+.tf-section-tabs button.active { color:var(--blue); background:#fff; box-shadow:0 1px 4px #21354f12; }
+.tf-composed-section > .tf-heading { display:none; }
+.tf-inline-model-config { margin:18px 0; padding:22px; background:#fff; border:1px solid var(--line); border-radius:12px; }
+.tf-inline-model-config > .tf-row { margin-bottom:14px; }
+.tf-inline-model-config .tf-model-config-dialog > .tf-card { padding:18px; background:#fafbfd; }
+.tf-overview-primary { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); column-gap:32px; }
+.tf-overview-filters { display:flex; flex-wrap:wrap; gap:10px; align-items:end; }
+.tf-overview-filters .tf-field { min-width:150px; }
+.tf-overview-filters > button { min-height:39px; }
+.tf-disclosure { margin:14px 0; }
+.tf-disclosure > summary { cursor:pointer; color:#61728e; padding:8px 0; font-weight:600; }
+.tf-disclosure > .tf-card { margin-top:12px; }
+@media (max-width:760px) { .tf-overview-primary { grid-template-columns:1fr; } .tf-inline-model-config { padding:14px; } }

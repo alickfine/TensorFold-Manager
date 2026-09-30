@@ -1,5 +1,16 @@
 // Fixed interface copy only. Model identifiers, paths, logs and user text are never catalog keys.
 const entries = `
+活动	Activity
+设置	Settings
+运行与目录	Runtime & Directories
+存储与缓存	Storage & Cache
+API 与密钥	API & Keys
+查看运行日志与真实基准结果。	View runtime logs and real benchmark results.
+按任务集中查看状态和修改配置。	View status and change settings by task.
+服务状态与本机用量。	Service status and local usage.
+请求明细	Request Details
+运行诊断与外部服务	Diagnostics & External Services
+运行细节	Runtime Details
 推理服务 · {state}	Inference Service · {state}
 启动模型	Launch Model
 留空时 Hugging Face 默认 main，ModelScope 默认 master；后者可能记录为逐文件提交组成的“文件树快照”，不冒充仓库提交。	When blank, Hugging Face defaults to main and ModelScope defaults to master. The latter may be recorded as a file tree snapshot composed of per-file commits and is never presented as a repository commit.

@@ -14,7 +14,7 @@ export function renderModelConfigDialog(state, modelId = '') {
   const settings = state.snapshot?.settings ?? {};
   const model = resolveModel(state, modelId);
   const config = { ...settings, ...(model?.config ?? {}) };
-  const profiles = state.snapshot?.profiles ?? state.pageData.profiles?.profiles ?? [];
+  const profiles = state.snapshot?.profiles ?? state.pageData?.profiles?.profiles ?? [];
   if (!model) return h.note(t('请先扫描或下载受支持模型。'), true);
   return `<div class="tf-model-config-dialog">${h.note(t('保存模型级生成与推测解码参数；运行中的实例需重启后应用。'))}`
     + h.card(model.name ?? model.id, h.form('model-config-save',

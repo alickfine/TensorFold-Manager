@@ -18,20 +18,22 @@ import { renderUpdates } from './views/updates.js';
 import { renderLogs } from './views/logs.js';
 import { renderBenchmark, benchmarkRequest } from './views/benchmark.js';
 import { renderChat } from './views/chat.js';
+import { renderActivity } from './views/activity.js';
+import { renderWorkspaceSettings } from './views/workspace-settings.js';
 import { getLocale, initializeLocale, setLocale, t, translateDocument } from './i18n.js';
 import { captureFormDraft, restoreFormDraft } from './form-draft.js';
 import { dispatchDocumentClick } from './click-routing.js';
 
-const PAGE_LABELS = {
-  overview:'运行总览', stats:'统计与用量', cache:'缓存管理', models:'模型库', downloads:'模型下载器',
-  'engine-config':'推理框架配置', server:'服务器与目录', api:'API 与集成', updates:'版本与更新',
-  logs:'运行日志', benchmark:'基准测试', chat:'内置聊天',
+const PAGE_LABELS = { overview:'运行总览', models:'模型库', downloads:'模型下载器', chat:'内置聊天', activity:'活动', settings:'设置' };
+const LEGACY_ROUTES = {
+  stats:'overview', cache:'settings', 'engine-config':'settings', server:'settings', api:'settings', updates:'settings',
+  logs:'activity', benchmark:'activity',
 };
+const LEGACY_SECTIONS = { cache:'storage', 'engine-config':'runtime', server:'runtime', api:'api', updates:'updates', logs:'logs', benchmark:'benchmark' };
 
 const renderers = {
-  overview:renderOverview, stats:renderStats, cache:renderCache, models:renderModels, downloads:renderDownloads,
-  'engine-config':renderEngineConfig, server:renderServer, api:renderApi, updates:renderUpdates,
-  logs:renderLogs, benchmark:renderBenchmark, chat:renderChat,
+  overview:renderOverview, models:renderModels, downloads:renderDownloads, chat:renderChat,
+  activity:renderActivity, settings:renderWorkspaceSettings,
 };
 
 const state = {
@@ -84,14 +86,19 @@ function routeFromHash() {
   pageDirty = false;
   const raw = location.hash.replace(/^#/, '');
   const [candidate, query = ''] = raw.split('?');
-  state.page = renderers[candidate] ? candidate : 'overview';
+  state.page = renderers[candidate] ? candidate : LEGACY_ROUTES[candidate] ?? 'overview';
   state.routeQuery = new URLSearchParams(query);
+  if (LEGACY_SECTIONS[candidate] && !state.routeQuery.has('section')) state.routeQuery.set('section', LEGACY_SECTIONS[candidate]);
 }
 
 function navigate(target) {
   const [candidate] = String(target).split('?');
-  if (!renderers[candidate]) return;
-  location.hash = target;
+  if (!renderers[candidate] && !LEGACY_ROUTES[candidate]) return;
+  const [_, query = ''] = String(target).split('?');
+  const params = new URLSearchParams(query);
+  if (LEGACY_SECTIONS[candidate] && !params.has('section')) params.set('section', LEGACY_SECTIONS[candidate]);
+  const page = LEGACY_ROUTES[candidate] ?? candidate;
+  location.hash = `${page}${params.size ? `?${params}` : ''}`;
 }
 
 function updateChrome() {
@@ -153,27 +160,26 @@ async function refreshSnapshot({ render = true } = {}) {
 async function loadPageData(page = state.page, { render = true } = {}) {
   if (page === 'overview') {
     state.pageData.services = await api.request('/api/services');
-  } else if (page === 'stats') {
     const params = new URLSearchParams({ range:state.filters.statsRange });
     if (state.filters.statsModel) params.set('model', state.filters.statsModel);
     state.pageData.stats = await api.request(`/api/stats?${params}`);
-  } else if (page === 'cache') {
-    state.pageData.cache = await api.request('/api/cache');
   } else if (page === 'downloads') {
     const [catalog, jobs] = await Promise.all([api.request('/api/downloads/catalog'), api.request('/api/jobs')]);
     state.pageData.catalog = catalog;
     state.pageData.jobs = jobs;
   } else if (page === 'models') {
     state.pageData.profiles = await api.request('/api/profiles');
-  } else if (page === 'api') {
-    state.pageData.keys = await api.request('/api/keys');
-  } else if (page === 'updates') {
-    state.pageData.updates = await api.request('/api/updates');
-  } else if (page === 'logs') {
+  } else if (page === 'settings') {
+    const section = state.routeQuery.get('section');
+    if (section === 'storage') state.pageData.cache = await api.request('/api/cache');
+    if (section === 'api') state.pageData.keys = await api.request('/api/keys');
+    if (section === 'updates') state.pageData.updates = await api.request('/api/updates');
+  } else if (page === 'activity') {
+    if (state.routeQuery.get('section') === 'benchmark') state.pageData.benchmark = await api.request('/api/benchmark/results');
+    else {
     const params = new URLSearchParams({ level:state.filters.logLevel, query:state.filters.logQuery, limit:state.filters.logLimit });
     state.pageData.logs = await api.request(`/api/logs?${params}`);
-  } else if (page === 'benchmark') {
-    state.pageData.benchmark = await api.request('/api/benchmark/results');
+    }
   } else if (page === 'chat') {
     const history = await api.request('/api/chat/history');
     state.chat.messages = history.messages ?? [];
@@ -224,6 +230,7 @@ async function handleAction(action, value, element) {
   }
   if (action === 'refresh') return refreshAll();
   if (action === 'goto') return navigate(value);
+  if (action === 'section') { const [page, section] = value.split(':'); return navigate(`${page}?section=${section}`); }
   if (action === 'load-page') return loadPageData(value || state.page);
   if (action === 'modal-close') return closeModal();
   if (action === 'engine-start') return engineAction('start', value);
@@ -250,6 +257,7 @@ async function handleAction(action, value, element) {
     if (!state.pageData.profiles) state.pageData.profiles = await api.request('/api/profiles');
     return showModal('模型配置', renderModelConfigDialog(state, value));
   }
+  if (action === 'model-select') return navigate(`models?model=${encodeURIComponent(value)}`);
   if (action === 'job-action') {
     const separator = value.lastIndexOf(':');
     const id = value.slice(0, separator);
@@ -329,7 +337,7 @@ async function handleAction(action, value, element) {
     return;
   }
   if (action === 'engine-install') return run('官方引擎安装任务已创建', () => api.request('/api/engine/install', { method:'POST', body:{} }));
-  if (action === 'logs-filter') return loadPageData('logs');
+  if (action === 'logs-filter') return loadPageData('activity');
   if (action === 'chat-abort') {
     state.chat.controller?.abort();
     return;
@@ -445,13 +453,13 @@ async function handleForm(form) {
   if (action === 'stats-filter') {
     state.filters.statsModel = values.model;
     state.filters.statsRange = values.range;
-    return loadPageData('stats');
+    return loadPageData('overview');
   }
   if (action === 'logs-filter') {
     state.filters.logLevel = values.level;
     state.filters.logQuery = values.query;
     state.filters.logLimit = values.limit;
-    return loadPageData('logs');
+    return loadPageData('activity');
   }
   if (action === 'key-create') {
     const result = await run('密钥已创建，只展示这一次', () => api.request('/api/keys', { method:'POST', body:{ name:values.name, expires_days:Number(values.expires_days) } }));

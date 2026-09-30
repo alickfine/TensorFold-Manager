@@ -98,10 +98,11 @@ test('downloads can only submit a supported official catalog entry using its rea
   assert.doesNotMatch(jobsOutput, /model_probe|model_discovery|engine_install|accuracy-1/);
 });
 
-test('model library opens an in-place configuration dialog with model generation fields', () => {
+test('model library keeps configuration and model generation fields on one page', () => {
   const current = state();
   const library = renderModels(current);
-  assert.match(library, /data-action="model-config-open" data-value="\/Models\/Qwen"/);
+  assert.match(library, /data-action="model-select" data-value="\/Models\/Qwen"/);
+  assert.match(library, /data-form="model-config-save"/);
   assert.doesNotMatch(library, /model-config\?model=/);
   const dialog = renderModelConfigDialog(current, supported.id);
   for (const name of ['context','max_tokens','temperature','top_p','top_k','thinking','drafter','mtp_drafts']) {
