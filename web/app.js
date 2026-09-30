@@ -1,6 +1,7 @@
 import { api, getAdminToken, getBootstrapLanguage } from './api.js';
 import { exportTextFile } from './export.js';
-import { parseChatOptions, prepareChatTurn, chatRequest } from './chat-options.js';
+import { parseChatOptions, prepareChatTurn, prepareRetryTurn, chatRequest } from './chat-options.js';
+import { renderChatMarkdown } from './chat-markdown.js';
 import { serviceSwitchRequest, engineStopRequest, engineDetachRequest, catalogDownloadRequest, shouldPollLivePage, isPollEditingTarget, assertChatCanSubmit, isChatSubmitKey } from './contracts.js';
 import { formValues, escapeHtml, capability } from './views/shared.js';
 import { serializeSettings, partitionProfileConfig } from './views/settings.js';
@@ -39,7 +40,7 @@ const renderers = {
 const state = {
   page:'overview', routeQuery:new URLSearchParams(), snapshot:null, pageData:{}, loading:true, lastUpdated:null,
   filters:{ statsModel:'', statsRange:'24h', logLevel:'', logQuery:'', logLimit:'500' },
-  chat:{ messages:[], options:{}, streaming:false, controller:null }, modelConfigTarget:'',
+  chat:{ sessions:[], activeId:null, revision:null, messages:[], options:{}, streaming:false, controller:null }, modelConfigTarget:'',
 };
 
 const pageElement = document.querySelector('#page');
@@ -181,10 +182,24 @@ async function loadPageData(page = state.page, { render = true } = {}) {
     state.pageData.logs = await api.request(`/api/logs?${params}`);
     }
   } else if (page === 'chat') {
-    const history = await api.request('/api/chat/history');
-    state.chat.messages = history.messages ?? [];
-    state.chat.options = state.chat.messages.findLast(message => message.options)?.options ?? state.chat.options;
+    if (!state.chat.streaming) {
+      const { sessions } = await api.request('/api/chat/sessions');
+      state.chat.sessions = sessions ?? [];
+      if (!sessions.some((item) => item.id === state.chat.activeId)) state.chat.activeId = sessions[0]?.id ?? null;
+      if (state.chat.activeId) await openChatSession(state.chat.activeId, { render:false });
+      else { state.chat.messages = [];state.chat.revision = null; }
+    }
   }
+  if (render) renderCurrent();
+}
+
+async function openChatSession(id, { render = true } = {}) {
+  if (state.chat.streaming) throw new Error(t('请先停止当前生成'));
+  const session = await api.request(`/api/chat/sessions/${encodeURIComponent(id)}`);
+  state.chat.activeId = session.id;
+  state.chat.revision = session.revision;
+  state.chat.messages = session.messages ?? [];
+  state.chat.options = state.chat.messages.findLast((message) => message.options)?.options ?? state.chat.options;
   if (render) renderCurrent();
 }
 
@@ -343,28 +358,59 @@ async function handleAction(action, value, element) {
     return;
   }
   if (action === 'chat-export') {
-    const result = await exportTextFile({name:'tensorfold-chat.json',content:JSON.stringify({schema:1,messages:state.chat.messages},null,2)});
+    const result = await exportTextFile({name:'tensorfold-chat.json',content:JSON.stringify({schema:2,session_id:state.chat.activeId,messages:state.chat.messages},null,2)});
     if (result.saved) toast(t('对话已导出'));
     return;
   }
   if (action === 'chat-new') {
-    state.chat.controller?.abort();
+    if (state.chat.streaming) throw new Error(t('请先停止当前生成'));
+    const session = await api.request('/api/chat/sessions', { method:'POST', body:{ title:t('新对话') } });
+    state.chat.sessions = [session, ...state.chat.sessions];
+    state.chat.activeId = session.id;
+    state.chat.revision = session.revision;
     state.chat.messages = [];
-    await run('已新建对话', () => api.request('/api/chat/history', { method:'POST', body:{ messages:[] } }), { refresh:false });
     renderCurrent();
+    return;
   }
+  if (action === 'chat-open') return openChatSession(value);
+  if (action === 'chat-rename') {
+    const current = state.chat.sessions.find((item) => item.id === state.chat.activeId);
+    if (current) showModal('重命名对话', `<form data-form="chat-rename"><label for="chat-title">${t('名称')}</label><input id="chat-title" name="title" maxlength="120" required value="${escapeHtml(current.title)}"><div class="tf-actions form-actions"><button type="submit" class="primary">${t('保存')}</button></div></form>`);
+    return;
+  }
+  if (action === 'chat-copy') {
+    const text = element.closest('.tf-code-block')?.querySelector('code')?.textContent ?? element.closest('.tf-message')?.querySelector('.tf-message-body')?.textContent ?? '';
+    try { await navigator.clipboard.writeText(text); }
+    catch {
+      const temp = document.createElement('textarea');temp.value = text;document.body.append(temp);temp.select();document.execCommand('copy');temp.remove();
+    }
+    toast(t('已复制'));
+    return;
+  }
+  if (action === 'chat-retry') return sendChat('', { retry:true });
 }
 
 async function persistChat() {
-  await api.request('/api/chat/history', { method:'POST', body:{ messages:state.chat.messages } });
+  if (!state.chat.activeId) return;
+  const current = state.chat.sessions.find((item) => item.id === state.chat.activeId);
+  const title = current?.title === t('新对话') ? state.chat.messages.find((item) => item.role === 'user')?.content?.slice(0,60) : undefined;
+  const body = { revision:state.chat.revision, messages:state.chat.messages };
+  if (title) body.title = title;
+  const session = await api.request(`/api/chat/sessions/${encodeURIComponent(state.chat.activeId)}`, { method:'PUT', body });
+  state.chat.revision = session.revision;
+  state.chat.sessions = [session, ...state.chat.sessions.filter((item) => item.id !== session.id)];
 }
 
-async function sendChat(message) {
+async function sendChat(message, { retry = false } = {}) {
   assertChatCanSubmit(state.chat.streaming);
   const streamCapability = capability(state.snapshot?.capabilities, 'streaming');
   const chatCapability = capability(state.snapshot?.capabilities, 'chat');
   if (!streamCapability.enabled || !chatCapability.enabled) throw new Error(!chatCapability.enabled ? chatCapability.reason : streamCapability.reason);
-  const { options, assistant, messages } = prepareChatTurn(state.chat, message, state.snapshot?.settings);
+  if (!retry && !state.chat.activeId) {
+    const session = await api.request('/api/chat/sessions', { method:'POST', body:{ title:message.slice(0,60) || t('新对话') } });
+    state.chat.sessions = [session, ...state.chat.sessions];state.chat.activeId = session.id;state.chat.revision = session.revision;
+  }
+  const { options, assistant, messages } = retry ? prepareRetryTurn(state.chat.messages,state.chat.options,state.snapshot?.settings) : prepareChatTurn(state.chat, message, state.snapshot?.settings);
   state.chat.messages = messages;
   state.chat.streaming = true;
   state.chat.controller = new AbortController();
@@ -376,7 +422,7 @@ async function sendChat(message) {
       onReasoning(delta) {
         assistant.reasoning += delta;
         const body = document.querySelector('#chat-messages .tf-message:last-child .tf-message-body');
-        if (body && !assistant.content) body.textContent = t('正在思考…\n')+assistant.reasoning.slice(-1200);
+        if (body && !assistant.content) body.textContent = t('正在思考…');
       },
       onToolCalls(calls) {
         for (const delta of calls) {
@@ -393,16 +439,17 @@ async function sendChat(message) {
       onDelta(delta) {
         assistant.content += delta;
         const body = document.querySelector('#chat-messages .tf-message:last-child .tf-message-body');
-        if (body) body.textContent = assistant.content;
         const box = document.querySelector('#chat-messages');
-        if (box) box.scrollTop = box.scrollHeight;
+        const follow = box && box.scrollHeight - box.scrollTop - box.clientHeight < 120;
+        if (body) body.innerHTML = renderChatMarkdown(assistant.content);
+        if (follow) box.scrollTop = box.scrollHeight;
       },
     });
     assistant.status = 'completed';
   } catch (error) {
     assistant.status = error.name === 'AbortError' ? 'cancelled' : 'failed';
     if (error.name !== 'AbortError') {
-      if (!assistant.content && !assistant.reasoning && !assistant.tool_calls.length) state.chat.messages.pop();
+      assistant.error = error.message;
       throw error;
     }
     assistant.content ||= t('生成已取消。');
@@ -422,6 +469,12 @@ async function handleForm(form) {
   const action = form.dataset.form;
   const values = formValues(form);
   if (action === 'chat-settings') { state.chat.options = parseChatOptions(values,state.snapshot?.settings); toast(t('生成设置已应用')); return; }
+  if (action === 'chat-rename') {
+    const session = await api.request(`/api/chat/sessions/${encodeURIComponent(state.chat.activeId)}`, { method:'PUT', body:{ revision:state.chat.revision,title:values.title } });
+    state.chat.revision = session.revision;
+    state.chat.sessions = [session,...state.chat.sessions.filter((item) => item.id !== session.id)];
+    closeModal();renderCurrent();return;
+  }
   if (action === 'settings-save') return run('设置已保存', () => api.request('/api/settings', { method:'PUT', body:serializeSettings(values) }));
   if (action === 'model-config-save') {
     const model = values.model;
@@ -488,6 +541,11 @@ pageElement.addEventListener('keydown', (event) => {
   if (event.target?.id !== 'chat-input' || !isChatSubmitKey(event, { streaming:state.chat.streaming })) return;
   event.preventDefault();
   event.target.form?.requestSubmit();
+});
+pageElement.addEventListener('input', (event) => {
+  if (event.target?.id !== 'chat-search') return;
+  const query = event.target.value.trim().toLocaleLowerCase();
+  pageElement.querySelectorAll('.tf-chat-session').forEach((item) => { item.hidden = !item.textContent.toLocaleLowerCase().includes(query); });
 });
 
 document.addEventListener('submit', (event) => {

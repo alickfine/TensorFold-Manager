@@ -1,5 +1,16 @@
 // Fixed interface copy only. Model identifiers, paths, logs and user text are never catalog keys.
 const entries = `
+新对话	New conversation
+搜索对话	Search conversations
+暂无对话	No conversations
+重命名	Rename
+重命名对话	Rename conversation
+对话保存在本机；工具调用仅展示，不会由 App 执行。	Conversations stay on this Mac. Tool calls are displayed but not executed by the App.
+复制	Copy
+复制代码	Copy code
+已复制	Copied
+请先停止当前生成	Stop the current generation first
+没有可重试的消息	No message can be retried
 活动	Activity
 设置	Settings
 运行与目录	Runtime & Directories

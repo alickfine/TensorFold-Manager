@@ -229,7 +229,7 @@ test('chat keeps readable messages above a bottom composer with model and collap
   current.chat.messages = [{ role:'user', content:'Hello' }, { role:'assistant', content:'Hi' }];
   const output = renderChat(current);
   assert.match(output, /class="tf-chat-toolbar"/);
-  assert.match(output, /name="model"/);
+  assert.match(output, /class="tf-chat-current"/);
   assert.match(output, /data-action="chat-new"/);
   assert.match(output, /<details[^>]*class="tf-chat-parameters"/);
   assert.ok(output.indexOf('id="chat-messages"') < output.indexOf('class="tf-composer"'));

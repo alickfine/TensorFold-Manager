@@ -34,9 +34,21 @@ export function prepareChatTurn(chat, message, defaults = {}) {
   };
 }
 
+export function prepareRetryTurn(messages, options = {}, defaults = {}) {
+  const last = messages?.at(-1);
+  if (last?.role !== 'user' && !(last?.role === 'assistant' && ['failed','cancelled'].includes(last.status))) {
+    throw new TypeError(t('没有可重试的消息'));
+  }
+  const user = last.role === 'user' ? last : messages.at(-2);
+  if (user?.role !== 'user') throw new TypeError(t('没有可重试的消息'));
+  const parsed = parseChatOptions(options, defaults);
+  const assistant = { role:'assistant',content:'',options:parsed,reasoning:'',tool_calls:[],status:'generating' };
+  return { options:parsed,assistant,messages:[...messages,assistant] };
+}
+
 export function chatRequest(model, messages, options) {
   const {system_prompt,tools_json,...parameters} = options;
-  const history = messages.filter(message => message.role !== 'system').map(({role,content,tool_calls,tool_call_id}) => ({role,content,...(tool_calls ? {tool_calls} : {}),...(tool_call_id ? {tool_call_id} : {})}));
+  const history = messages.filter(message => message.role !== 'system' && !['failed','cancelled','generating'].includes(message.status)).map(({role,content,tool_calls,tool_call_id}) => ({role,content,...(tool_calls ? {tool_calls} : {}),...(tool_call_id ? {tool_call_id} : {})}));
   if (system_prompt) history.unshift({role:'system',content:system_prompt});
   return {model,messages:history,...parameters};
 }
