@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { renderOverview } from '../web/views/overview.js';
+import { renderOverview, chooseLaunchModel } from '../web/views/overview.js';
 import { renderModels } from '../web/views/models.js';
 
 globalThis.location ??= { origin:'http://127.0.0.1:43123' };
@@ -46,6 +46,26 @@ test('overview includes compact real usage and model configuration stays on mode
   assert.match(models, /data-form="model-config-save"/);
   assert.match(models, /name="temperature"/);
   assert.doesNotMatch(models, /data-action="model-config-open"/);
+});
+
+test('attached model is distinct from default launch target and cannot be stopped here', () => {
+  const deepseek = { ...model, id:'/Models/DeepSeek', name:'DeepSeek' };
+  const snapshot = { ...state.snapshot, models:[model,deepseek], engine:{state:'attached',model:deepseek.id,control_owner:'external'} };
+  const output = renderOverview({ ...state, snapshot });
+  assert.match(output, /<h2>\/Models\/DeepSeek<\/h2>/);
+  assert.match(output, /data-action="engine-detach"/);
+  assert.doesNotMatch(output, /data-action="engine-stop"/);
+  assert.match(output, /value="\/Models\/Qwen" selected/);
+  assert.equal(chooseLaunchModel(snapshot, deepseek.id).selected, deepseek.id);
+  assert.match(renderOverview({ ...state, snapshot, launchTarget:deepseek.id }), /value="\/Models\/DeepSeek" selected/);
+});
+
+test('overview shows missing metrics honestly and keeps measured zero', () => {
+  const snapshot = { ...state.snapshot, resources:{ memory:{} }, engine:{state:'stopped'} };
+  const output = renderOverview({ ...state, snapshot, pageData:{...state.pageData,stats:{total:{requests:0,input_tokens:0,output_tokens:0},requests:[]}} });
+  assert.match(output, /未采集/);
+  assert.match(output, /请求数<\/div><div class="tf-value">0/);
+  assert.match(source('../web/app.js'), /\/api\/stats\?\$\{params\}/);
 });
 
 test('composed sections retain toolbar actions and narrow logs do not force desktop columns', () => {

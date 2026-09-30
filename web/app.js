@@ -33,7 +33,7 @@ const renderers = {
 
 const state = {
   page:'overview', routeQuery:new URLSearchParams(), snapshot:null, pageData:{}, loading:true,
-  filters:{ statsModel:'', statsRange:'24h', logLevel:'', logQuery:'', logLimit:'500' },
+  filters:{ statsModel:'', statsRange:'24h', logLevel:'', logQuery:'', logLimit:'500' }, launchTarget:'',
   chat:{ sessions:[], activeId:null, revision:null, messages:[], options:{}, streaming:false, controller:null, pendingSaves:new Map(), openSequence:0 }, modelConfigTarget:'',
 };
 
@@ -222,7 +222,7 @@ async function run(label, operation, { refresh = true } = {}) {
 }
 
 async function engineAction(action, explicitModel = '') {
-  const selected = document.querySelector('[data-role="engine-model"]')?.value || explicitModel || state.snapshot?.settings?.selected_model;
+  const selected = explicitModel || state.launchTarget || document.querySelector('[data-role="engine-model"]')?.value || state.snapshot?.settings?.selected_model;
   if ((action === 'start' || action === 'restart') && !selected) throw new Error(t('请先选择模型'));
   const path = `/api/engine/${action}`;
   const body = action === 'stop' ? engineStopRequest(false).options.body : { model:selected };
@@ -542,6 +542,7 @@ document.addEventListener('click', (event) => {
 });
 
 for (const type of ['input', 'change']) pageElement.addEventListener(type, (event) => {
+  if (event.target?.matches?.('[data-role="engine-model"]')) state.launchTarget = event.target.value;
   if (isPollEditingTarget(event.target)) pageDirty = true;
 });
 
