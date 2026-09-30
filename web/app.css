@@ -222,3 +222,11 @@ main[data-view="chat"] .tf-composer { position:sticky; bottom:0; z-index:2; back
 @media (max-width:1100px) { .tf-chat-layout.auto { grid-template-columns:220px minmax(0,1fr); } .tf-chat-layout.auto .tf-chat-settings { display:none; } .tf-chat-layout.open { grid-template-columns:190px minmax(0,1fr) 250px; } }
 @media (max-width:760px) { .tf-chat-layout,.tf-chat-layout.closed,.tf-chat-layout.auto,.tf-chat-layout.open { display:flex; flex-direction:column; min-height:0; overflow:auto; } .tf-chat-sidebar { flex-shrink:0; max-height:160px; } .tf-chat-layout.auto .tf-chat-settings { display:none; } .tf-chat-layout.open .tf-chat-settings { display:block; order:1; max-height:45vh; } .tf-chat-main { order:2; min-height:400px; } main[data-view="chat"] { height:calc(100dvh - 110px); } }
 @media (max-height:720px) and (min-width:761px) { main[data-view="chat"] { display:flex; height:calc(100vh - 72px); overflow:hidden; } .tf-chat-layout { min-height:0; } .tf-chat-main { overflow:hidden; } .tf-messages { min-height:0; max-height:none; } }
+/* Readable shared controls and local tabs */
+button:focus-visible, a:focus-visible, summary:focus-visible { outline:3px solid #245fda; outline-offset:2px; }
+.tf-sub { font-size:12px; }
+.tf-tag, .tf-note, .tf-kv, .tf-metric-note, .tf-field .tf-sub, .tf-log-toolbar .tf-field label { font-size:12px; }
+.tf-section-tabs { background:#f1f3f7; border:1px solid #e5e9ef; border-radius:12px; }
+.tf-section-tabs button { min-height:36px; border-radius:9px; }
+.tf-section-tabs button.active { color:#265cda; }
+.tf-composed-section .tf-heading.has-actions > .tf-actions { margin:0 0 12px auto; }

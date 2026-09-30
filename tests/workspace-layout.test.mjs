@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { renderOverview, chooseLaunchModel } from '../web/views/overview.js';
 import { renderModels } from '../web/views/models.js';
+import { renderActivity } from '../web/views/activity.js';
+import { renderWorkspaceSettings } from '../web/views/workspace-settings.js';
 
 globalThis.location ??= { origin:'http://127.0.0.1:43123' };
 
@@ -75,4 +77,24 @@ test('composed sections retain toolbar actions and narrow logs do not force desk
   assert.match(source('../web/views/shared.js'),/tf-heading\$\{actions \? ' has-actions'/);
   assert.match(css,/@media\s*\(max-width:760px\)\s*\{[^}]*\.tf-log-toolbar\s*\{[^}]*grid-template-columns:minmax\(0,1fr\)/);
   assert.match(css,/main\[data-view="chat"\] \.tf-composer \{ position:sticky; bottom:8px/);
+});
+
+test('activity and settings keep one page title, local tabs and benchmark safety copy', () => {
+  const activity=renderActivity({...state,routeQuery:new URLSearchParams('section=benchmark'),pageData:{...state.pageData,benchmark:{results:[]}}});
+  assert.equal((activity.match(/<h1>/g) ?? []).length,1);
+  for (const tab of ['activity:logs','activity:benchmark']) assert.match(activity,new RegExp(`data-value="${tab}"`));
+  assert.match(activity,/不停止|不会停止|does not stop/);
+  const settings=renderWorkspaceSettings({...state,routeQuery:new URLSearchParams('section=runtime'),snapshot:{...state.snapshot,engine:{...state.snapshot.engine,pending:{parallel:2}}}});
+  assert.equal((settings.match(/<h1>/g) ?? []).length,1);
+  for (const tab of ['runtime','storage','api','updates']) assert.match(settings,new RegExp(`data-value="settings:${tab}"`));
+  assert.match(settings,/待重启生效|待应用/);
+});
+
+test('workspace typography and focus have readable minimums', () => {
+  const css=source('../web/app.css');
+  assert.match(css,/body\s*\{[^}]*font:14px/);
+  assert.match(css,/\.tf-sub\s*\{[^}]*font-size:12px/);
+  assert.match(css,/\.tf-tag[^}]*font-size:12px/);
+  assert.match(css,/button:focus-visible/);
+  assert.match(css,/main\s*\{[^}]*max-width:1360px/);
 });

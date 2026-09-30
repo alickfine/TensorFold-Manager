@@ -19,7 +19,10 @@ export function renderWorkspaceSettings(state) {
     : selected === 'storage' ? renderCache(state)
     : selected === 'api' ? renderApi(state)
     : renderUpdates(state);
+  const pending = state.snapshot?.engine?.pending;
+  const pendingCount = pending && typeof pending === 'object' ? Object.keys(pending).length : pending ? 1 : 0;
   return h.heading('设置', '按任务集中查看状态和修改配置。')
     + `<div class="tf-section-tabs" role="tablist">${sections.map(([id,label]) => `<button data-action="section" data-value="settings:${id}" class="${id === selected ? 'active' : ''}" role="tab" aria-selected="${id === selected}">${escapeHtml(t(label))}</button>`).join('')}</div>`
-    + `<div class="tf-composed-section">${content}</div>`;
+    + (selected === 'runtime' && pendingCount ? h.note(t('待重启生效：当前服务仍使用已生效配置。'), true) : '')
+    + `<div class="tf-composed-section">${content.replaceAll('<h1>', '<h2>').replaceAll('</h1>', '</h2>')}</div>`;
 }

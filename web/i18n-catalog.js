@@ -3,6 +3,8 @@ const entries = `
 由 Manager 管理	Managed by Manager
 外部只读接入	External read-only attachment
 尚未启动	Not started
+基准测试只对当前就绪模型发起请求，不会停止或卸载其他模型。	Benchmark requests target only the current ready model and do not stop or unload other models.
+待重启生效：当前服务仍使用已生效配置。	Pending restart: the current service still uses the effective configuration.
 聊天工作区	Chat workspace
 对话列表	Conversations
 生成设置	Generation settings
