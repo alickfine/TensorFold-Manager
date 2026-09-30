@@ -78,5 +78,6 @@ Full large-model downloads, new-release GLM loading and a live GLM upgrade were 
 - Fresh checks passed: 187 Python tests, 81 Web tests, nine native bootstrap/origin/export/language checks, plus credential and runtime integrity checks.
 - A real browser against a local Manager and small fixture engine exercised all six entries, Settings/Activity tabs and their actions, session creation and rename, streaming, failure and repeated retry, history after reopening, draft preservation across languages, 375/600/800-pixel layouts and local table scrolling. The browser console had zero errors. The fixture wrote only to a temporary directory.
 - A multiline first message saved with a normalized title while SQLite retained the exact line break in its body. Delaying session A's save while switching to and sending in session B left each session's messages and revision isolated.
+- At an 800×700 browser viewport, the chat composer and send button remained near the viewport bottom before and after a response. This is fixture-browser layout evidence, not an installed App screenshot.
 
 The fixture engine returned `ok`; this does not prove real model weight loading or answer quality. This source revision has not yet been built, installed or published as a DMG, and end-to-end inference with a real TensorFold model was not performed in this pass.

@@ -170,3 +170,4 @@ main[data-view="chat"] .tf-chat-main { min-height:0; margin-bottom:0; }
 .tf-table-wrap { overflow:auto; max-width:100%; }
 .tf-log-toolbar { grid-template-columns:150px minmax(220px,1fr) 110px auto; }
 @media (max-width:760px) { .tf-log-toolbar { grid-template-columns:minmax(0,1fr); } }
+@media (max-height:720px), (max-width:760px) { main[data-view="chat"] .tf-chat-main { overflow:visible; } main[data-view="chat"] .tf-composer { position:sticky; bottom:8px; z-index:2; background:#fff; } }
