@@ -24,16 +24,10 @@ import { renderWorkspaceSettings } from './views/workspace-settings.js';
 import { getLocale, initializeLocale, setLocale, t, translateDocument } from './i18n.js';
 import { captureFormDraft, restoreFormDraft } from './form-draft.js';
 import { dispatchDocumentClick } from './click-routing.js';
-
-const PAGE_LABELS = { overview:'运行总览', models:'模型库', downloads:'模型下载器', chat:'内置聊天', activity:'活动', settings:'设置' };
-const LEGACY_ROUTES = {
-  stats:'overview', cache:'settings', 'engine-config':'settings', server:'settings', api:'settings', updates:'settings',
-  logs:'activity', benchmark:'activity',
-};
-const LEGACY_SECTIONS = { cache:'storage', 'engine-config':'runtime', server:'runtime', api:'api', updates:'updates', logs:'logs', benchmark:'benchmark' };
+import { resolveWorkspaceRoute } from './workspace-route.js';
 
 const renderers = {
-  overview:renderOverview, models:renderModels, downloads:renderDownloads, chat:renderChat,
+  overview:renderOverview, models:renderModels, chat:renderChat,
   activity:renderActivity, settings:renderWorkspaceSettings,
 };
 
@@ -85,32 +79,29 @@ function refreshModelConfigModal({ preserveDraft = false } = {}) {
 
 function routeFromHash() {
   pageDirty = false;
-  const raw = location.hash.replace(/^#/, '');
-  const [candidate, query = ''] = raw.split('?');
-  state.page = renderers[candidate] ? candidate : LEGACY_ROUTES[candidate] ?? 'overview';
-  state.routeQuery = new URLSearchParams(query);
-  if (LEGACY_SECTIONS[candidate] && !state.routeQuery.has('section')) state.routeQuery.set('section', LEGACY_SECTIONS[candidate]);
+  const route = resolveWorkspaceRoute(location.hash);
+  state.page = route.page;
+  state.routeQuery = route.query;
 }
 
 function navigate(target) {
+  const route = resolveWorkspaceRoute(`#${target}`);
   const [candidate] = String(target).split('?');
-  if (!renderers[candidate] && !LEGACY_ROUTES[candidate]) return;
-  const [_, query = ''] = String(target).split('?');
-  const params = new URLSearchParams(query);
-  if (LEGACY_SECTIONS[candidate] && !params.has('section')) params.set('section', LEGACY_SECTIONS[candidate]);
-  const page = LEGACY_ROUTES[candidate] ?? candidate;
-  location.hash = `${page}${params.size ? `?${params}` : ''}`;
+  if (route.page === 'overview' && candidate !== 'overview' && candidate !== 'stats') return;
+  location.hash = `${route.page}${route.query.size ? `?${route.query}` : ''}`;
 }
 
 function updateChrome() {
   const engine = state.snapshot?.engine ?? {};
-  document.querySelector('#breadcrumbs').textContent = t('工作台 / {page}', { page:t(PAGE_LABELS[state.page]) });
   document.querySelector('#app-version').textContent = `App ${state.snapshot?.app_version ?? t('版本未采集')}`;
   document.querySelector('#side-status').textContent = engine.state ?? t('未连接');
-  document.querySelector('#footer-state').textContent = t('管理界面在线 · 推理服务 {state}', { state:engine.state ?? t('未知') });
   const led = document.querySelector('#side-led');
-  led.className = `tf-led ${engine.state === 'ready' ? '' : engine.state === 'failed' ? 'red' : 'amber'}`;
-  document.querySelectorAll('button[data-page]').forEach((button) => button.classList.toggle('active', button.dataset.page === state.page));
+  led.className = `tf-led ${engine.state === 'ready' || engine.state === 'attached' ? '' : engine.state === 'failed' ? 'red' : 'amber'}`;
+  document.querySelectorAll('button[data-page]').forEach((button) => {
+    const active = button.dataset.page === state.page;
+    button.classList.toggle('active', active);
+    if (active) button.setAttribute('aria-current', 'page'); else button.removeAttribute('aria-current');
+  });
 }
 
 function updateLanguageButton() {
@@ -166,7 +157,7 @@ async function loadPageData(page = state.page, { render = true } = {}) {
     const params = new URLSearchParams({ range:state.filters.statsRange });
     if (state.filters.statsModel) params.set('model', state.filters.statsModel);
     state.pageData.stats = await api.request(`/api/stats?${params}`);
-  } else if (page === 'downloads') {
+  } else if (page === 'models' && state.routeQuery.get('section') === 'downloads') {
     const [catalog, jobs] = await Promise.all([api.request('/api/downloads/catalog'), api.request('/api/jobs')]);
     state.pageData.catalog = catalog;
     state.pageData.jobs = jobs;

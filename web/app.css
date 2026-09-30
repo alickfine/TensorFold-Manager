@@ -171,3 +171,21 @@ main[data-view="chat"] .tf-chat-main { min-height:0; margin-bottom:0; }
 .tf-log-toolbar { grid-template-columns:150px minmax(220px,1fr) 110px auto; }
 @media (max-width:760px) { .tf-log-toolbar { grid-template-columns:minmax(0,1fr); } }
 @media (max-height:720px), (max-width:760px) { main[data-view="chat"] .tf-chat-main { overflow:visible; } main[data-view="chat"] .tf-composer { position:sticky; bottom:8px; z-index:2; background:#fff; } }
+/* Compact application frame */
+.tf-layout { display:flex; flex-direction:column; min-width:0; min-height:100vh; }
+.tf-topbar { position:sticky; top:0; z-index:5; display:grid; grid-template-columns:minmax(185px,1fr) auto minmax(185px,1fr); gap:14px; height:72px; padding:0 24px; color:var(--text); }
+.tf-topbar .tf-brand { gap:9px; padding:0; font-size:17px; white-space:nowrap; }
+.tf-topbar .tf-brand b { padding:7px 9px; font-size:15px; border-radius:9px; }
+.tf-topbar .tf-brand small { font-size:10px; letter-spacing:.4px; }
+.tf-topbar .tf-brand #app-version { letter-spacing:0; }
+.tf-top-nav { display:flex; align-items:center; gap:3px; min-width:0; padding:4px; background:#f1f3f7; border-radius:12px; }
+.tf-top-nav .tf-nav { flex:none; width:auto; margin:0; padding:8px 12px; border-radius:9px; color:#58677e; font-size:13px; white-space:nowrap; }
+.tf-top-nav .tf-nav.active { background:#fff; color:var(--blue); box-shadow:0 1px 5px #25344a17; }
+.tf-topbar .tf-header-right { justify-self:end; white-space:nowrap; }
+.tf-service-indicator { display:inline-flex; align-items:center; color:#637087; }
+#language-toggle { min-width:42px; padding:7px 9px; }
+main { width:100%; max-width:1360px; min-height:calc(100vh - 72px); padding:24px 28px; }
+main[data-view="chat"] { max-width:none; height:calc(100vh - 72px); }
+@media (max-width:1100px) { .tf-topbar { grid-template-columns:auto minmax(0,1fr) auto; gap:8px; padding:0 14px; } .tf-top-nav { justify-self:center; } .tf-top-nav .tf-nav { padding:8px 9px; font-size:12px; } .tf-topbar .tf-brand { font-size:14px; } .tf-topbar .tf-brand b { display:none; } .tf-service-indicator { display:none; } }
+@media (max-width:999px) { .tf-top-nav { overflow-x:auto; justify-self:stretch; } }
+@media (max-width:760px) { .tf-topbar { height:auto; min-height:64px; grid-template-columns:1fr auto; grid-template-rows:auto auto; padding:9px 12px; } .tf-top-nav { grid-column:1/-1; grid-row:2; width:100%; } main { padding:16px; } }

@@ -14,14 +14,27 @@ const state = {
   filters:{statsRange:'24h',statsModel:''},routeQuery:new URLSearchParams(),
 };
 
-test('navigation exposes six task pages and legacy routes have canonical owners', () => {
+test('navigation exposes five compact destinations without redundant chrome', () => {
   const html = source('../web/index.html');
   const routes = [...html.matchAll(/class="tf-nav" data-page="([^"]+)"/g)].map((match) => match[1]);
-  assert.deepEqual(routes, ['overview','models','downloads','chat','activity','settings']);
-  const app = source('../web/app.js');
-  assert.match(app, /stats:\s*'overview'/);
-  assert.match(app, /cache:\s*'settings'/);
-  assert.match(app, /logs:\s*'activity'/);
+  assert.deepEqual(routes, ['overview','models','activity','settings','chat']);
+  assert.doesNotMatch(html, /<aside\b|id="breadcrumbs"|<footer\b/);
+  assert.match(html, /id="language-toggle"[^>]*aria-label=/);
+  assert.match(html, /id="app-version"/);
+  assert.match(source('../web/app.css'), /@media\s*\(max-width:999px\)[^{]*\{[^}]*\.tf-top-nav\s*\{[^}]*overflow-x:auto/);
+});
+
+test('legacy routes resolve to owning sections without losing selected model', async () => {
+  const { resolveWorkspaceRoute } = await import('../web/workspace-route.js');
+  const downloads = resolveWorkspaceRoute('#downloads');
+  assert.equal(downloads.page, 'models');
+  assert.equal(downloads.query.get('section'), 'downloads');
+  const benchmark = resolveWorkspaceRoute('#benchmark');
+  assert.equal(benchmark.page, 'activity');
+  assert.equal(benchmark.query.get('section'), 'benchmark');
+  const selected = resolveWorkspaceRoute('#models?model=%2FModels%2FQwen');
+  assert.equal(selected.page, 'models');
+  assert.equal(selected.query.get('model'), '/Models/Qwen');
 });
 
 test('overview includes compact real usage and model configuration stays on model page', () => {

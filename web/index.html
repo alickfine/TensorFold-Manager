@@ -10,34 +10,22 @@
 </head>
 <body>
   <div class="tf-layout">
-    <aside>
-      <div class="tf-brand"><b>TF</b><span>TensorFold<small>MANAGER</small></span></div>
-      <nav id="navigation" aria-label="主导航" data-i18n-aria-label="主导航">
-        <div class="tf-nav-group" data-i18n="运行">运行</div>
-        <button class="tf-nav" data-page="overview"><span>◫</span><span data-i18n="运行总览">运行总览</span></button>
-        <div class="tf-nav-group" data-i18n="模型">模型</div>
-        <button class="tf-nav" data-page="models"><span>▦</span><span data-i18n="模型库">模型库</span></button>
-        <button class="tf-nav" data-page="downloads"><span>↓</span><span data-i18n="模型下载器">模型下载器</span></button>
-        <button class="tf-nav" data-page="chat"><span>□</span><span data-i18n="内置聊天">内置聊天</span></button>
-        <button class="tf-nav" data-page="activity"><span>≋</span><span data-i18n="活动">活动</span></button>
-        <button class="tf-nav" data-page="settings"><span>⚙</span><span data-i18n="设置">设置</span></button>
+    <header class="tf-topbar">
+      <div class="tf-brand"><b>TF</b><span>TensorFold<small>MANAGER <span id="app-version">App 版本未采集</span></small></span></div>
+      <nav id="navigation" class="tf-top-nav" aria-label="主导航" data-i18n-aria-label="主导航">
+        <button class="tf-nav" data-page="overview" data-i18n="运行总览">运行总览</button>
+        <button class="tf-nav" data-page="models" data-i18n="模型库">模型库</button>
+        <button class="tf-nav" data-page="activity" data-i18n="活动">活动</button>
+        <button class="tf-nav" data-page="settings" data-i18n="设置">设置</button>
+        <button class="tf-nav" data-page="chat" data-i18n="内置聊天">内置聊天</button>
       </nav>
-      <div class="tf-side-bottom">
-        <div><i id="side-led" class="tf-led muted"></i><span id="side-status" data-i18n="未连接">未连接</span></div>
-        <small id="app-version" data-i18n="App 版本未采集">App 版本未采集</small>
+      <div class="tf-header-right">
+        <span id="poll-status" aria-live="polite"></span>
+        <span class="tf-service-indicator"><i id="side-led" class="tf-led muted"></i><span id="side-status" data-i18n="未连接">未连接</span></span>
+        <button id="language-toggle" type="button" aria-label="Switch to English" title="Switch to English">文/A</button>
       </div>
-    </aside>
-    <div class="tf-workspace">
-      <header>
-        <span id="breadcrumbs">工作台 / 运行总览</span>
-        <div class="tf-header-right">
-          <span id="poll-status" aria-live="polite"></span>
-          <button id="language-toggle" type="button" aria-label="Switch to English" title="Switch to English">文/A</button>
-        </div>
-      </header>
-      <main id="page" tabindex="-1"><div class="tf-loading" data-i18n="正在建立安全连接…">正在建立安全连接…</div></main>
-      <footer><span>TensorFold Manager</span><span id="footer-state" data-i18n="管理服务连接中">管理服务连接中</span></footer>
-    </div>
+    </header>
+    <main id="page" tabindex="-1"><div class="tf-loading" data-i18n="正在建立安全连接…">正在建立安全连接…</div></main>
   </div>
   <div id="toast" role="status" aria-live="polite" hidden></div>
   <div id="modal" class="tf-overlay" role="dialog" aria-modal="true" aria-labelledby="modal-title" hidden>
