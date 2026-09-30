@@ -3,7 +3,7 @@ import { t } from './i18n.js';
 const exactRepo = /^[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const providers = new Set(['hf-download', 'hf-upload', 'modelscope-download']);
 const livePollPages = new Set([
-  'overview', 'models', 'downloads', 'updates',
+  'overview', 'models', 'downloads', 'activity', 'settings', 'updates',
   'stats', 'cache', 'logs', 'benchmark', 'server', 'api',
 ]);
 

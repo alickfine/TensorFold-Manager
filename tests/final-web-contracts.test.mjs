@@ -16,6 +16,8 @@ import { renderServer } from '../web/views/server.js';
 import { renderApi } from '../web/views/api-integration.js';
 import { renderUpdates } from '../web/views/updates.js';
 import { renderLogs } from '../web/views/logs.js';
+import { renderActivity } from '../web/views/activity.js';
+import { renderWorkspaceSettings } from '../web/views/workspace-settings.js';
 
 globalThis.location ??= { origin:'http://127.0.0.1:43123' };
 
@@ -307,9 +309,8 @@ test('every shipped page renders and every visible action or form has an applica
     routeQuery:new URLSearchParams(), filters:{ statsModel:'', statsRange:'24h', logLevel:'', logQuery:'', logLimit:'50' }, chat:{ options:{}, messages:[], streaming:false },
   };
   const pages = {
-    overview:renderOverview, stats:renderStats, cache, models:renderModels, downloads:downloadsView.renderDownloads,
-    'engine-config':renderEngineConfig, server:renderServer, api:renderApi, updates:renderUpdates,
-    logs:renderLogs, benchmark:renderBenchmark, chat:renderChat,
+    overview:renderOverview, models:renderModels,
+    chat:renderChat, activity:renderActivity, settings:renderWorkspaceSettings,
   };
   const appSource = readFileSync(new URL('../web/app.js', import.meta.url), 'utf8');
   const indexSource = readFileSync(new URL('../web/index.html', import.meta.url), 'utf8');
@@ -321,6 +322,11 @@ test('every shipped page renders and every visible action or form has an applica
     assert.match(indexSource, new RegExp(`data-page="${page}"`), `${page} must stay reachable from the menu`);
     outputs.push(output);
   }
+  const { resolveWorkspaceRoute } = await import('../web/workspace-route.js');
+  assert.equal(resolveWorkspaceRoute('#downloads').page, 'models');
+  outputs.push(downloadsView.renderDownloads(state));
+  for (const section of ['runtime','storage','api','updates']) outputs.push(renderWorkspaceSettings({ ...state, routeQuery:new URLSearchParams({ section }) }));
+  for (const section of ['logs','benchmark']) outputs.push(renderActivity({ ...state, routeQuery:new URLSearchParams({ section }) }));
   outputs.push(renderResources({}));
   const markup = outputs.join('\n');
   const actions = new Set([...markup.matchAll(/data-action="([^"]+)"/g)].map(match => match[1]).filter(Boolean));

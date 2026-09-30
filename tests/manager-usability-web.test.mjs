@@ -98,10 +98,11 @@ test('downloads can only submit a supported official catalog entry using its rea
   assert.doesNotMatch(jobsOutput, /model_probe|model_discovery|engine_install|accuracy-1/);
 });
 
-test('model library opens an in-place configuration dialog with model generation fields', () => {
+test('model library keeps configuration and model generation fields on one page', () => {
   const current = state();
   const library = renderModels(current);
-  assert.match(library, /data-action="model-config-open" data-value="\/Models\/Qwen"/);
+  assert.match(library, /data-action="model-select" data-value="\/Models\/Qwen"/);
+  assert.match(library, /data-form="model-config-save"/);
   assert.doesNotMatch(library, /model-config\?model=/);
   const dialog = renderModelConfigDialog(current, supported.id);
   for (const name of ['context','max_tokens','temperature','top_p','top_k','thinking','drafter','mtp_drafts']) {
@@ -223,14 +224,14 @@ test('benchmark presets submit concrete real request parameters and keep advance
   assert.match(output, /data-form="benchmark-run"/);
 });
 
-test('chat keeps readable messages above a bottom composer with model and collapsed parameters', () => {
+test('chat keeps readable messages above a bottom composer with separate generation settings', () => {
   const current = state();
   current.chat.messages = [{ role:'user', content:'Hello' }, { role:'assistant', content:'Hi' }];
   const output = renderChat(current);
   assert.match(output, /class="tf-chat-toolbar"/);
-  assert.match(output, /name="model"/);
+  assert.match(output, /class="tf-chat-current"/);
   assert.match(output, /data-action="chat-new"/);
-  assert.match(output, /<details[^>]*class="tf-chat-parameters"/);
+  assert.match(output, /class="tf-chat-settings"/);
   assert.ok(output.indexOf('id="chat-messages"') < output.indexOf('class="tf-composer"'));
   assert.match(output, /Hello/);
   assert.match(output, /Hi/);
@@ -299,4 +300,24 @@ test('clicking an action inside main dispatches handleAction instead of treating
   assert.equal(navigated, null);
   assert.deepEqual(handled, { action:'refresh', value:'now', element:actionButton });
   assert.equal(prevented, true);
+});
+
+test('click routing reports an asynchronous action failure', async () => {
+  const button = { disabled:false, dataset:{ action:'chat-new', value:'' } };
+  const target = { closest(selector) { return selector === '[data-action]' ? button : null; } };
+  let received;
+  dispatchDocumentClick({target,preventDefault(){}}, {
+    navigate(){},
+    handleAction(){ return Promise.reject(new Error('network unavailable')); },
+    onError(error, action) { received = {error:error.message,action}; },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(received,{error:'network unavailable',action:'chat-new'});
+});
+
+test('inline model and profile name fields have distinct label targets', () => {
+  const output = renderModelConfigDialog(state());
+  assert.match(output, /for="profile-name"/);
+  assert.match(output, /id="profile-name" name="name"/);
+  assert.equal((output.match(/id="field-name"/g) ?? []).length, 1);
 });

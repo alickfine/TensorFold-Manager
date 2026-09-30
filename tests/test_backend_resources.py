@@ -86,6 +86,26 @@ class ResourceTests(unittest.TestCase):
   self.assertEqual(row['model_path'],'/Users/u/My Models/qwen');self.assertTrue(row['identity_complete']);self.assertEqual(row['listening_ports'],[9010])
   parsed=parse_command('ignored',argv=argv+['--api-key','never-return'])
   self.assertFalse(parsed['identity_complete']);self.assertNotIn('never-return',json.dumps(parsed))
+ def test_observer_uses_kernel_argv_for_unquoted_script_path(self):
+  from unittest.mock import patch
+  exe='/Users/u/Library/Application Support/TensorFold Manager/runtime/bin/python3'
+  script='/Users/u/Library/Application Support/TensorFold Manager/runtime/bin/tensorfold'
+  argv=[exe,script,'serve','/Users/u/My Models/qwen','--host','127.0.0.1','--port','9010']
+  observer=MacObserver()
+  def command(args,**kwargs):
+   if 'uid=,lstart=,comm=' in args:return str(os.getuid())+' Tue Sep 29 10:00:00 2026 '+exe
+   if 'command=' in args:return ' '.join(argv)
+   return 'n127.0.0.1:9010\n'
+  with patch.object(observer,'_run',side_effect=command),patch.object(observer,'_argv',return_value=argv),patch.object(observer,'_json',return_value={'status':'ok','data':[{'id':'qwen'}]}):
+   row=observer.identity(42)
+  self.assertIsNotNone(row)
+  self.assertEqual(row['model_path'],'/Users/u/My Models/qwen')
+  self.assertTrue(row['identity_complete'])
+  with patch.object(observer,'_run',side_effect=command),patch.object(observer,'_argv',return_value=['/other/python',*argv[1:]]):
+   self.assertIsNone(observer.identity(42))
+  with patch.object(observer,'_run',side_effect=command),patch.object(observer,'_argv',side_effect=OSError('unavailable')):
+   fallback=observer.identity(42)
+  self.assertFalse(fallback and fallback['identity_complete'])
  def test_inherited_lease_blocks_until_holder_exits(self):
   lease=self.gate.acquire_start(self.model,self.settings)
   child=subprocess.Popen([sys.executable,'-c','import sys;sys.stdin.read()'],stdin=subprocess.PIPE,pass_fds=(lease.fd,))

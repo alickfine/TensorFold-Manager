@@ -65,6 +65,4 @@ export function translateDocument(root = globalThis.document) {
   root?.querySelectorAll?.('[data-i18n-aria-label]').forEach((element) => {
     element.setAttribute('aria-label', t(element.dataset.i18nAriaLabel));
   });
-  const selector = root?.querySelector?.('#language-select');
-  if (selector) selector.value = currentLocale;
 }

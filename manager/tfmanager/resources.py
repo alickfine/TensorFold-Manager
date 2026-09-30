@@ -133,9 +133,9 @@ class MacObserver:
             executable=info[6];name=Path(executable).name.lower()
             if not(name.startswith('python') or name in ('tensorfold','omlx')):return None
             command=self._run(['/bin/ps','-ww','-p',str(pid),'-o','command=']).strip()
-            if parse_command(command,executable=executable) is None:return None
             try:argv=self._argv(pid)
             except (OSError,ValueError):argv=None
+            if argv is not None and (not argv or argv[0]!=executable):return None
             parsed=parse_command(command,executable=executable,argv=argv)
             if parsed is None:return None
             start=' '.join(info[1:6]);started=time.mktime(time.strptime(start,'%a %b %d %H:%M:%S %Y'))

@@ -1,5 +1,39 @@
 // Fixed interface copy only. Model identifiers, paths, logs and user text are never catalog keys.
 const entries = `
+由 Manager 管理	Managed by Manager
+外部只读接入	External read-only attachment
+尚未启动	Not started
+基准测试只对当前就绪模型发起请求，不会停止或卸载其他模型。	Benchmark requests target only the current ready model and do not stop or unload other models.
+待重启生效：当前服务仍使用已生效配置。	Pending restart: the current service still uses the effective configuration.
+聊天工作区	Chat workspace
+对话列表	Conversations
+生成设置	Generation settings
+关闭生成设置	Close generation settings
+搜索模型	Search models
+本机模型、配置和受支持下载。	Local models, configuration, and supported downloads.
+新对话	New conversation
+搜索对话	Search conversations
+暂无对话	No conversations
+重命名	Rename
+重命名对话	Rename conversation
+对话保存在本机；工具调用仅展示，不会由 App 执行。	Conversations stay on this Mac. Tool calls are displayed but not executed by the App.
+复制	Copy
+复制代码	Copy code
+已复制	Copied
+请先停止当前生成	Stop the current generation first
+对话已切换，请重新发送	Conversation changed; please send again
+没有可重试的消息	No message can be retried
+活动	Activity
+设置	Settings
+运行与目录	Runtime & Directories
+存储与缓存	Storage & Cache
+API 与密钥	API & Keys
+查看运行日志与真实基准结果。	View runtime logs and real benchmark results.
+按任务集中查看状态和修改配置。	View status and change settings by task.
+服务状态与本机用量。	Service status and local usage.
+请求明细	Request Details
+运行诊断与外部服务	Diagnostics & External Services
+运行细节	Runtime Details
 推理服务 · {state}	Inference Service · {state}
 启动模型	Launch Model
 留空时 Hugging Face 默认 main，ModelScope 默认 master；后者可能记录为逐文件提交组成的“文件树快照”，不冒充仓库提交。	When blank, Hugging Face defaults to main and ModelScope defaults to master. The latter may be recorded as a file tree snapshot composed of per-file commits and is never presented as a repository commit.

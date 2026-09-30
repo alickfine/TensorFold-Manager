@@ -33,7 +33,7 @@ export function renderDownloads(state) {
     const source = item.source ?? 'huggingface';
     return [`${source}:${item.repo}`, `${item.name ?? item.repo} · ${sourceName(source)}`];
   });
-  return h.heading('模型下载器', '选择 TensorFold 已确认支持的模型，并从对应官方模型库直接下载。', h.button('刷新任务', 'load-page', 'downloads'))
+  return h.heading('模型下载器', '选择 TensorFold 已确认支持的模型，并从对应官方模型库直接下载。')
     + h.card('新建下载', `<form data-form="download-create"><div class="tf-form-grid">${h.select('受支持模型与来源', 'catalog_model', choices.length ? choices : [['', t('暂无可下载的受支持模型')]], '', { full:true, hint:'仓库、版本与受管目录由后端支持目录确定' })}</div><div class="tf-actions form-actions"><button type="submit" class="primary"${choices.length ? '' : ` disabled title="${t('暂无可下载的受支持模型')}"`}>${t('开始下载')}</button></div></form>`)
     + h.card('支持目录', h.table(['模型', '模型库', '仓库', '版本'], catalogRows.map((item) => [item.name ?? item.id, sourceName(item.source), item.repo, item.revision ?? t('由模型库解析')]), '暂无可下载的受支持模型'))
     + h.card('下载任务', jobs.length ? jobs.map((job) => {

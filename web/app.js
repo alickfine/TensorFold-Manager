@@ -1,15 +1,16 @@
 import { api, getAdminToken, getBootstrapLanguage } from './api.js';
 import { exportTextFile } from './export.js';
-import { parseChatOptions, prepareChatTurn, chatRequest } from './chat-options.js';
-import { serviceSwitchRequest, engineStopRequest, engineDetachRequest, catalogDownloadRequest, shouldPollLivePage, isPollEditingTarget, assertChatCanSubmit, isChatSubmitKey } from './contracts.js';
+import { parseChatOptions, prepareChatTurn, prepareRetryTurn, chatRequest, isUntitledConversation, conversationTitleFromMessage, applySavedConversation } from './chat-options.js';
+import { renderChatMarkdown } from './chat-markdown.js';
+import { serviceSwitchRequest, engineStopRequest, engineDetachRequest, catalogDownloadRequest, shouldPollLivePage, isPollEditingTarget, isChatSubmitKey } from './contracts.js';
+import { withChatSubmitLock } from './chat-submit.js';
 import { formValues, escapeHtml, capability } from './views/shared.js';
 import { serializeSettings, partitionProfileConfig } from './views/settings.js';
 import { renderOverview } from './views/overview.js';
 import { renderResourceReport } from './views/resources.js';
 import { renderStats } from './views/stats.js';
 import { renderCache } from './views/cache.js';
-import { renderModels } from './views/models.js';
-import { renderDownloads } from './views/downloads.js';
+import { renderModelWorkspace } from './views/model-workspace.js';
 import { renderModelConfigDialog } from './views/model-config.js';
 import { renderEngineConfig } from './views/engine-config.js';
 import { renderServer } from './views/server.js';
@@ -18,26 +19,22 @@ import { renderUpdates } from './views/updates.js';
 import { renderLogs } from './views/logs.js';
 import { renderBenchmark, benchmarkRequest } from './views/benchmark.js';
 import { renderChat } from './views/chat.js';
+import { renderActivity } from './views/activity.js';
+import { renderWorkspaceSettings } from './views/workspace-settings.js';
 import { getLocale, initializeLocale, setLocale, t, translateDocument } from './i18n.js';
 import { captureFormDraft, restoreFormDraft } from './form-draft.js';
 import { dispatchDocumentClick } from './click-routing.js';
-
-const PAGE_LABELS = {
-  overview:'运行总览', stats:'统计与用量', cache:'缓存管理', models:'模型库', downloads:'模型下载器',
-  'engine-config':'推理框架配置', server:'服务器与目录', api:'API 与集成', updates:'版本与更新',
-  logs:'运行日志', benchmark:'基准测试', chat:'内置聊天',
-};
+import { resolveWorkspaceRoute } from './workspace-route.js';
 
 const renderers = {
-  overview:renderOverview, stats:renderStats, cache:renderCache, models:renderModels, downloads:renderDownloads,
-  'engine-config':renderEngineConfig, server:renderServer, api:renderApi, updates:renderUpdates,
-  logs:renderLogs, benchmark:renderBenchmark, chat:renderChat,
+  overview:renderOverview, models:renderModelWorkspace, chat:renderChat,
+  activity:renderActivity, settings:renderWorkspaceSettings,
 };
 
 const state = {
-  page:'overview', routeQuery:new URLSearchParams(), snapshot:null, pageData:{}, loading:true, lastUpdated:null,
-  filters:{ statsModel:'', statsRange:'24h', logLevel:'', logQuery:'', logLimit:'500' },
-  chat:{ messages:[], options:{}, streaming:false, controller:null }, modelConfigTarget:'',
+  page:'overview', routeQuery:new URLSearchParams(), snapshot:null, pageData:{}, loading:true,
+  filters:{ statsModel:'', statsRange:'24h', logLevel:'', logQuery:'', logLimit:'500' }, launchTarget:'', modelSearch:'',
+  chat:{ sessions:[], activeId:null, revision:null, messages:[], options:{}, streaming:false, controller:null, pendingSaves:new Map(), openSequence:0, settingsOpen:null }, modelConfigTarget:'',
 };
 
 const pageElement = document.querySelector('#page');
@@ -82,32 +79,36 @@ function refreshModelConfigModal({ preserveDraft = false } = {}) {
 
 function routeFromHash() {
   pageDirty = false;
-  const raw = location.hash.replace(/^#/, '');
-  const [candidate, query = ''] = raw.split('?');
-  state.page = renderers[candidate] ? candidate : 'overview';
-  state.routeQuery = new URLSearchParams(query);
+  const route = resolveWorkspaceRoute(location.hash);
+  state.page = route.page;
+  state.routeQuery = route.query;
 }
 
 function navigate(target) {
+  const route = resolveWorkspaceRoute(`#${target}`);
   const [candidate] = String(target).split('?');
-  if (!renderers[candidate]) return;
-  location.hash = target;
+  if (route.page === 'overview' && candidate !== 'overview' && candidate !== 'stats') return;
+  location.hash = `${route.page}${route.query.size ? `?${route.query}` : ''}`;
 }
 
 function updateChrome() {
   const engine = state.snapshot?.engine ?? {};
-  const jobs = state.snapshot?.jobs ?? [];
-  const activeJobs = jobs.filter((job) => !['complete', 'completed', 'cancelled', 'failed'].includes(job.state ?? job.status)).length;
-  document.querySelector('#breadcrumbs').textContent = t('工作台 / {page}', { page:t(PAGE_LABELS[state.page]) });
-  document.querySelector('#task-count').textContent = String(activeJobs);
-  document.querySelector('#instance-meta').textContent = state.snapshot?.instance_id ? t('实例 {id}', { id:state.snapshot.instance_id }) : t('实例未采集');
   document.querySelector('#app-version').textContent = `App ${state.snapshot?.app_version ?? t('版本未采集')}`;
   document.querySelector('#side-status').textContent = engine.state ?? t('未连接');
-  document.querySelector('#footer-state').textContent = t('管理界面在线 · 推理服务 {state}', { state:engine.state ?? t('未知') });
   const led = document.querySelector('#side-led');
-  led.className = `tf-led ${engine.state === 'ready' ? '' : engine.state === 'failed' ? 'red' : 'amber'}`;
-  document.querySelector('#poll-status').textContent = state.lastUpdated ? t('更新于 {time}', { time:state.lastUpdated.toLocaleTimeString(getLocale()) }) : '';
-  document.querySelectorAll('button[data-page]').forEach((button) => button.classList.toggle('active', button.dataset.page === state.page));
+  led.className = `tf-led ${engine.state === 'ready' || engine.state === 'attached' ? '' : engine.state === 'failed' ? 'red' : 'amber'}`;
+  document.querySelectorAll('button[data-page]').forEach((button) => {
+    const active = button.dataset.page === state.page;
+    button.classList.toggle('active', active);
+    if (active) button.setAttribute('aria-current', 'page'); else button.removeAttribute('aria-current');
+  });
+}
+
+function updateLanguageButton() {
+  const button = document.querySelector('#language-toggle');
+  const label = getLocale() === 'zh-CN' ? 'Switch to English' : '切换为中文';
+  button.setAttribute('aria-label', label);
+  button.title = label;
 }
 
 function renderCurrent() {
@@ -118,15 +119,37 @@ function renderCurrent() {
   pageElement.focus({ preventScroll:true });
 }
 
+function renderCurrentPreservingDraft(submittedMessage = null) {
+  const draft = captureFormDraft(pageElement);
+  if (submittedMessage !== null) {
+    const composer = draft.find((item) => item.name === 'message');
+    if (composer && composer.value.trim() === submittedMessage) {
+      composer.value = '';
+      composer.selectionStart = 0;
+      composer.selectionEnd = 0;
+    }
+  }
+  const messages = pageElement.querySelector('#chat-messages');
+  const scrollTop = messages?.scrollTop;
+  const follow = messages && messages.scrollHeight - messages.scrollTop - messages.clientHeight < 120;
+  renderCurrent();
+  restoreFormDraft(pageElement, draft);
+  const next = pageElement.querySelector('#chat-messages');
+  if (next && scrollTop !== undefined) next.scrollTop = follow ? next.scrollHeight : scrollTop;
+}
+
 function applyLanguage(locale) {
   const draft = captureFormDraft(pageElement);
+  const messageScroll = pageElement.querySelector('#chat-messages')?.scrollTop;
   const modalBody = document.querySelector('#modal-body');
   const modalDraft = captureFormDraft(modalBody);
   if (!setLocale(locale)) return false;
   translateDocument();
+  updateLanguageButton();
   if (state.snapshot) {
     renderCurrent();
     restoreFormDraft(pageElement, draft);
+    if (messageScroll !== undefined) pageElement.querySelector('#chat-messages').scrollTop = messageScroll;
     refreshModelConfigModal();
     restoreFormDraft(modalBody, modalDraft);
   }
@@ -146,39 +169,55 @@ function renderFatal(error) {
 
 async function refreshSnapshot({ render = true } = {}) {
   state.snapshot = await api.request('/api/state');
-  state.lastUpdated = new Date();
   if (render) renderCurrent(); else updateChrome();
 }
 
 async function loadPageData(page = state.page, { render = true } = {}) {
   if (page === 'overview') {
     state.pageData.services = await api.request('/api/services');
-  } else if (page === 'stats') {
     const params = new URLSearchParams({ range:state.filters.statsRange });
     if (state.filters.statsModel) params.set('model', state.filters.statsModel);
     state.pageData.stats = await api.request(`/api/stats?${params}`);
-  } else if (page === 'cache') {
-    state.pageData.cache = await api.request('/api/cache');
-  } else if (page === 'downloads') {
+  } else if (page === 'models' && state.routeQuery.get('section') === 'downloads') {
     const [catalog, jobs] = await Promise.all([api.request('/api/downloads/catalog'), api.request('/api/jobs')]);
     state.pageData.catalog = catalog;
     state.pageData.jobs = jobs;
   } else if (page === 'models') {
     state.pageData.profiles = await api.request('/api/profiles');
-  } else if (page === 'api') {
-    state.pageData.keys = await api.request('/api/keys');
-  } else if (page === 'updates') {
-    state.pageData.updates = await api.request('/api/updates');
-  } else if (page === 'logs') {
+  } else if (page === 'settings') {
+    const section = state.routeQuery.get('section');
+    if (section === 'storage') state.pageData.cache = await api.request('/api/cache');
+    if (section === 'api') state.pageData.keys = await api.request('/api/keys');
+    if (section === 'updates') state.pageData.updates = await api.request('/api/updates');
+  } else if (page === 'activity') {
+    if (state.routeQuery.get('section') === 'benchmark') state.pageData.benchmark = await api.request('/api/benchmark/results');
+    else {
     const params = new URLSearchParams({ level:state.filters.logLevel, query:state.filters.logQuery, limit:state.filters.logLimit });
     state.pageData.logs = await api.request(`/api/logs?${params}`);
-  } else if (page === 'benchmark') {
-    state.pageData.benchmark = await api.request('/api/benchmark/results');
+    }
   } else if (page === 'chat') {
-    const history = await api.request('/api/chat/history');
-    state.chat.messages = history.messages ?? [];
-    state.chat.options = state.chat.messages.findLast(message => message.options)?.options ?? state.chat.options;
+    if (!state.chat.streaming) {
+      const { sessions } = await api.request('/api/chat/sessions');
+      state.chat.sessions = sessions ?? [];
+      if (!sessions.some((item) => item.id === state.chat.activeId)) state.chat.activeId = sessions[0]?.id ?? null;
+      if (state.chat.activeId) await openChatSession(state.chat.activeId, { render:false });
+      else { state.chat.messages = [];state.chat.revision = null; }
+    }
   }
+  if (render) renderCurrent();
+}
+
+async function openChatSession(id, { render = true } = {}) {
+  if (state.chat.streaming || state.chat.submitting) throw new Error(t('请先停止当前生成'));
+  const sequence = ++state.chat.openSequence;
+  if (state.chat.pendingSaves.has(id)) await state.chat.pendingSaves.get(id);
+  if (sequence !== state.chat.openSequence) return;
+  const session = await api.request(`/api/chat/sessions/${encodeURIComponent(id)}`);
+  if (sequence !== state.chat.openSequence) return;
+  state.chat.activeId = session.id;
+  state.chat.revision = session.revision;
+  state.chat.messages = session.messages ?? [];
+  state.chat.options = state.chat.messages.findLast((message) => message.options)?.options ?? state.chat.options;
   if (render) renderCurrent();
 }
 
@@ -197,13 +236,14 @@ async function run(label, operation, { refresh = true } = {}) {
     return result;
   } catch (error) {
     toast(error.message ?? String(error), true);
+    if (error && typeof error === 'object') error.reported = true;
     if (error.details?.resources) showModal('内存与服务检查未通过', renderResourceReport(error.details.resources));
     throw error;
   }
 }
 
 async function engineAction(action, explicitModel = '') {
-  const selected = document.querySelector('[data-role="engine-model"]')?.value || explicitModel || state.snapshot?.settings?.selected_model;
+  const selected = explicitModel || state.launchTarget || document.querySelector('[data-role="engine-model"]')?.value || state.snapshot?.settings?.selected_model;
   if ((action === 'start' || action === 'restart') && !selected) throw new Error(t('请先选择模型'));
   const path = `/api/engine/${action}`;
   const body = action === 'stop' ? engineStopRequest(false).options.body : { model:selected };
@@ -224,6 +264,7 @@ async function handleAction(action, value, element) {
   }
   if (action === 'refresh') return refreshAll();
   if (action === 'goto') return navigate(value);
+  if (action === 'section') { const [page, section] = value.split(':'); return navigate(`${page}?section=${section}`); }
   if (action === 'load-page') return loadPageData(value || state.page);
   if (action === 'modal-close') return closeModal();
   if (action === 'engine-start') return engineAction('start', value);
@@ -250,6 +291,7 @@ async function handleAction(action, value, element) {
     if (!state.pageData.profiles) state.pageData.profiles = await api.request('/api/profiles');
     return showModal('模型配置', renderModelConfigDialog(state, value));
   }
+  if (action === 'model-select') return navigate(`models?model=${encodeURIComponent(value)}`);
   if (action === 'job-action') {
     const separator = value.lastIndexOf(':');
     const id = value.slice(0, separator);
@@ -329,38 +371,98 @@ async function handleAction(action, value, element) {
     return;
   }
   if (action === 'engine-install') return run('官方引擎安装任务已创建', () => api.request('/api/engine/install', { method:'POST', body:{} }));
-  if (action === 'logs-filter') return loadPageData('logs');
+  if (action === 'logs-filter') return loadPageData('activity');
+  if (action === 'chat-settings-toggle' || action === 'chat-settings-close') {
+    const draft = captureFormDraft(pageElement);
+    state.chat.settingsOpen = action === 'chat-settings-close' ? false : !(state.chat.settingsOpen ?? window.matchMedia('(min-width:1101px)').matches);
+    renderCurrent();
+    restoreFormDraft(pageElement, draft);
+    return;
+  }
   if (action === 'chat-abort') {
     state.chat.controller?.abort();
     return;
   }
   if (action === 'chat-export') {
-    const result = await exportTextFile({name:'tensorfold-chat.json',content:JSON.stringify({schema:1,messages:state.chat.messages},null,2)});
+    const result = await exportTextFile({name:'tensorfold-chat.json',content:JSON.stringify({schema:2,session_id:state.chat.activeId,messages:state.chat.messages},null,2)});
     if (result.saved) toast(t('对话已导出'));
     return;
   }
   if (action === 'chat-new') {
-    state.chat.controller?.abort();
+    if (state.chat.streaming || state.chat.submitting) throw new Error(t('请先停止当前生成'));
+    const session = await api.request('/api/chat/sessions', { method:'POST', body:{ title:t('新对话') } });
+    state.chat.sessions = [session, ...state.chat.sessions];
+    state.chat.activeId = session.id;
+    state.chat.revision = session.revision;
     state.chat.messages = [];
-    await run('已新建对话', () => api.request('/api/chat/history', { method:'POST', body:{ messages:[] } }), { refresh:false });
     renderCurrent();
+    return;
   }
+  if (action === 'chat-open') return openChatSession(value);
+  if (action === 'chat-rename') {
+    const current = state.chat.sessions.find((item) => item.id === state.chat.activeId);
+    if (current) showModal('重命名对话', `<form data-form="chat-rename"><label for="chat-title">${t('名称')}</label><input id="chat-title" name="title" maxlength="120" required value="${escapeHtml(current.title)}"><div class="tf-actions form-actions"><button type="submit" class="primary">${t('保存')}</button></div></form>`);
+    return;
+  }
+  if (action === 'chat-copy') {
+    const text = element.closest('.tf-code-block')?.querySelector('code')?.textContent ?? element.closest('.tf-message')?.querySelector('.tf-message-body')?.textContent ?? '';
+    try { await navigator.clipboard.writeText(text); }
+    catch {
+      const temp = document.createElement('textarea');temp.value = text;document.body.append(temp);temp.select();document.execCommand('copy');temp.remove();
+    }
+    toast(t('已复制'));
+    return;
+  }
+  if (action === 'chat-retry') return sendChat('', { retry:true });
 }
 
 async function persistChat() {
-  await api.request('/api/chat/history', { method:'POST', body:{ messages:state.chat.messages } });
+  const id = state.chat.activeId;
+  if (!id) return;
+  const current = state.chat.sessions.find((item) => item.id === id);
+  const title = isUntitledConversation(current?.title) ? conversationTitleFromMessage(state.chat.messages.find((item) => item.role === 'user')?.content, t('新对话')) : undefined;
+  const body = { revision:state.chat.revision, messages:state.chat.messages };
+  if (title) body.title = title;
+  const pending = api.request(`/api/chat/sessions/${encodeURIComponent(id)}`, { method:'PUT', body });
+  state.chat.pendingSaves.set(id, pending);
+  try {
+    const session = await pending;
+    applySavedConversation(state.chat, session);
+  } finally {
+    if (state.chat.pendingSaves.get(id) === pending) state.chat.pendingSaves.delete(id);
+  }
 }
 
-async function sendChat(message) {
-  assertChatCanSubmit(state.chat.streaming);
+async function sendChat(message, { retry = false } = {}) {
+  let acquired = false;
+  try {
+    return await withChatSubmitLock(state.chat, () => {
+      acquired = true;
+      return performChatSend(message, { retry });
+    });
+  } finally {
+    if (acquired && state.page === 'chat') renderCurrentPreservingDraft();
+  }
+}
+
+async function performChatSend(message, { retry = false } = {}) {
+  const submitButton = pageElement.querySelector('.tf-composer button[data-action=""]');
+  if (submitButton) submitButton.disabled = true;
+  const originalSessionId = state.chat.activeId;
+  if (originalSessionId && state.chat.pendingSaves.has(originalSessionId)) await state.chat.pendingSaves.get(originalSessionId);
+  if (state.chat.activeId !== originalSessionId) throw new Error(t('对话已切换，请重新发送'));
   const streamCapability = capability(state.snapshot?.capabilities, 'streaming');
   const chatCapability = capability(state.snapshot?.capabilities, 'chat');
   if (!streamCapability.enabled || !chatCapability.enabled) throw new Error(!chatCapability.enabled ? chatCapability.reason : streamCapability.reason);
-  const { options, assistant, messages } = prepareChatTurn(state.chat, message, state.snapshot?.settings);
+  if (!retry && !state.chat.activeId) {
+    const session = await api.request('/api/chat/sessions', { method:'POST', body:{ title:conversationTitleFromMessage(message, t('新对话')) } });
+    state.chat.sessions = [session, ...state.chat.sessions];state.chat.activeId = session.id;state.chat.revision = session.revision;
+  }
+  const { options, assistant, messages } = retry ? prepareRetryTurn(state.chat.messages,state.chat.options,state.snapshot?.settings) : prepareChatTurn(state.chat, message, state.snapshot?.settings);
   state.chat.messages = messages;
   state.chat.streaming = true;
   state.chat.controller = new AbortController();
-  renderCurrent();
+  renderCurrentPreservingDraft(retry ? null : message);
   const started = performance.now();
   try {
     await api.streamChat(chatRequest(state.snapshot?.engine?.model,state.chat.messages.slice(0,-1),options), {
@@ -368,7 +470,7 @@ async function sendChat(message) {
       onReasoning(delta) {
         assistant.reasoning += delta;
         const body = document.querySelector('#chat-messages .tf-message:last-child .tf-message-body');
-        if (body && !assistant.content) body.textContent = t('正在思考…\n')+assistant.reasoning.slice(-1200);
+        if (body && !assistant.content) body.textContent = t('正在思考…');
       },
       onToolCalls(calls) {
         for (const delta of calls) {
@@ -385,16 +487,17 @@ async function sendChat(message) {
       onDelta(delta) {
         assistant.content += delta;
         const body = document.querySelector('#chat-messages .tf-message:last-child .tf-message-body');
-        if (body) body.textContent = assistant.content;
         const box = document.querySelector('#chat-messages');
-        if (box) box.scrollTop = box.scrollHeight;
+        const follow = box && box.scrollHeight - box.scrollTop - box.clientHeight < 120;
+        if (body) body.innerHTML = renderChatMarkdown(assistant.content);
+        if (follow) box.scrollTop = box.scrollHeight;
       },
     });
     assistant.status = 'completed';
   } catch (error) {
     assistant.status = error.name === 'AbortError' ? 'cancelled' : 'failed';
     if (error.name !== 'AbortError') {
-      if (!assistant.content && !assistant.reasoning && !assistant.tool_calls.length) state.chat.messages.pop();
+      assistant.error = error.message;
       throw error;
     }
     assistant.content ||= t('生成已取消。');
@@ -402,11 +505,7 @@ async function sendChat(message) {
     assistant.metrics = {...assistant.metrics,elapsed_seconds:(performance.now()-started)/1000};
     state.chat.streaming = false;
     state.chat.controller = null;
-    try {
-      await persistChat();
-    } finally {
-      renderCurrent();
-    }
+    await persistChat();
   }
 }
 
@@ -414,6 +513,12 @@ async function handleForm(form) {
   const action = form.dataset.form;
   const values = formValues(form);
   if (action === 'chat-settings') { state.chat.options = parseChatOptions(values,state.snapshot?.settings); toast(t('生成设置已应用')); return; }
+  if (action === 'chat-rename') {
+    const session = await api.request(`/api/chat/sessions/${encodeURIComponent(state.chat.activeId)}`, { method:'PUT', body:{ revision:state.chat.revision,title:values.title } });
+    state.chat.revision = session.revision;
+    state.chat.sessions = [session,...state.chat.sessions.filter((item) => item.id !== session.id)];
+    closeModal();renderCurrent();return;
+  }
   if (action === 'settings-save') return run('设置已保存', () => api.request('/api/settings', { method:'PUT', body:serializeSettings(values) }));
   if (action === 'model-config-save') {
     const model = values.model;
@@ -445,13 +550,13 @@ async function handleForm(form) {
   if (action === 'stats-filter') {
     state.filters.statsModel = values.model;
     state.filters.statsRange = values.range;
-    return loadPageData('stats');
+    return loadPageData('overview');
   }
   if (action === 'logs-filter') {
     state.filters.logLevel = values.level;
     state.filters.logQuery = values.query;
     state.filters.logLimit = values.limit;
-    return loadPageData('logs');
+    return loadPageData('activity');
   }
   if (action === 'key-create') {
     const result = await run('密钥已创建，只展示这一次', () => api.request('/api/keys', { method:'POST', body:{ name:values.name, expires_days:Number(values.expires_days) } }));
@@ -469,17 +574,28 @@ async function handleForm(form) {
 }
 
 document.addEventListener('click', (event) => {
-  dispatchDocumentClick(event, { navigate, handleAction });
+  dispatchDocumentClick(event, { navigate, handleAction, onError(error) { if (!error?.reported) toast(error?.message ?? String(error), true); } });
 });
 
 for (const type of ['input', 'change']) pageElement.addEventListener(type, (event) => {
+  if (event.target?.matches?.('[data-role="engine-model"]')) state.launchTarget = event.target.value;
   if (isPollEditingTarget(event.target)) pageDirty = true;
 });
 
 pageElement.addEventListener('keydown', (event) => {
-  if (event.target?.id !== 'chat-input' || !isChatSubmitKey(event, { streaming:state.chat.streaming })) return;
+  if (event.target?.id !== 'chat-input' || !isChatSubmitKey(event, { streaming:state.chat.streaming || state.chat.submitting })) return;
   event.preventDefault();
   event.target.form?.requestSubmit();
+});
+pageElement.addEventListener('input', (event) => {
+  if (event.target?.id !== 'model-search') return;
+  state.modelSearch = event.target.value;
+  renderCurrentPreservingDraft();
+});
+pageElement.addEventListener('input', (event) => {
+  if (event.target?.id !== 'chat-search') return;
+  const query = event.target.value.trim().toLocaleLowerCase();
+  pageElement.querySelectorAll('.tf-chat-session').forEach((item) => { item.hidden = !item.textContent.toLocaleLowerCase().includes(query); });
 });
 
 document.addEventListener('submit', (event) => {
@@ -489,8 +605,8 @@ document.addEventListener('submit', (event) => {
   handleForm(form).catch((error) => toast(error.message ?? String(error), true));
 });
 
-document.querySelector('#language-select').addEventListener('change', (event) => {
-  applyLanguage(event.target.value);
+document.querySelector('#language-toggle').addEventListener('click', () => {
+  applyLanguage(getLocale() === 'zh-CN' ? 'en' : 'zh-CN');
 });
 
 window.addEventListener('hashchange', async () => {
@@ -522,6 +638,7 @@ async function initialize() {
           const stillEditing = isPollEditingTarget(document.activeElement);
           if (state.page === polledPage && shouldPollLivePage(polledPage, { editing:stillEditing, dirty:pageDirty, streaming:state.chat.streaming })) renderCurrent();
         }
+        document.querySelector('#poll-status').textContent = '';
       } catch (error) {
         document.querySelector('#poll-status').textContent = t('刷新失败：{message}', { message:error.message });
       }
