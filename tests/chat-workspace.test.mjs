@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { renderChat } from '../web/views/chat.js';
 import { renderChatMarkdown } from '../web/chat-markdown.js';
-import { prepareRetryTurn, chatRequest } from '../web/chat-options.js';
+import { prepareRetryTurn, chatRequest, isUntitledConversation, conversationTitleFromMessage, applySavedConversation } from '../web/chat-options.js';
 
 test('chat Markdown escapes untrusted HTML and unsafe links but keeps code blocks', () => {
   const html = renderChatMarkdown('Hello **world**\n\n```js\n<script>alert(1)</script>\n```\n[bad](javascript:alert(1)) [good](https://example.com)');
@@ -35,4 +35,62 @@ test('conversation list and answer surface expose separate sessions and display-
   assert.match(html, /data-action="chat-copy"/);
   assert.match(html, /工具调用（仅展示，未执行）/);
   assert.match(html, /<details/);
+});
+
+test('only the latest failed answer offers retry and displays its error', () => {
+  const html = renderChat({
+    snapshot:{engine:{state:'ready',model:'Qwen'},settings:{},capabilities:{chat:true,streaming:true}},
+    chat:{activeId:'one',sessions:[{id:'one',title:'Test'}],messages:[
+      {role:'user',content:'First'},
+      {role:'assistant',content:'',status:'failed',error:'first error'},
+      {role:'user',content:'Second'},
+      {role:'assistant',content:'',status:'failed',error:'<last error>'},
+    ],options:{},streaming:false},
+  });
+  assert.equal((html.match(/data-action="chat-retry"/g) ?? []).length, 1);
+  assert.match(html, /&lt;last error&gt;/);
+  assert.doesNotMatch(html, /<last error>/);
+});
+
+test('untitled conversation is recognized across language changes', () => {
+  assert.equal(isUntitledConversation('新对话'), true);
+  assert.equal(isUntitledConversation('New conversation'), true);
+  assert.equal(isUntitledConversation('Custom title'), false);
+});
+
+test('display-only tool calls are not replayed as executable calls', () => {
+  const request = chatRequest('model', [
+    {role:'user',content:'Inspect'},
+    {role:'assistant',content:'I can inspect that.',status:'completed',tool_calls:[{id:'call_1',type:'function',function:{name:'inspect',arguments:'{}'}}]},
+    {role:'user',content:'Continue'},
+  ], {});
+  assert.deepEqual(request.messages.map(({role,content}) => [role,content]), [
+    ['user','Inspect'],['assistant','I can inspect that.'],['user','Continue'],
+  ]);
+  assert.equal('tool_calls' in request.messages[1], false);
+});
+
+test('a failed retry can be retried again without adding or replaying failed answers', () => {
+  const history = [
+    {role:'user',content:'Question'},
+    {role:'assistant',content:'partial 1',status:'failed'},
+    {role:'assistant',content:'partial 2',status:'failed'},
+  ];
+  const retried = prepareRetryTurn(history, {});
+  assert.equal(retried.messages.length, 4);
+  assert.deepEqual(chatRequest('model',retried.messages.slice(0,-1),retried.options).messages,[{role:'user',content:'Question'}]);
+});
+
+test('conversation title normalizes multiline and control characters', () => {
+  assert.equal(conversationTitleFromMessage('  First line\nSecond\tline  '),'First line Second line');
+  assert.equal(conversationTitleFromMessage('  '),'New conversation');
+  assert.equal(conversationTitleFromMessage('🙂'.repeat(61)), '🙂'.repeat(60));
+});
+
+test('late save from another session does not overwrite active revision', () => {
+  const chat = {activeId:'B',revision:4,sessions:[{id:'A',revision:0},{id:'B',revision:4}]};
+  applySavedConversation(chat,{id:'A',revision:1,title:'A saved'});
+  assert.equal(chat.activeId,'B');
+  assert.equal(chat.revision,4);
+  assert.equal(chat.sessions.find((session) => session.id === 'A').revision,1);
 });

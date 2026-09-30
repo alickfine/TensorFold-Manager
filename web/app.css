@@ -40,7 +40,6 @@ main { max-width:1660px; min-height:calc(100vh - 140px); margin:auto; padding:24
 .tf-heading { display:flex; align-items:center; justify-content:space-between; gap:15px; margin:0 0 21px; }
 .tf-heading-compact { margin-bottom:10px; }
 .tf-heading-compact h1 { margin-bottom:2px; font-size:20px; letter-spacing:-.35px; }
-.tf-eyebrow { margin-bottom:4px; color:#8491a7; font-size:10px; font-weight:650; letter-spacing:1.8px; }
 h1 { margin:0 0 6px; font-size:27px; letter-spacing:-.7px; } h2 { margin:0; font-size:16px; font-weight:650; } h3 { margin:0 0 10px; font-size:13px; }
 .tf-sub { color:var(--muted); font-size:12px; line-height:1.8; }
 .tf-card { min-width:0; margin-bottom:18px; padding:22px; background:var(--panel); border:1px solid var(--line); border-radius:12px; }
@@ -113,7 +112,8 @@ footer { display:flex; justify-content:space-between; padding:14px 32px 22px; co
 .tf-section-tabs { display:flex; gap:6px; overflow-x:auto; margin:0 0 20px; padding:4px; width:max-content; max-width:100%; background:#eaf0f6; border-radius:10px; }
 .tf-section-tabs button { flex:none; border:0; background:transparent; white-space:nowrap; }
 .tf-section-tabs button.active { color:var(--blue); background:#fff; box-shadow:0 1px 4px #21354f12; }
-.tf-composed-section > .tf-heading { display:none; }
+.tf-composed-section > .tf-heading:not(.has-actions) { display:none; }
+.tf-composed-section > .tf-heading.has-actions > div:first-child { display:none; }
 .tf-inline-model-config { margin:18px 0; padding:22px; background:#fff; border:1px solid var(--line); border-radius:12px; }
 .tf-inline-model-config > .tf-row { margin-bottom:14px; }
 .tf-inline-model-config .tf-model-config-dialog > .tf-card { padding:18px; background:#fafbfd; }
@@ -160,6 +160,7 @@ footer { display:flex; justify-content:space-between; padding:14px 32px 22px; co
 main[data-view="chat"] > .tf-chat-layout { min-height:0; }
 main[data-view="chat"] .tf-chat-main { min-height:0; margin-bottom:0; }
 @media (max-width:1100px) { .tf-chat-layout { grid-template-columns:180px minmax(0,1fr); } }
+@media (max-width:960px) { .tf-chat-layout { grid-template-columns:minmax(0,1fr); } .tf-chat-sidebar { max-height:165px; } .tf-chat-sessions { display:flex; gap:6px; } .tf-chat-session { width:160px; flex:none; } .tf-chat-toolbar .tf-actions { flex-wrap:wrap; } }
 @media (max-width:760px) { .tf-chat-layout { grid-template-columns:1fr; } .tf-chat-sidebar { max-height:210px; } .tf-chat-sessions { display:flex; gap:6px; } .tf-chat-session { width:160px; flex:none; } main[data-view="chat"] > .tf-chat-layout { overflow:visible; } }
 #language-toggle { min-width:42px; height:34px; padding:4px 8px; color:var(--blue); font-size:12px; font-weight:700; }
 .tf-table { width:max-content; min-width:100%; table-layout:auto; }
@@ -168,3 +169,4 @@ main[data-view="chat"] .tf-chat-main { min-height:0; margin-bottom:0; }
 .tf-table td:last-child { max-width:56ch; }
 .tf-table-wrap { overflow:auto; max-width:100%; }
 .tf-log-toolbar { grid-template-columns:150px minmax(220px,1fr) 110px auto; }
+@media (max-width:760px) { .tf-log-toolbar { grid-template-columns:minmax(0,1fr); } }

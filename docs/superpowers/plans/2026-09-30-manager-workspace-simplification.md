@@ -1,6 +1,6 @@
 # Manager Workspace Simplification Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Ship a six-page, compact bilingual Manager with inline model configuration and persistent multi-conversation chat.
 
@@ -34,10 +34,10 @@
 
 **Interfaces:** `renderOverview(state)` includes compact usage; `renderModels(state)` accepts a selected model route query; `renderActivity(state)` composes logs/benchmark; `renderSettings(state)` composes runtime, storage, API and updates. `loadPageData(page)` fetches all necessary sections. Old hashes map to canonical pages.
 
-- [ ] Write failing Web tests for exactly six navigation routes, old-route mapping, overview usage and same-page model configuration.
-- [ ] Run focused tests and confirm the expected failures.
-- [ ] Compose pages and route/data loading; retain backend action contracts and focused-edit preservation.
-- [ ] Run focused and full Web tests, then commit.
+- [x] Write failing Web tests for exactly six navigation routes, old-route mapping, overview usage and same-page model configuration.
+- [x] Run focused tests and confirm the expected failures.
+- [x] Compose pages and route/data loading; retain backend action contracts and focused-edit preservation.
+- [x] Run focused and full Web tests, then commit.
 
 ### Task 2: Conversation persistence and API
 
@@ -45,10 +45,10 @@
 
 **Interfaces:** Store methods `chat_sessions()`, `chat_session(id)`, `chat_session_create(data)`, `chat_session_update(id,data)`; authenticated `/api/chat/sessions` collection and `/api/chat/sessions/{id}` item endpoints. The first list/read migrates legacy history once without deleting the legacy document.
 
-- [ ] Write failing tests for migration, idempotency, isolation, validation and authenticated API routing.
-- [ ] Run focused tests and confirm expected failures.
-- [ ] Implement bounded SQLite-backed sessions and server routes; keep legacy history endpoint.
-- [ ] Run focused and full Python tests, then commit.
+- [x] Write failing tests for migration, idempotency, isolation, validation and authenticated API routing.
+- [x] Run focused tests and confirm expected failures.
+- [x] Implement bounded SQLite-backed sessions and server routes; keep legacy history endpoint.
+- [x] Run focused and full Python tests, then commit.
 
 ### Task 3: Conversation UI and message rendering
 
@@ -56,10 +56,10 @@
 
 **Interfaces:** Chat page consumes list/detail endpoints from Task 2. `renderChat(state)` exposes a session list, message stream, composer and collapsible settings. `renderChatMarkdown(text)` emits escaped, safe HTML. Retry constructs a request from the last failed turn without adding another user message.
 
-- [ ] Write failing tests for session actions, safe Markdown, stream status and retry semantics.
-- [ ] Run focused tests and confirm expected failures.
-- [ ] Implement UI/API wiring, scoped updates during stream, auto-scroll rule and bilingual copy.
-- [ ] Run focused and full Web tests, then commit.
+- [x] Write failing tests for session actions, safe Markdown, stream status and retry semantics.
+- [x] Run focused tests and confirm expected failures.
+- [x] Implement UI/API wiring, scoped updates during stream, auto-scroll rule and bilingual copy.
+- [x] Run focused and full Web tests, then commit.
 
 ### Task 4: Chrome, localization and responsive density
 
@@ -67,10 +67,10 @@
 
 **Interfaces:** One language toggle button calls `applyLanguage`; `updateChrome()` writes status/version only. Tables use intrinsic width and local overflow while long values wrap.
 
-- [ ] Write failing tests for removed chrome items, language toggle/accessibility, preservation of drafts and table hooks.
-- [ ] Run focused tests and confirm expected failures.
-- [ ] Implement chrome, responsive CSS and table layout.
-- [ ] Run focused and full Web tests, then commit.
+- [x] Write failing tests for removed chrome items, language toggle/accessibility, preservation of drafts and table hooks.
+- [x] Run focused tests and confirm expected failures.
+- [x] Implement chrome, responsive CSS and table layout.
+- [x] Run focused and full Web tests, then commit.
 
 ### Task 5: Integrated acceptance
 
@@ -78,7 +78,7 @@
 
 **Interfaces:** No new runtime interface.
 
-- [ ] Run complete Python, Web and native checks with fresh output.
-- [ ] Exercise six routes, bilingual and narrow layout, inline model configuration and multi-session chat against a local Manager fixture in a real browser.
-- [ ] Inspect diff for old routes, XSS/data-loss risks and misleading capability claims; fix and rerun relevant checks.
-- [ ] Record actual evidence and limitations, then commit.
+- [x] Run complete Python, Web and native checks with fresh output.
+- [x] Exercise six routes, bilingual and narrow layout, inline model configuration and multi-session chat against a local Manager fixture in a real browser.
+- [x] Inspect diff for old routes, XSS/data-loss risks and misleading capability claims; fix and rerun relevant checks.
+- [x] Record actual evidence and limitations, then commit.

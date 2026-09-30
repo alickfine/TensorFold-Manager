@@ -1,4 +1,4 @@
-export function dispatchDocumentClick(event, { navigate, handleAction }) {
+export function dispatchDocumentClick(event, { navigate, handleAction, onError = () => {} }) {
   const pageButton = event.target?.closest?.('button[data-page]');
   if (pageButton) {
     navigate(pageButton.dataset.page);
@@ -8,9 +8,9 @@ export function dispatchDocumentClick(event, { navigate, handleAction }) {
   if (!button || button.disabled || !button.dataset.action) return null;
   event.preventDefault();
   try {
-    Promise.resolve(handleAction(button.dataset.action, button.dataset.value ?? '', button)).catch(() => {});
-  } catch {
-    // Action handlers surface user-facing errors themselves.
+    Promise.resolve(handleAction(button.dataset.action, button.dataset.value ?? '', button)).catch((error) => onError(error, button.dataset.action));
+  } catch (error) {
+    onError(error, button.dataset.action);
   }
   return 'action';
 }

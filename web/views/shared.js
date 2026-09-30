@@ -41,10 +41,10 @@ export function formatBytes(bytes) {
 
 export const h = {
   heading(title, description, actions = '') {
-    return `<div class="tf-heading"><div><div class="tf-eyebrow">LOCAL INFERENCE WORKSPACE</div><h1>${escapeHtml(t(title))}</h1><div class="tf-sub">${escapeHtml(t(description))}</div></div><div class="tf-actions">${actions}</div></div>`;
+    return `<div class="tf-heading${actions ? ' has-actions' : ''}"><div><h1>${escapeHtml(t(title))}</h1><div class="tf-sub">${escapeHtml(t(description))}</div></div><div class="tf-actions">${actions}</div></div>`;
   },
   compactHeading(title, description, actions = '') {
-    return `<div class="tf-heading tf-heading-compact"><div><h1>${escapeHtml(t(title))}</h1><div class="tf-sub">${escapeHtml(t(description))}</div></div><div class="tf-actions">${actions}</div></div>`;
+    return `<div class="tf-heading tf-heading-compact${actions ? ' has-actions' : ''}"><div><h1>${escapeHtml(t(title))}</h1><div class="tf-sub">${escapeHtml(t(description))}</div></div><div class="tf-actions">${actions}</div></div>`;
   },
   card(title, content, action = '', translateTitle = true) {
     return `<section class="tf-card"><div class="tf-row"><h2>${escapeHtml(translateTitle ? t(title) : title)}</h2>${action}</div>${content}</section>`;
@@ -70,9 +70,9 @@ export const h = {
     if (!rows?.length) return `<div class="tf-empty">${escapeHtml(t(empty))}</div>`;
     return `<div class="tf-table-wrap"><table class="tf-table"><thead><tr>${columns.map((item) => `<th>${escapeHtml(t(item))}</th>`).join('')}</tr></thead><tbody>${rows.map((row) => `<tr>${row.map((cell) => `<td>${cell?.html === true ? cell.value : escapeHtml(displayValue(cell))}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
   },
-  field(label, name, value = '', { type = 'text', hint = '', disabled = false, required = false, full = false, min, max, step } = {}) {
+  field(label, name, value = '', { type = 'text', hint = '', disabled = false, required = false, full = false, min, max, step, id = `field-${name}` } = {}) {
     const limits = `${min !== undefined ? ` min="${escapeHtml(min)}"` : ''}${max !== undefined ? ` max="${escapeHtml(max)}"` : ''}${step !== undefined ? ` step="${escapeHtml(step)}"` : ''}`;
-    return `<div class="tf-field${full ? ' full' : ''}"><label for="field-${escapeHtml(name)}">${escapeHtml(t(label))}</label><input id="field-${escapeHtml(name)}" name="${escapeHtml(name)}" type="${escapeHtml(type)}" value="${escapeHtml(value ?? '')}"${disabled ? ' disabled' : ''}${required ? ' required' : ''}${limits}>${hint ? `<div class="tf-sub">${escapeHtml(t(hint))}</div>` : ''}</div>`;
+    return `<div class="tf-field${full ? ' full' : ''}"><label for="${escapeHtml(id)}">${escapeHtml(t(label))}</label><input id="${escapeHtml(id)}" name="${escapeHtml(name)}" type="${escapeHtml(type)}" value="${escapeHtml(value ?? '')}"${disabled ? ' disabled' : ''}${required ? ' required' : ''}${limits}>${hint ? `<div class="tf-sub">${escapeHtml(t(hint))}</div>` : ''}</div>`;
   },
   textarea(label, name, value = '', { hint = '', required = false, full = true, placeholder = '' } = {}) {
     return `<div class="tf-field${full ? ' full' : ''}"><label for="field-${escapeHtml(name)}">${escapeHtml(t(label))}</label><textarea id="field-${escapeHtml(name)}" name="${escapeHtml(name)}"${required ? ' required' : ''} placeholder="${escapeHtml(t(placeholder))}">${escapeHtml(value ?? '')}</textarea>${hint ? `<div class="tf-sub">${escapeHtml(t(hint))}</div>` : ''}</div>`;

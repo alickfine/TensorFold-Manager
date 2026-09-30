@@ -1,5 +1,19 @@
 import { t } from './i18n.js';
 
+export function isUntitledConversation(title) {
+  return title === '新对话' || title === 'New conversation';
+}
+
+export function conversationTitleFromMessage(message, fallback = 'New conversation') {
+  const normalized = String(message ?? '').replace(/[\u0000-\u001f\u007f\s]+/gu, ' ').trim();
+  return Array.from(normalized).slice(0, 60).join('') || fallback;
+}
+
+export function applySavedConversation(chat, session) {
+  if (chat.activeId === session.id) chat.revision = session.revision;
+  chat.sessions = [session, ...chat.sessions.filter((item) => item.id !== session.id)];
+}
+
 export function parseChatOptions(values = {}, defaults = {}) {
   const result = { system_prompt:String(values.system_prompt ?? ''), tools_json:String(values.tools_json ?? ''), tool_choice:values.tool_choice ?? 'auto' };
   if (result.system_prompt.length > 65536 || result.tools_json.length > 262144) throw new TypeError(t('提示词或工具声明过长'));
@@ -39,7 +53,9 @@ export function prepareRetryTurn(messages, options = {}, defaults = {}) {
   if (last?.role !== 'user' && !(last?.role === 'assistant' && ['failed','cancelled'].includes(last.status))) {
     throw new TypeError(t('没有可重试的消息'));
   }
-  const user = last.role === 'user' ? last : messages.at(-2);
+  let index = messages.length - 1;
+  while (index >= 0 && messages[index].role === 'assistant' && ['failed','cancelled'].includes(messages[index].status)) index -= 1;
+  const user = messages[index];
   if (user?.role !== 'user') throw new TypeError(t('没有可重试的消息'));
   const parsed = parseChatOptions(options, defaults);
   const assistant = { role:'assistant',content:'',options:parsed,reasoning:'',tool_calls:[],status:'generating' };
@@ -48,7 +64,7 @@ export function prepareRetryTurn(messages, options = {}, defaults = {}) {
 
 export function chatRequest(model, messages, options) {
   const {system_prompt,tools_json,...parameters} = options;
-  const history = messages.filter(message => message.role !== 'system' && !['failed','cancelled','generating'].includes(message.status)).map(({role,content,tool_calls,tool_call_id}) => ({role,content,...(tool_calls ? {tool_calls} : {}),...(tool_call_id ? {tool_call_id} : {})}));
+  const history = messages.filter(message => ['user','assistant'].includes(message.role) && !['failed','cancelled','generating'].includes(message.status)).map(({role,content}) => ({role,content}));
   if (system_prompt) history.unshift({role:'system',content:system_prompt});
   return {model,messages:history,...parameters};
 }

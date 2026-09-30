@@ -69,3 +69,14 @@ Full large-model downloads, new-release GLM loading and a live GLM upgrade were 
 - The long-history chat composer stays visible with generation parameters collapsed or expanded; the parameter panel scrolls independently. The actual scan button dispatched its job; page navigation worked.
 - Actual uv offline fixture-wheel installation, plain imports without -B and full manifest verification preserved the CI App runtime. Normal quit/relaunch succeeded and retained Chinese, without starting an inference service.
 - Final QA additionally found unrelated jobs in the downloader and an incorrect mirror label; both were repaired and passed render regressions; final package checks continue. alpha.3 publication is not yet claimed.
+
+## Six-page workspace and multi-session chat source acceptance (2026-09-30)
+
+- The current source has six top-level entries: Overview, Model Library, Model Downloader, Chat, Activity and Settings. Usage is part of Overview; model configuration and profiles share the library page; logs and benchmarks share Activity; the remaining configuration is grouped by task under Settings.
+- The sidebar bottom shows only the App version. Instance ID, last-updated time, refresh button and task count were removed. A symbolic 文/A button switches languages. Tables size columns to content and scroll within their own containers.
+- SQLite conversations migrate legacy `chat/default` history once while retaining the original document. The chat UI includes session creation, search and rename, streaming messages, safe Markdown, code copying, failure details, stop and retry. Reasoning and tool calls are inspectable in disclosures; the App does not execute or replay tool calls as executable history.
+- Fresh checks passed: 187 Python tests, 81 Web tests, nine native bootstrap/origin/export/language checks, plus credential and runtime integrity checks.
+- A real browser against a local Manager and small fixture engine exercised all six entries, Settings/Activity tabs and their actions, session creation and rename, streaming, failure and repeated retry, history after reopening, draft preservation across languages, 375/600/800-pixel layouts and local table scrolling. The browser console had zero errors. The fixture wrote only to a temporary directory.
+- A multiline first message saved with a normalized title while SQLite retained the exact line break in its body. Delaying session A's save while switching to and sending in session B left each session's messages and revision isolated.
+
+The fixture engine returned `ok`; this does not prove real model weight loading or answer quality. This source revision has not yet been built, installed or published as a DMG, and end-to-end inference with a real TensorFold model was not performed in this pass.

@@ -10,6 +10,7 @@ const entries = `
 复制代码	Copy code
 已复制	Copied
 请先停止当前生成	Stop the current generation first
+对话已切换，请重新发送	Conversation changed; please send again
 没有可重试的消息	No message can be retried
 活动	Activity
 设置	Settings

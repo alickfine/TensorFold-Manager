@@ -301,3 +301,23 @@ test('clicking an action inside main dispatches handleAction instead of treating
   assert.deepEqual(handled, { action:'refresh', value:'now', element:actionButton });
   assert.equal(prevented, true);
 });
+
+test('click routing reports an asynchronous action failure', async () => {
+  const button = { disabled:false, dataset:{ action:'chat-new', value:'' } };
+  const target = { closest(selector) { return selector === '[data-action]' ? button : null; } };
+  let received;
+  dispatchDocumentClick({target,preventDefault(){}}, {
+    navigate(){},
+    handleAction(){ return Promise.reject(new Error('network unavailable')); },
+    onError(error, action) { received = {error:error.message,action}; },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(received,{error:'network unavailable',action:'chat-new'});
+});
+
+test('inline model and profile name fields have distinct label targets', () => {
+  const output = renderModelConfigDialog(state());
+  assert.match(output, /for="profile-name"/);
+  assert.match(output, /id="profile-name" name="name"/);
+  assert.equal((output.match(/id="field-name"/g) ?? []).length, 1);
+});

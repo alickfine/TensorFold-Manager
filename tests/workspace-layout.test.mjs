@@ -34,3 +34,11 @@ test('overview includes compact real usage and model configuration stays on mode
   assert.match(models, /name="temperature"/);
   assert.doesNotMatch(models, /data-action="model-config-open"/);
 });
+
+test('composed sections retain toolbar actions and narrow logs do not force desktop columns', () => {
+  const css = source('../web/app.css');
+  assert.match(css,/\.tf-composed-section\s*>\s*\.tf-heading:not\(\.has-actions\)\s*\{[^}]*display:none/);
+  assert.match(css,/\.tf-composed-section\s*>\s*\.tf-heading\.has-actions\s*>\s*div:first-child\s*\{[^}]*display:none/);
+  assert.match(source('../web/views/shared.js'),/tf-heading\$\{actions \? ' has-actions'/);
+  assert.match(css,/@media\s*\(max-width:760px\)\s*\{[^}]*\.tf-log-toolbar\s*\{[^}]*grid-template-columns:minmax\(0,1fr\)/);
+});

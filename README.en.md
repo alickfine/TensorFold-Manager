@@ -9,32 +9,28 @@ A standalone macOS App with an embedded Web workspace for [TensorFold](https://g
 ## Install and get started
 
 1. Download `TensorFold-Manager-<version>-macOS-arm64.dmg`, open it and drag the App into Applications.
-2. Open the App. Under **Versions & Updates**, install the main engine. This requires internet access; each engine version uses a separate environment pinned to an official commit.
-3. Set existing model directories under **Server & Directories**, or download a supported checkpoint under **Model Downloader**. Third-party mirrors never receive provider credentials.
+2. Open the App. Under **Settings → Versions & Updates**, install the main engine. This requires internet access; each engine version uses a separate environment pinned to an official commit.
+3. Set existing model directories under **Settings → Runtime & Directories**, or download a supported checkpoint under **Model Downloader**. Third-party mirrors never receive provider credentials.
 4. Scan the **Model Library**. Local variants that are not already recognized must pass the engine's CLI compatibility check.
 5. Start a model from **Overview**. Memory pressure, insufficient capacity or a conflicting inference service can block startup with a reason. Compatible services can be reused; stopping an external service requires confirmation.
-6. Use **Chat**, statistics, cache inspection, logs, simplified benchmarks. Quitting the App stops the engine it owns.
+6. Use **Overview** for usage, **Activity** for logs and benchmarks, and **Settings** for cache, API and updates. Quitting the App stops the engine it owns.
 
-Choose **简体中文 / English** in the workspace header. The App remembers the language. Language switching preserves model identifiers, paths, logs and user conversations in their original form.
+Use the **文/A** button in the workspace header to switch languages. The App remembers the language. Language switching preserves model identifiers, paths, logs and user conversations in their original form.
 
 ## Management workspace
 
-The App has 12 sections. Model configuration opens in the library dialog. API ports, integrations and authentication share one page. Startup candidates must pass the current engine's MLX compatibility detection; detection is not proof of a successful weight load. Statistics use at most two decimals; cache telemetry shows its actual source and sample time.
+The current source workspace has six top-level pages. Selecting a model shows its configuration and profiles on the same page. API ports and client keys share the Settings API tab. Startup candidates must pass the current engine's MLX compatibility detection; detection is not proof of a successful weight load. Statistics use at most two decimals; cache telemetry shows its actual source and sample time.
 
 | Section | Features |
 | --- | --- |
-| Overview | Start and stop; currently detected compatible local models; memory admission |
-| Statistics & Usage | Aggregate and per-model usage, latency and exports |
-| Cache | Live reported MLX memory, source/time, owned snapshots and safe cleanup |
-| Model Library | Scan, compatibility checks, load/default actions and configuration dialog |
+| Overview | Service controls, state, memory admission, request and token usage |
+| Model Library | Scan, compatibility checks, load/default actions and inline configuration |
 | Model Downloader | Supported catalog models; Hugging Face or third-party mirror; job controls |
-| Engine Configuration | Concurrency, memory/cache and snapshots; model generation settings live in the dialog |
-| Server & Directories | Host information, directory settings, local-disk discovery and registration |
-| API & Integrations | Endpoints, ports, client examples, authentication and keys |
-| Versions & Updates | Checks, candidate installation, manual upgrade, API verification and recovery |
-| Logs | Compact filters, search and redacted export |
-| Benchmark | Simple presets, measured throughput/latency, cancellation and results |
-| Chat | Message list, bottom composer, collapsed settings, streaming, stop and export |
+| Chat | Persistent conversations, search/rename, safe Markdown, streaming, reasoning/tool details, stop and retry |
+| Activity | Log filters, redacted export, benchmark presets and measured results |
+| Settings | Runtime/directories, storage/cache, API/keys and versions/updates |
+
+Chat tool calls are shown for inspection only; the App does not execute them.
 
 Discovery excludes network volumes, application packages and private application directories. Permission failures and scan limits are explicitly reported as partial results. The downloader does not offer unverified ModelScope mappings.
 

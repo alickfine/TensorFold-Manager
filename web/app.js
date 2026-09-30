@@ -1,6 +1,6 @@
 import { api, getAdminToken, getBootstrapLanguage } from './api.js';
 import { exportTextFile } from './export.js';
-import { parseChatOptions, prepareChatTurn, prepareRetryTurn, chatRequest } from './chat-options.js';
+import { parseChatOptions, prepareChatTurn, prepareRetryTurn, chatRequest, isUntitledConversation, conversationTitleFromMessage, applySavedConversation } from './chat-options.js';
 import { renderChatMarkdown } from './chat-markdown.js';
 import { serviceSwitchRequest, engineStopRequest, engineDetachRequest, catalogDownloadRequest, shouldPollLivePage, isPollEditingTarget, assertChatCanSubmit, isChatSubmitKey } from './contracts.js';
 import { formValues, escapeHtml, capability } from './views/shared.js';
@@ -40,7 +40,7 @@ const renderers = {
 const state = {
   page:'overview', routeQuery:new URLSearchParams(), snapshot:null, pageData:{}, loading:true,
   filters:{ statsModel:'', statsRange:'24h', logLevel:'', logQuery:'', logLimit:'500' },
-  chat:{ sessions:[], activeId:null, revision:null, messages:[], options:{}, streaming:false, controller:null }, modelConfigTarget:'',
+  chat:{ sessions:[], activeId:null, revision:null, messages:[], options:{}, streaming:false, controller:null, pendingSaves:new Map(), openSequence:0 }, modelConfigTarget:'',
 };
 
 const pageElement = document.querySelector('#page');
@@ -197,7 +197,11 @@ async function loadPageData(page = state.page, { render = true } = {}) {
 
 async function openChatSession(id, { render = true } = {}) {
   if (state.chat.streaming) throw new Error(t('请先停止当前生成'));
+  const sequence = ++state.chat.openSequence;
+  if (state.chat.pendingSaves.has(id)) await state.chat.pendingSaves.get(id);
+  if (sequence !== state.chat.openSequence) return;
   const session = await api.request(`/api/chat/sessions/${encodeURIComponent(id)}`);
+  if (sequence !== state.chat.openSequence) return;
   state.chat.activeId = session.id;
   state.chat.revision = session.revision;
   state.chat.messages = session.messages ?? [];
@@ -220,6 +224,7 @@ async function run(label, operation, { refresh = true } = {}) {
     return result;
   } catch (error) {
     toast(error.message ?? String(error), true);
+    if (error && typeof error === 'object') error.reported = true;
     if (error.details?.resources) showModal('内存与服务检查未通过', renderResourceReport(error.details.resources));
     throw error;
   }
@@ -393,29 +398,39 @@ async function handleAction(action, value, element) {
 }
 
 async function persistChat() {
-  if (!state.chat.activeId) return;
-  const current = state.chat.sessions.find((item) => item.id === state.chat.activeId);
-  const title = current?.title === t('新对话') ? state.chat.messages.find((item) => item.role === 'user')?.content?.slice(0,60) : undefined;
+  const id = state.chat.activeId;
+  if (!id) return;
+  const current = state.chat.sessions.find((item) => item.id === id);
+  const title = isUntitledConversation(current?.title) ? conversationTitleFromMessage(state.chat.messages.find((item) => item.role === 'user')?.content, t('新对话')) : undefined;
   const body = { revision:state.chat.revision, messages:state.chat.messages };
   if (title) body.title = title;
-  const session = await api.request(`/api/chat/sessions/${encodeURIComponent(state.chat.activeId)}`, { method:'PUT', body });
-  state.chat.revision = session.revision;
-  state.chat.sessions = [session, ...state.chat.sessions.filter((item) => item.id !== session.id)];
+  const pending = api.request(`/api/chat/sessions/${encodeURIComponent(id)}`, { method:'PUT', body });
+  state.chat.pendingSaves.set(id, pending);
+  try {
+    const session = await pending;
+    applySavedConversation(state.chat, session);
+  } finally {
+    if (state.chat.pendingSaves.get(id) === pending) state.chat.pendingSaves.delete(id);
+  }
 }
 
 async function sendChat(message, { retry = false } = {}) {
+  const originalSessionId = state.chat.activeId;
+  if (originalSessionId && state.chat.pendingSaves.has(originalSessionId)) await state.chat.pendingSaves.get(originalSessionId);
+  if (state.chat.activeId !== originalSessionId) throw new Error(t('对话已切换，请重新发送'));
   assertChatCanSubmit(state.chat.streaming);
   const streamCapability = capability(state.snapshot?.capabilities, 'streaming');
   const chatCapability = capability(state.snapshot?.capabilities, 'chat');
   if (!streamCapability.enabled || !chatCapability.enabled) throw new Error(!chatCapability.enabled ? chatCapability.reason : streamCapability.reason);
   if (!retry && !state.chat.activeId) {
-    const session = await api.request('/api/chat/sessions', { method:'POST', body:{ title:message.slice(0,60) || t('新对话') } });
+    const session = await api.request('/api/chat/sessions', { method:'POST', body:{ title:conversationTitleFromMessage(message, t('新对话')) } });
     state.chat.sessions = [session, ...state.chat.sessions];state.chat.activeId = session.id;state.chat.revision = session.revision;
   }
   const { options, assistant, messages } = retry ? prepareRetryTurn(state.chat.messages,state.chat.options,state.snapshot?.settings) : prepareChatTurn(state.chat, message, state.snapshot?.settings);
   state.chat.messages = messages;
   state.chat.streaming = true;
   state.chat.controller = new AbortController();
+  const sessionId = state.chat.activeId;
   renderCurrent();
   const started = performance.now();
   try {
@@ -462,7 +477,7 @@ async function sendChat(message, { retry = false } = {}) {
     try {
       await persistChat();
     } finally {
-      renderCurrent();
+      if (state.chat.activeId === sessionId && state.page === 'chat') renderCurrent();
     }
   }
 }
@@ -532,7 +547,7 @@ async function handleForm(form) {
 }
 
 document.addEventListener('click', (event) => {
-  dispatchDocumentClick(event, { navigate, handleAction });
+  dispatchDocumentClick(event, { navigate, handleAction, onError(error) { if (!error?.reported) toast(error?.message ?? String(error), true); } });
 });
 
 for (const type of ['input', 'change']) pageElement.addEventListener(type, (event) => {
