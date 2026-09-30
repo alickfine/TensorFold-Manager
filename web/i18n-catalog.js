@@ -3,6 +3,7 @@ const entries = `
 由 Manager 管理	Managed by Manager
 外部只读接入	External read-only attachment
 尚未启动	Not started
+搜索模型	Search models
 新对话	New conversation
 搜索对话	Search conversations
 暂无对话	No conversations

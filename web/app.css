@@ -197,3 +197,10 @@ main[data-view="chat"] { max-width:none; height:calc(100vh - 72px); }
 .tf-launch-target label { display:block; margin-bottom:5px; color:var(--muted); font-size:12px; }
 .tf-request-label { margin:14px 0 6px; }
 @media (max-width:760px) { .tf-service-main { align-items:flex-start; flex-direction:column; } .tf-service-details { grid-template-columns:1fr; } }
+.tf-model-workspace { min-width:0; }
+.tf-model-list { min-width:0; }
+.tf-model-list #model-search { max-width:360px; margin-bottom:12px; }
+.tf-model-list .tf-table-wrap { max-width:100%; overflow:auto; }
+.tf-model-list .tf-table { min-width:720px; }
+.tf-model-list tbody tr[hidden] { display:none; }
+.tf-model-list .tf-table td:nth-child(2) { max-width:300px; overflow-wrap:anywhere; }

@@ -9,8 +9,7 @@ import { renderOverview } from './views/overview.js';
 import { renderResourceReport } from './views/resources.js';
 import { renderStats } from './views/stats.js';
 import { renderCache } from './views/cache.js';
-import { renderModels } from './views/models.js';
-import { renderDownloads } from './views/downloads.js';
+import { renderModelWorkspace } from './views/model-workspace.js';
 import { renderModelConfigDialog } from './views/model-config.js';
 import { renderEngineConfig } from './views/engine-config.js';
 import { renderServer } from './views/server.js';
@@ -27,13 +26,13 @@ import { dispatchDocumentClick } from './click-routing.js';
 import { resolveWorkspaceRoute } from './workspace-route.js';
 
 const renderers = {
-  overview:renderOverview, models:renderModels, chat:renderChat,
+  overview:renderOverview, models:renderModelWorkspace, chat:renderChat,
   activity:renderActivity, settings:renderWorkspaceSettings,
 };
 
 const state = {
   page:'overview', routeQuery:new URLSearchParams(), snapshot:null, pageData:{}, loading:true,
-  filters:{ statsModel:'', statsRange:'24h', logLevel:'', logQuery:'', logLimit:'500' }, launchTarget:'',
+  filters:{ statsModel:'', statsRange:'24h', logLevel:'', logQuery:'', logLimit:'500' }, launchTarget:'', modelSearch:'',
   chat:{ sessions:[], activeId:null, revision:null, messages:[], options:{}, streaming:false, controller:null, pendingSaves:new Map(), openSequence:0 }, modelConfigTarget:'',
 };
 
@@ -550,6 +549,14 @@ pageElement.addEventListener('keydown', (event) => {
   if (event.target?.id !== 'chat-input' || !isChatSubmitKey(event, { streaming:state.chat.streaming })) return;
   event.preventDefault();
   event.target.form?.requestSubmit();
+});
+pageElement.addEventListener('input', (event) => {
+  if (event.target?.id !== 'model-search') return;
+  state.modelSearch = event.target.value;
+  const query = state.modelSearch.trim().normalize('NFKC').toLocaleLowerCase();
+  pageElement.querySelectorAll('.tf-model-list tbody tr').forEach((row) => {
+    row.hidden = !row.textContent.normalize('NFKC').toLocaleLowerCase().includes(query);
+  });
 });
 pageElement.addEventListener('input', (event) => {
   if (event.target?.id !== 'chat-search') return;
