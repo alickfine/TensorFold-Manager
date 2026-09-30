@@ -70,6 +70,12 @@ test('overview shows missing metrics honestly and keeps measured zero', () => {
   assert.match(source('../web/app.js'), /\/api\/stats\?\$\{params\}/);
 });
 
+test('request history presents observed Unix time as a readable timestamp', () => {
+  const output=renderOverview({...state,pageData:{...state.pageData,stats:{total:{requests:1},requests:[{at:1790768405.85,model:model.id,status:200,input_tokens:2,output_tokens:1,elapsed:0.5}]}}});
+  assert.doesNotMatch(output,/1790768405\.85/);
+  assert.match(output,/2026/);
+});
+
 test('composed sections retain toolbar actions and narrow logs do not force desktop columns', () => {
   const css = source('../web/app.css');
   assert.match(css,/\.tf-composed-section\s*>\s*\.tf-heading:not\(\.has-actions\)\s*\{[^}]*display:none/);

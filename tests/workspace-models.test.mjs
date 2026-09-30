@@ -9,6 +9,8 @@ const state = {snapshot:{models:[qwen,evil],engine:{state:'stopped'},settings:{s
 test('model workspace has library and downloads tabs with supported entries and jobs', async () => {
   const {renderModelWorkspace}=await import('../web/views/model-workspace.js');
   const library=renderModelWorkspace(state);
+  assert.match(library, /<h1>模型库<\/h1>/);
+  assert.ok(library.indexOf('<h1>') < library.indexOf('tf-composed-section'), 'visible page title must precede hidden child headings');
   assert.match(library,/data-value="models:library"/);
   assert.match(library,/data-value="models:downloads"/);
   assert.match(library,/data-form="model-config-save"/);

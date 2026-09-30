@@ -101,9 +101,13 @@ test('chat has named conversation, message and generation regions with drawer co
   for (const name of ['对话列表','消息','生成设置']) assert.match(html,new RegExp(`aria-label="${name}"`));
   assert.match(html,/data-action="chat-settings-toggle"/);
   assert.match(html,/data-action="chat-settings-close"/);
+  assert.match(html,/data-form="chat-settings"/);
+  assert.doesNotMatch(html,/\bNaN\b/);
   assert.doesNotMatch(html,/data-action="(?:upload|web-search|tool-execute)"/);
   const css=readFileSync(new URL('../web/app.css',import.meta.url),'utf8');
   assert.match(css,/\.tf-chat-layout\s*\{[^}]*grid-template-columns:[^}]*minmax\(0,1fr\)[^}]*280px/);
+  assert.match(css,/\.tf-chat-layout\s*\{[^}]*grid-template-rows:minmax\(0,1fr\)/);
+  assert.match(css,/\.tf-chat-settings\s*\{[^}]*position:static;[^}]*height:auto/);
 });
 
 test('stopped chat explains the saved conversation is available but inference is not', () => {

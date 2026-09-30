@@ -30,3 +30,8 @@ test('tables use intrinsic columns, wrap long text and keep overflow inside the 
   assert.match(css, /\.tf-table-wrap\s*\{[^}]*overflow:auto/);
   assert.match(css, /\.tf-table td\s*\{[^}]*overflow-wrap:anywhere/);
 });
+
+test('programmatic main focus does not draw a border around the entire workspace', () => {
+  const css = read('../web/app.css');
+  assert.match(css, /main:focus\s*\{[^}]*outline:none/);
+});

@@ -207,7 +207,7 @@ main[data-view="chat"] { max-width:none; height:calc(100vh - 72px); }
 /* Focused chat: conversations, messages, generation settings */
 main[data-view="chat"] { display:flex; flex-direction:column; min-height:0; overflow:hidden; }
 main[data-view="chat"] > .tf-heading { flex-shrink:0; margin-bottom:10px; }
-.tf-chat-layout { display:grid; grid-template-columns:220px minmax(0,1fr) 280px; min-height:0; flex:1; gap:12px; }
+.tf-chat-layout { display:grid; grid-template-columns:220px minmax(0,1fr) 280px; grid-template-rows:minmax(0,1fr); min-height:0; flex:1; gap:12px; }
 .tf-chat-layout.closed { grid-template-columns:220px minmax(0,1fr); }
 .tf-chat-layout.closed .tf-chat-settings { display:none; }
 .tf-chat-main { min-height:0; }
@@ -230,3 +230,5 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline:3px solid
 .tf-section-tabs button { min-height:36px; border-radius:9px; }
 .tf-section-tabs button.active { color:#265cda; }
 .tf-composed-section .tf-heading.has-actions > .tf-actions { margin:0 0 12px auto; }
+main:focus { outline:none; }
+.tf-chat-settings { position:static; height:auto; }

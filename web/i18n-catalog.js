@@ -10,6 +10,7 @@ const entries = `
 生成设置	Generation settings
 关闭生成设置	Close generation settings
 搜索模型	Search models
+本机模型、配置和受支持下载。	Local models, configuration, and supported downloads.
 新对话	New conversation
 搜索对话	Search conversations
 暂无对话	No conversations
