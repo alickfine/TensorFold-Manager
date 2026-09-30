@@ -97,4 +97,13 @@
 - 多行消息自动标题归一后可保存，原始正文换行从 SQLite 读回完整。人为延迟会话 A 的保存请求，期间切换会话 B 并发送新消息；两边的消息和 revision 分别保存，没有串用。
 - 800×700 浏览器窗口中，聊天输入框在发送前后保持贴近视口底部且按钮可见；这是夹具浏览器的布局证据，非实体 App 安装包截图。
 
-本轮浏览器推理使用测试夹具返回 `ok`，不能证明真实大模型权重加载或回答质量；尚未构建、安装或发布包含本轮源码的 DMG，也未对真实 TensorFold 引擎执行全流程推理验收。
+截至上述源码与夹具验收，浏览器推理仅由测试夹具返回 `ok`，当时尚未构建、安装本轮 DMG，也未通过真实 TensorFold 引擎推理；后续安装版验收见下节。
+
+## 六页工作台安装包与真实推理验收（2026-09-30）
+
+- 从分支提交 `cd82dde` 构建本地 QA 版 `0.1.0-alpha.4-qa.1` DMG。SHA-256：`e800044fdd3777e923d7f7ac229c5bbccfe6bb37e2acf6ad2e1bebbb00868b85`；文件清单校验与 App、DMG 严格签名检查通过。只读挂载后，镜像内 Web/Manager 文件与源码逐字节一致。
+- 从 DMG 复制到 `/Applications/TensorFold Manager UI QA.app` 并启动。原有 `/Applications/TensorFold Manager.app`（alpha.3）保留。实际运行进程和 sidecar 均来自 QA 安装路径，界面显示 QA 版本。镜像已卸载。
+- 安装版经界面选择 `DeepSeek-V4-Flash-4bit` 并连接到已存在、同用户且参数匹配的本地 TensorFold 推理服务。Manager 显示 `attached`；运行模型路径为 `/Users/fanwenbin/.omlx/models/DeepSeek-V4-Flash-4bit`，外部服务 PID 2718 未改变。此验收复用了已加载的真实权重，没有再次启动或下载模型。
+- 在安装版新建独立会话，发送“请只回复：UIQA_REAL_OK”；界面先显示 `generating`，随后收到 `UIQA_REAL_OK`，显示浏览器耗时 2.15 秒、6 tokens。总览请求数由 1 增至 2，输入 tokens 由 54 增至 67，输出 tokens 由 1 增至 7。这证明安装版聊天通过真实本机引擎完成了一次流式请求，不是夹具回答；单条提示词不能证明模型通用回答质量。
+- 正常退出 QA App 后，其 App 和 sidecar 进程消失；外部 PID 2718 仍在，`/health` 返回 `ok`、`warming:false`。重启 QA App 后，新会话及问答原文仍可见，请求统计仍为 2。外部服务不会在 Manager 重启时自动重新连接，需再次选择并连接；原服务仍保持健康。
+- 本地 QA DMG 仅作本机安装验收，尚未作为公开 Release 发布。签名为 ad hoc，未进行 Apple Developer ID 签名或公证。
