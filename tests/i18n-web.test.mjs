@@ -204,7 +204,8 @@ test('English rendering never translates raw model, profile, chat, log, path, or
 test('language controls are accessible and native can query or set the strict locale API', async () => {
   const { readFile } = await import('node:fs/promises');
   const index = await readFile(new URL('../web/index.html', import.meta.url), 'utf8');
-  assert.match(index, /<select[^>]+id="language-select"[^>]+aria-label=/);
-  assert.match(index, /<option value="zh-CN"/);
-  assert.match(index, /<option value="en"/);
+  assert.match(index, /<button[^>]+id="language-toggle"[^>]+aria-label=/);
+  assert.match(index, /文\/A<\/button>/);
+  const app = await readFile(new URL('../web/app.js', import.meta.url), 'utf8');
+  assert.match(app, /applyLanguage\(getLocale\(\) === 'zh-CN' \? 'en' : 'zh-CN'\)/);
 });

@@ -161,3 +161,10 @@ main[data-view="chat"] > .tf-chat-layout { min-height:0; }
 main[data-view="chat"] .tf-chat-main { min-height:0; margin-bottom:0; }
 @media (max-width:1100px) { .tf-chat-layout { grid-template-columns:180px minmax(0,1fr); } }
 @media (max-width:760px) { .tf-chat-layout { grid-template-columns:1fr; } .tf-chat-sidebar { max-height:210px; } .tf-chat-sessions { display:flex; gap:6px; } .tf-chat-session { width:160px; flex:none; } main[data-view="chat"] > .tf-chat-layout { overflow:visible; } }
+#language-toggle { min-width:42px; height:34px; padding:4px 8px; color:var(--blue); font-size:12px; font-weight:700; }
+.tf-table { width:max-content; min-width:100%; table-layout:auto; }
+.tf-table td { overflow-wrap:anywhere; white-space:normal; max-width:42ch; }
+.tf-table th { width:auto; }
+.tf-table td:last-child { max-width:56ch; }
+.tf-table-wrap { overflow:auto; max-width:100%; }
+.tf-log-toolbar { grid-template-columns:150px minmax(220px,1fr) 110px auto; }

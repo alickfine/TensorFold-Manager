@@ -38,7 +38,7 @@ const renderers = {
 };
 
 const state = {
-  page:'overview', routeQuery:new URLSearchParams(), snapshot:null, pageData:{}, loading:true, lastUpdated:null,
+  page:'overview', routeQuery:new URLSearchParams(), snapshot:null, pageData:{}, loading:true,
   filters:{ statsModel:'', statsRange:'24h', logLevel:'', logQuery:'', logLimit:'500' },
   chat:{ sessions:[], activeId:null, revision:null, messages:[], options:{}, streaming:false, controller:null }, modelConfigTarget:'',
 };
@@ -104,18 +104,20 @@ function navigate(target) {
 
 function updateChrome() {
   const engine = state.snapshot?.engine ?? {};
-  const jobs = state.snapshot?.jobs ?? [];
-  const activeJobs = jobs.filter((job) => !['complete', 'completed', 'cancelled', 'failed'].includes(job.state ?? job.status)).length;
   document.querySelector('#breadcrumbs').textContent = t('工作台 / {page}', { page:t(PAGE_LABELS[state.page]) });
-  document.querySelector('#task-count').textContent = String(activeJobs);
-  document.querySelector('#instance-meta').textContent = state.snapshot?.instance_id ? t('实例 {id}', { id:state.snapshot.instance_id }) : t('实例未采集');
   document.querySelector('#app-version').textContent = `App ${state.snapshot?.app_version ?? t('版本未采集')}`;
   document.querySelector('#side-status').textContent = engine.state ?? t('未连接');
   document.querySelector('#footer-state').textContent = t('管理界面在线 · 推理服务 {state}', { state:engine.state ?? t('未知') });
   const led = document.querySelector('#side-led');
   led.className = `tf-led ${engine.state === 'ready' ? '' : engine.state === 'failed' ? 'red' : 'amber'}`;
-  document.querySelector('#poll-status').textContent = state.lastUpdated ? t('更新于 {time}', { time:state.lastUpdated.toLocaleTimeString(getLocale()) }) : '';
   document.querySelectorAll('button[data-page]').forEach((button) => button.classList.toggle('active', button.dataset.page === state.page));
+}
+
+function updateLanguageButton() {
+  const button = document.querySelector('#language-toggle');
+  const label = getLocale() === 'zh-CN' ? 'Switch to English' : '切换为中文';
+  button.setAttribute('aria-label', label);
+  button.title = label;
 }
 
 function renderCurrent() {
@@ -132,6 +134,7 @@ function applyLanguage(locale) {
   const modalDraft = captureFormDraft(modalBody);
   if (!setLocale(locale)) return false;
   translateDocument();
+  updateLanguageButton();
   if (state.snapshot) {
     renderCurrent();
     restoreFormDraft(pageElement, draft);
@@ -154,7 +157,6 @@ function renderFatal(error) {
 
 async function refreshSnapshot({ render = true } = {}) {
   state.snapshot = await api.request('/api/state');
-  state.lastUpdated = new Date();
   if (render) renderCurrent(); else updateChrome();
 }
 
@@ -555,8 +557,8 @@ document.addEventListener('submit', (event) => {
   handleForm(form).catch((error) => toast(error.message ?? String(error), true));
 });
 
-document.querySelector('#language-select').addEventListener('change', (event) => {
-  applyLanguage(event.target.value);
+document.querySelector('#language-toggle').addEventListener('click', () => {
+  applyLanguage(getLocale() === 'zh-CN' ? 'en' : 'zh-CN');
 });
 
 window.addEventListener('hashchange', async () => {
@@ -588,6 +590,7 @@ async function initialize() {
           const stillEditing = isPollEditingTarget(document.activeElement);
           if (state.page === polledPage && shouldPollLivePage(polledPage, { editing:stillEditing, dirty:pageDirty, streaming:state.chat.streaming })) renderCurrent();
         }
+        document.querySelector('#poll-status').textContent = '';
       } catch (error) {
         document.querySelector('#poll-status').textContent = t('刷新失败：{message}', { message:error.message });
       }

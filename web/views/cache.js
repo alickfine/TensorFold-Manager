@@ -24,7 +24,7 @@ export function renderCache(state) {
   const memoryValue = (name) => formatBytes(memory[`${name}_bytes`] ?? memory[name]);
   const lastHealthAt = health.last_health_at ?? snapshot.engine?.last_health_at;
   const modelStats = stats.models ?? [];
-  return h.heading('缓存管理', '只展示并清理 Manager 拥有且有 manifest 的快照。', h.button('刷新', 'load-page', 'cache'))
+  return h.heading('缓存管理', '只展示并清理 Manager 拥有且有 manifest 的快照。')
     + `<div class="tf-metrics">${h.metric('总占用', formatBytes(cache.size_bytes))}${h.metric('文件数量', cache.files)}${h.metric('后端确认归属', cache.owned)}${h.metric('允许清理', cache.can_clear)}</div>`
     + h.card('引擎内存与缓存', `<div class="tf-grid two"><div>${h.kv('Active', memoryValue('active'))}${h.kv('Cache', memoryValue('cache'))}${h.kv('Peak', memoryValue('peak'))}</div><div>${h.kv('Budget', memoryValue('budget'))}${h.kv('Footprint', memoryValue('footprint'))}${h.kv('Gateway cache tokens', stats.total?.cache_tokens)}${h.kv('最后健康采样', formatTimestamp(lastHealthAt))}${h.kv('健康采样错误', snapshot.engine?.health_error)}</div></div>${snapshot.engine?.state === 'attached' ? h.note(t('外部服务仅提供只读用量与请求统计；Manager 不扫描或清理该服务的缓存目录。')) : ''}`)
     + h.card('当前缓存配置', `${h.kv('Prompt cache GiB', settings.prompt_cache_gib)}${h.kv('MLX cache GiB', settings.mlx_cache_gib)}${h.kv('Snapshot 根', settings.snapshot_dir)}`)
