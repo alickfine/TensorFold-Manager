@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="zh" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TensorFold Manager</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="app">
+  <div class="side">
+    <button class="nav-item on" data-page="models"><span class="ni">📦</span>模型<span class="nbadge" id="nav-dl-badge" style="display:none">0</span></button>
+    <button class="nav-item" data-page="chat"><span class="ni">💬</span>对话</button>
+    <button class="nav-item" data-page="metrics"><span class="ni">📊</span>监控</button>
+    <button class="nav-item" data-page="settings"><span class="ni">⚙️</span>设置</button>
+    <div class="sp"></div>
+    <div class="foot"><span class="dot off" id="side-dot"></span><span id="side-status">引擎未运行</span></div>
+  </div>
+  <div class="main">
+
+    <div class="topbar">
+      <span class="wt"><span class="dot off" id="win-dot"></span>TensorFold Manager <span style="color:var(--ink4);font-weight:400" id="win-status">— 引擎未运行</span></span>
+      <span class="ver" id="win-ver">—<span class="vtip" id="win-vtip"></span></span>
+      <div class="tb-btns">
+        <button class="tbtn" id="win-theme">🌙</button>
+        <button class="tbtn stop" id="win-power" onclick="stopAll()">■ 停止全部</button>
+      </div>
+    </div>
+
+    <!-- 模型页（第一页） -->
+    <div class="page on" id="page-models">
+      <div class="pg">
+        <h3>官方支持模型</h3>
+        <div class="mcards" id="mcards"></div>
+        <h3>本机 HF 缓存</h3>
+        <div class="plist" id="cache-list"></div>
+      </div>
+    </div>
+
+    <!-- 对话页 -->
+    <div class="page" id="page-chat">
+      <div class="conv-col">
+        <div class="conv-head"><button class="newchat" id="btn-newchat">＋ 新对话</button></div>
+        <div class="convs" id="convs"></div>
+      </div>
+      <div class="chat-col">
+        <div class="chat-top">
+          <select id="chat-model" class="model-select"></select>
+          <span class="chip" id="chat-ctx">ctx —</span>
+        </div>
+        <div class="chat-body" id="chat-body"></div>
+        <div class="chat-input">
+          <div class="cin-box">
+            <textarea id="chat-text" rows="2" placeholder="问点什么…（⏎ 发送 · ⇧⏎ 换行）"></textarea>
+            <div class="cin-bar">
+              <span class="mini-chip">⚡ 流式</span>
+              <button class="send" id="btn-send">↑</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 监控页 -->
+    <div class="page" id="page-metrics">
+      <div class="pg">
+        <div class="mgrid">
+          <div class="stat"><div class="lb">生成速度<span>2s</span></div><div class="v" id="st-tps">—<small>tok/s</small></div><div class="sub" id="st-tps-sub">实时</div><div class="bars" id="bars-tps"></div></div>
+          <div class="stat"><div class="lb">引擎内存<span>2s</span></div><div class="v" id="st-mem">—</div><div class="sub" id="st-mem-sub">全部实例足迹</div><div class="bars" id="bars-mem"></div></div>
+          <div class="stat"><div class="lb">空闲内存<span>2s</span></div><div class="v" id="st-free">—</div><div class="sub" id="st-free-sub">系统可用</div><div class="bars" id="bars-free"></div></div>
+        </div>
+        <div class="chartbox">
+          <div class="lb"><span>token 吞吐（近 10 分钟）</span><span style="font-family:ui-monospace,monospace">输出 <span style="color:var(--ok)">━</span></span></div>
+          <svg id="chart-tps" viewBox="0 0 520 110" preserveAspectRatio="none"></svg>
+        </div>
+        <div class="kv">
+          <div class="stat"><div class="lb">KV 缓存占用</div><div class="v" id="st-kv">—</div><div class="sub" id="st-kv-sub">各池最大值</div></div>
+          <div class="stat"><div class="lb">请求队列</div><div class="v" id="st-req">—</div><div class="sub" id="st-req-sub">活跃 · 排队</div></div>
+          <div class="stat"><div class="lb">MTP 接受率</div><div class="v" id="st-mtp">—</div><div class="sub">草稿采纳</div></div>
+          <div class="stat"><div class="lb">运行实例</div><div class="v" id="st-inst">0</div><div class="sub" id="st-inst-sub">多实例并行</div></div>
+        </div>
+        <div class="plist" id="inst-list"></div>
+      </div>
+    </div>
+
+    <!-- 设置页 -->
+    <div class="page" id="page-settings">
+      <div class="pg">
+        <h3>引擎</h3>
+        <div class="plist">
+          <div class="setrow"><div class="sl"><b>端口分配</b><span>多实例并行 · 从 8080 起自动分配空闲端口（模型设置可显式指定）</span></div><span class="field">8080 +自动</span></div>
+          <div class="setrow"><div class="sl"><b>默认上下文长度</b><span>--context · 新建/加载模型时的初始值，可在模型设置里单独覆盖</span></div><input class="field num" id="set-ctx" type="number" value="32768"></div>
+          <div class="setrow"><div class="sl"><b>并发上限</b><span>--parallel · 同时处理的请求数，超出排队</span></div><input class="field num" id="set-parallel" type="number" value="4"></div>
+          <div class="setrow"><div class="sl"><b>Prompt 缓存容量</b><span>--prompt-cache-gib · 跨请求前缀缓存，256G 内存可给大</span></div><input class="field num" id="set-pcache" type="number" value="16"></div>
+          <div class="setrow"><div class="sl"><b>启动时自动拉起引擎</b><span>开机后免手动，菜单栏图标变绿即可用</span></div><span class="switch" id="set-autostart"></span></div>
+        </div>
+        <h3>更新</h3>
+        <div class="plist">
+          <div class="setrow"><div class="sl"><b>自动检查更新</b><span>每天各查一次 GitHub：引擎源 ashhart/TensorFold · App 源本仓库 Releases</span></div><span class="switch on" id="set-updcheck"></span></div>
+          <div class="setrow"><div class="sl"><b>当前版本</b><span id="ver-sub">App — · 引擎 —</span></div><button class="mbtn" id="btn-updcheck">检查更新 ▸</button></div>
+          <div class="setrow" id="upd-row" style="display:none"><div class="sl"><b>发现新版本</b><span>顶栏版本号亮绿点 · 一键升级</span></div><button class="mbtn pri" id="btn-updapply">升级</button></div>
+        </div>
+        <h3>应用</h3>
+        <div class="plist">
+          <div class="setrow"><div class="sl"><b>菜单栏常驻</b><span>显示 token 速度，点开可启停引擎</span></div><span class="switch on" id="set-menubar"></span></div>
+          <div class="setrow"><div class="sl"><b>关闭主窗口时最小化到菜单栏</b><span>而不是退出应用</span></div><span class="switch on" id="set-close2mb"></span></div>
+          <div class="setrow"><div class="sl"><b>主题</b><span>浅色 / 深色</span></div><button class="mbtn" id="btn-theme2">切换主题</button></div>
+        </div>
+        <h3>本地</h3>
+        <div class="plist">
+          <div class="setrow"><div class="sl"><b>HF 缓存目录</b><span id="hf-sub">~/.cache/huggingface/hub</span></div><button class="mbtn" id="btn-openhf">打开 ▸</button></div>
+          <div class="setrow"><div class="sl"><b>API 端点</b><span>复制给其他应用接 OpenAI 兼容接口</span></div><button class="mbtn" id="btn-copyapi">http://127.0.0.1:—/v1 ⧉</button></div>
+          <div class="setrow"><div class="sl"><b>代理</b><span>引擎子进程自动清除 PROXY 变量并设 NO_PROXY=127.0.0.1</span></div><span class="field">已内置</span></div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="overlay" id="ms-overlay" onclick="if(event.target===this)closeSettings()">
+    <div class="modal">
+      <div class="mh"><b id="ms-title">模型设置</b><button class="x" onclick="closeSettings()">✕</button></div>
+      <div class="mb2">
+        <div class="seg2">
+          <button class="on" onclick="msTab(this,'basic')">基础</button>
+          <button onclick="msTab(this,'adv')">高级</button>
+        </div>
+        <div id="ms-basic">
+          <div class="frow"><label>上下文长度<div class="hint2">--context</div></label><input id="ms-context" type="number" value="32768"></div>
+          <div class="frow"><label>最大输出<div class="hint2">--max-tokens</div></label><input id="ms-maxtok" type="number" value="4096"></div>
+          <div class="frow"><label>温度<div class="hint2">--temperature</div></label><input id="ms-temp" type="number" step="0.05" placeholder="引擎默认"></div>
+          <div class="frow"><label>Top-P / Top-K<div class="hint2">--top-p / --top-k</div></label><input id="ms-topp" type="number" step="0.01" placeholder="引擎默认"></div>
+          <div class="frow"><label>思考模式<div class="hint2">--thinking / --no-thinking</div></label><span class="switch" id="ms-thinking"></span></div>
+          <div class="frow"><label>推理强度<div class="hint2">--reasoning-effort</div></label><select id="ms-effort"><option value="">默认</option><option>low</option><option>medium</option><option>high</option><option>xhigh</option></select></div>
+        </div>
+        <div id="ms-adv" style="display:none">
+          <div class="frow"><label>并发上限<div class="hint2">--parallel</div></label><input id="ms-parallel" type="number" placeholder="用全局设置"></div>
+          <div class="frow"><label>服务端口<div class="hint2">--port · 留空自动分配</div></label><input id="ms-port" type="number" placeholder="自动"></div>
+          <div class="frow"><label>MTP 草稿数<div class="hint2">--mtp-drafts（0=关推测解码）</div></label><input id="ms-mtpd" type="number" placeholder="引擎默认"></div>
+          <div class="frow"><label>MTP 置信阈值<div class="hint2">--mtp-confidence</div></label><input id="ms-mtpc" type="number" step="0.05" placeholder="引擎默认"></div>
+          <div class="frow"><label>KV 精度<div class="hint2">--kv-dtype · int8/int4 省内存</div></label><select id="ms-kvdt"><option value="">默认(bf16)</option><option>int8</option><option>int4</option></select></div>
+          <div class="frow"><label>Prompt 缓存<div class="hint2">--prompt-cache-gib</div></label><input id="ms-pcache" type="number" placeholder="用全局设置"></div>
+          <div class="frow"><label>视觉输入<div class="hint2">--vision · 需模型支持</div></label><span class="switch" id="ms-vision"></span></div>
+          <div class="frow"><label>后端<div class="hint2">--backend</div></label><select id="ms-backend"><option value="">auto</option><option>mlx</option></select></div>
+        </div>
+      </div>
+      <div class="mf">
+        <button class="mbtn" id="ms-recommend">推荐值</button>
+        <button class="mbtn" id="ms-reset">恢复默认</button>
+        <button class="mbtn" onclick="closeSettings()">取消</button>
+        <button class="mbtn pri" id="ms-save">保存并重启引擎</button>
+      </div>
+    </div>
+  </div>
+</div>
+<script src="vendor/marked.umd.js"></script>
+<script src="vendor/marked-highlight.umd.js"></script>
+<script src="vendor/highlight.min.js"></script>
+<script src="vendor/purify.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
