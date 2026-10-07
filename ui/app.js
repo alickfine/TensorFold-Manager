@@ -460,6 +460,20 @@ async function openSettings(model) {
 function closeSettings() { $('ms-overlay').classList.remove('open'); ST.msModel = null; }
 window.openSettings = openSettings; window.closeSettings = closeSettings;
 
+/* 推荐值：按模型规模给出保守起点（用户可再改），不自动保存 */
+function applyRecommended() {
+  if (!ST.msModel) return;
+  const cached = cacheOf(ST.msModel);
+  const gb = cached && cached.size_gb ? cached.size_gb : (ST.family.find(f => f.id === ST.msModel) || {}).size_gb;
+  // 规模越大上下文越保守：<10GB→64k，<20GB→32k，<40GB→16k，其余 8k
+  const ctx = !gb ? 32768 : gb < 10 ? 65536 : gb < 20 ? 32768 : gb < 40 ? 16384 : 8192;
+  $('ms-context').value = ctx;
+  if ($('ms-maxtok').value === '' || Number($('ms-maxtok').value) > 8192) $('ms-maxtok').value = 4096;
+  if (!$('ms-parallel').value) $('ms-parallel').value = '';
+  toast(`已填推荐值：上下文 ${ctx / 1024 | 0}k（按模型约 ${gb || '?'} GB 估算），确认后点「保存并重启引擎」`);
+}
+window.applyRecommended = applyRecommended;
+
 function msTab(btn, which) {
   btn.parentElement.querySelectorAll('button').forEach(b => b.classList.toggle('on', b === btn));
   $('ms-basic').style.display = which === 'basic' ? '' : 'none';
@@ -536,6 +550,7 @@ async function boot() {
   });
   $('ms-save').addEventListener('click', saveModelSettings);
   $('ms-reset').addEventListener('click', () => { if (ST.msModel) openSettings(ST.msModel); });
+  $('ms-recommend').addEventListener('click', applyRecommended);
   [['set-ctx', 'default_context'], ['set-parallel', 'parallel'], ['set-pcache', 'prompt_cache_gib']]
     .forEach(([id, key]) => {
       $(id).addEventListener('change', async () => {
