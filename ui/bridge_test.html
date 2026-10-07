@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head><meta charset="utf-8"><title>bridge test</title></head>
+<body style="font:14px -apple-system;background:#1d1d20;color:#efefef;padding:2em">
+<pre id="out">waiting…</pre>
+<script>
+async function main() {
+  const out = [];
+  const log = (t) => { out.push(t); document.getElementById('out').textContent = out.join('\n'); console.log(t); };
+  try {
+    const s = await window.bridge.call('settings', {});
+    log('SETTINGS ' + JSON.stringify(s));
+    const ov = await window.bridge.call('overview', {});
+    log('OVERVIEW instances=' + JSON.stringify(ov.instances) + ' proxy_port=' + ov.proxy_port);
+    const fam = await window.bridge.call('families', {});
+    log('FAMILIES n=' + fam.length);
+    log('BRIDGE_TEST_OK');
+  } catch (e) {
+    log('BRIDGE_TEST_FAIL ' + e);
+  }
+}
+main();
+</script>
+</body>
+</html>
