@@ -152,29 +152,125 @@ def _repo_dir_name(repo_id: str) -> str:
     return "models--" + repo_id.replace("/", "--")
 
 
-def cached_models() -> list[dict]:
-    """扫描 HF 缓存，返回已下载的模型（含大小）。"""
+# ---------- 模型扫描根目录（2026-10-08：除 HF 缓存外增加 oMLX/MTPLX/LM Studio 与自定义目录） ----------
+# 背景：oMLX 的模型在 ~/.omlx/models/<名称>/（不是 HF 缓存），MTPLX 在 ~/.mtplx/models/，
+# LM Studio 的 MLX 模型在 ~/.lmstudio/models/<owner>/<名称>/。以前只扫 HF 缓存，
+# 所以这些目录里的模型在本 App 里完全看不见（老板 2026-10-08 反馈）。
+BUILTIN_MODEL_ROOTS = [
+    {"label": "oMLX", "path": "~/.omlx/models"},
+    {"label": "MTPLX", "path": "~/.mtplx/models"},
+    {"label": "LM Studio", "path": "~/.lmstudio/models"},
+]
+
+MIN_MODEL_BYTES = 50 * 1024 * 1024   # <50MB 的多半只是 tokenizer/config，不算模型
+
+
+def model_roots(extra_dirs: list | None = None) -> list[dict]:
+    """扫描根：HF 缓存 + 内置第三方目录 + 用户自定义目录（按 realpath 去重保序）。"""
+    roots = [{"label": "Hugging Face 缓存", "path": hf_cache_dir(), "kind": "hf",
+              "custom": False}]
+    for r in BUILTIN_MODEL_ROOTS:
+        roots.append({"label": r["label"], "path": os.path.expanduser(r["path"]),
+                      "kind": "auto", "custom": False})
+    seen = {os.path.realpath(r["path"]) for r in roots}
+    for p in (extra_dirs or []):
+        p = os.path.expanduser(str(p or "").strip())
+        if not p:
+            continue
+        key = os.path.realpath(p)
+        if key in seen:
+            continue
+        seen.add(key)
+        roots.append({"label": "自定义", "path": p, "kind": "auto", "custom": True})
+    return roots
+
+
+def _dir_bytes(path: str) -> int:
+    size = 0
+    for root, _dirs, files in os.walk(path):
+        for f in files:
+            try:
+                size += os.path.getsize(os.path.realpath(os.path.join(root, f)))
+            except OSError:
+                pass
+    return size
+
+
+def _hf_entries(root: str) -> list[dict]:
+    """HF 缓存形态：<root>/models--<owner>--<name>/snapshots/<rev>/..."""
     out = []
-    base = hf_cache_dir()
-    if not os.path.isdir(base):
-        return out
-    for path in sorted(glob.glob(os.path.join(base, "models--*"))):
+    for path in sorted(glob.glob(os.path.join(root, "models--*"))):
         if not os.path.isdir(path):
             continue
-        name = os.path.basename(path)[len("models--"):].replace("--", "/")
-        snaps = glob.glob(os.path.join(path, "snapshots", "*"))
+        repo = os.path.basename(path)[len("models--"):].replace("--", "/")
         size = 0
-        for snap in snaps:
-            for root, _dirs, files in os.walk(snap):
-                for f in files:
-                    fp = os.path.join(root, f)
-                    try:
-                        size += os.path.getsize(os.path.realpath(fp))
-                    except OSError:
-                        pass
-        if size > 50 * 1024 * 1024:  # <50MB 的多半是 tokenizer/config，不算模型
-            out.append({"id": name, "size_gb": round(size / 1024**3, 2)})
+        for snap in glob.glob(os.path.join(path, "snapshots", "*")):
+            size += _dir_bytes(snap)
+        if size > MIN_MODEL_BYTES:
+            out.append({"id": repo, "ref": repo, "path": path, "source": "hf",
+                        "size_gb": round(size / 1024 ** 3, 2), "deletable": True})
     return out
+
+
+def _local_entries(root: str, label: str) -> list[dict]:
+    """本地目录形态：<root>/<名称>/ 或 <root>/<owner>/<名称>/（含 config.json 才算模型）。
+
+    本地模型交给引擎时传绝对路径：tensorfold（原生与解释器两形态）都接受目录路径，
+    省掉"必须先拷进 HF 缓存"这一步，也避免动用户原有的模型目录。
+    """
+    out = []
+    if not os.path.isdir(root):
+        return out
+    for child in sorted(glob.glob(os.path.join(root, "*"))):
+        base = os.path.basename(child)
+        if not os.path.isdir(child) or base.startswith("."):
+            continue
+        if os.path.exists(os.path.join(child, "config.json")):
+            cands = [(base, child)]
+        else:   # 再下一层 owner/name 形态
+            cands = [(f"{base}/{os.path.basename(g)}", g)
+                     for g in sorted(glob.glob(os.path.join(child, "*")))
+                     if os.path.isdir(g) and os.path.exists(os.path.join(g, "config.json"))]
+        for name, p in cands:
+            size = _dir_bytes(p)
+            if size <= MIN_MODEL_BYTES:
+                continue
+            out.append({"id": name, "ref": p, "path": p, "source": label,
+                        "size_gb": round(size / 1024 ** 3, 2), "deletable": False})
+    return out
+
+
+def _entries_of(root: dict) -> list[dict]:
+    if root["kind"] == "hf":
+        return _hf_entries(root["path"])
+    # 第三方目录里也可能有 HF 缓存形态（如 omlx 拷过 HF 缓存），两种都扫
+    return _hf_entries(root["path"]) + _local_entries(root["path"], root["label"])
+
+
+def cached_models(extra_dirs: list | None = None) -> list[dict]:
+    """扫描所有根目录，返回可见模型（含来源、大小、可否删除）。
+
+    id  = 显示名（HF 用 owner/name，本地目录用目录名）
+    ref = 传给引擎的引用（HF 用 repo id；本地目录用绝对路径）
+    """
+    out, seen = [], set()
+    for r in model_roots(extra_dirs):
+        for e in _entries_of(r):
+            key = os.path.realpath(e["path"])
+            if key in seen:      # 同一份权重被多个根指向（软链/重复拷贝）只列一次
+                continue
+            seen.add(key)
+            e["root"] = r["path"]
+            e["root_label"] = r["label"]
+            out.append(e)
+    return out
+
+
+def scan_summary(extra_dirs: list | None = None) -> list[dict]:
+    """给 UI 用：每个扫描根是否存在、命中几个模型。"""
+    return [{"label": r["label"], "path": r["path"], "custom": r["custom"],
+             "exists": os.path.isdir(r["path"]), "count": len(_entries_of(r))}
+            for r in model_roots(extra_dirs)]
 
 
 def build_serve_args(model: str, params: dict, port: int) -> list[str]:
@@ -592,10 +688,15 @@ class EnginePool:
         self.settings = settings or ModelSettings()
         self.base_port = base_port
         self.spawn_hook = spawn_hook
+        self.model_dirs: list[str] = []   # 自定义扫描目录（Api 从 app_settings 注入）
         self._lock = threading.RLock()
         self._instances: dict[str, EngineInstance] = {}
         self._pool_log: list[str] = []
         self._psutil = None
+
+    def cached(self) -> list[dict]:
+        """本机可见模型（HF 缓存 + oMLX/MTPLX/LM Studio + 自定义目录）。"""
+        return cached_models(self.model_dirs)
 
     # ---------- 日志（池级汇总，仿 v1 EngineManager 接口） ----------
     def log(self, line: str):
@@ -664,8 +765,8 @@ class EnginePool:
         for f in FAMILIES:
             if f["id"] == model and f.get("size_gb"):
                 return float(f["size_gb"]) * 1.3  # 权重 + KV/运行开销
-        for m in cached_models():
-            if m["id"] == model:
+        for m in self.cached():
+            if model in (m.get("id"), m.get("ref")):
                 return m["size_gb"] * 1.3
         return 20.0  # 未知模型保守估 20G
 
@@ -760,13 +861,18 @@ class EnginePool:
             inst = self._instances.get(repo_id)
             if inst is not None and inst.alive():
                 return {"ok": False, "error": "该模型正在提供服务，先停止引擎再删除"}
+        # 只允许删 HF 缓存里我们自己下过的模型（owner/name 形态且确实在缓存里）。
+        # oMLX/MTPLX/自定义目录里的权重是用户自己的资料，本 App 一律不碰
+        # （2026-10-08 加扫描目录时同步加的门：路径形态一律拒绝）。
+        if os.path.isabs(repo_id) or repo_id.count("/") != 1:
+            return {"ok": False, "error": "本地目录里的模型不在本 App 删除范围内"}
         base = hf_cache_dir()
         target = os.path.join(base, _repo_dir_name(repo_id))
         real = os.path.realpath(base)
         if not os.path.isdir(base) or not real.startswith(os.path.expanduser("~")):
             return {"ok": False, "error": "缓存目录异常，拒绝操作"}
         if not os.path.isdir(target):
-            return {"ok": False, "error": f"缓存中不存在 {repo_id}"}
+            return {"ok": False, "error": f"缓存中不存在 {repo_id}（外部目录的模型需自行管理）"}
         shutil.rmtree(target)
         self.log(f"已删除缓存: {repo_id}")
         self.settings.delete_for(repo_id)

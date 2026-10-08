@@ -21,6 +21,7 @@ DEFAULT_APP_SETTINGS = {
     "menubar": True,
     "close_to_menubar": True,
     "theme": "system",  # system|light|dark
+    "model_dirs": [],   # 自定义模型扫描目录（绝对路径；HF 缓存与 oMLX/MTPLX 已内置）
 }
 
 
@@ -108,8 +109,63 @@ class Api:
         return self.pool.log_for(model) if model else self.pool.get_log()
 
     # ---------- 模型 ----------
+    def _sync_model_dirs(self):
+        """把设置里的自定义扫描目录同步给池（扫描唯一入口）。"""
+        dirs = [str(d) for d in (self.app_settings_get().get("model_dirs") or [])
+                if str(d or "").strip()]
+        if dirs != getattr(self.pool, "model_dirs", None):
+            self.pool.model_dirs = dirs
+
     def models_installed(self) -> list[dict]:
-        return engine_mod.cached_models()
+        self._sync_model_dirs()
+        return self.pool.cached()
+
+    # ---------- 模型扫描目录 ----------
+    def scan_dirs(self) -> dict:
+        self._sync_model_dirs()
+        return {"roots": engine_mod.scan_summary(self.pool.model_dirs),
+                "extra": list(self.pool.model_dirs),
+                "found": len(self.pool.cached())}
+
+    def scan_dir_add(self, path: str) -> dict:
+        p = os.path.expanduser((path or "").strip())
+        if not p:
+            return {"ok": False, "error": "请输入目录路径"}
+        if not os.path.isdir(p):
+            return {"ok": False, "error": f"目录不存在: {p}"}
+        if os.path.realpath(p) == os.path.realpath(os.path.expanduser("~")):
+            return {"ok": False, "error": "整个用户目录太大，请选具体的模型目录"}
+        cur = list(self.app_settings_get().get("model_dirs") or [])
+        if p in cur:
+            return {"ok": True, "added": False, **self.scan_dirs()}
+        cur.append(p)
+        self.app_settings_save(model_dirs=cur)
+        self._sync_model_dirs()
+        return {"ok": True, "added": True, **self.scan_dirs()}
+
+    def scan_dir_remove(self, path: str) -> dict:
+        cur = [d for d in (self.app_settings_get().get("model_dirs") or []) if d != path]
+        self.app_settings_save(model_dirs=cur)
+        self._sync_model_dirs()
+        return {"ok": True, **self.scan_dirs()}
+
+    def pick_dir(self) -> dict:
+        """弹系统目录选择框。WKWebView 桥回调在主线程，可直接 runModal。"""
+        try:
+            from AppKit import NSOpenPanel
+            panel = NSOpenPanel.openPanel()
+            panel.setCanChooseFiles_(False)
+            panel.setCanChooseDirectories_(True)
+            panel.setAllowsMultipleSelection_(False)
+            panel.setPrompt_("选择模型目录")
+            if panel.runModal() != 1:
+                return {"ok": False, "cancelled": True}
+            urls = panel.URLs()
+            if not urls:
+                return {"ok": False, "cancelled": True}
+            return {"ok": True, "path": urls[0].path()}
+        except Exception as exc:
+            return {"ok": False, "error": f"无法打开选择框: {exc}"}
 
     def families(self) -> list[dict]:
         return engine_mod.FAMILIES

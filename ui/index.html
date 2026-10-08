@@ -113,6 +113,14 @@
           <div class="setrow"><div class="sl"><b>Prompt 缓存容量</b><span>--prompt-cache-gib · 跨请求前缀缓存，256G 内存可给大</span></div><input class="field num" id="set-pcache" type="number" value="16"></div>
           <div class="setrow"><div class="sl"><b>启动时自动拉起引擎</b><span>开机后免手动，菜单栏图标变绿即可用</span></div><span class="switch" id="set-autostart"></span></div>
         </div>
+        <h3>模型目录</h3>
+        <div class="plist" id="scan-roots"></div>
+        <div class="plist" style="margin-top:9px">
+          <div class="setrow"><div class="sl"><b>添加自定义目录</b><span>再扫一份模型权重（子目录里有 config.json 即识别）；HF 缓存与 oMLX / MTPLX / LM Studio 已内置</span></div>
+            <input class="field path" id="scan-path" type="text" placeholder="/path/to/models">
+            <button class="mbtn" id="btn-pickdir">选择…</button>
+            <button class="mbtn pri" id="btn-adddir">添加</button></div>
+        </div>
         <h3>更新</h3>
         <div class="plist">
           <div class="setrow"><div class="sl"><b>自动检查更新</b><span>每天各查一次 GitHub：引擎源 ashhart/TensorFold · App 源本仓库 Releases</span></div><span class="switch on" id="set-updcheck"></span></div>

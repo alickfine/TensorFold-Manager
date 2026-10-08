@@ -112,7 +112,7 @@ async function renderModelsPage() {
 }
 
 const instOf = (id) => ST.inst.find(i => i.model === id);
-const cacheOf = (id) => ST.cache.find(m => m.id === id);
+const cacheOf = (id) => ST.cache.find(m => m.ref === id || m.id === id);
 
 function renderCards() {
   $('mcards').innerHTML = ST.family.map(f => {
@@ -176,10 +176,17 @@ window.delModel = async function (id) {
 
 function renderCacheList() {
   const box = $('cache-list');
-  if (!ST.cache.length) { box.innerHTML = '<div class="empty" style="padding:13px 16px;color:var(--ink4)">缓存为空，点上方「↓ 下载」拉取官方模型</div>'; return; }
+  if (!ST.cache.length) { box.innerHTML = '<div class="empty" style="padding:13px 16px;color:var(--ink4)">没有扫到模型，去设置页「模型目录」加一个目录，或点上方「↓ 下载」拉官方模型</div>'; return; }
   box.innerHTML = ST.cache.map(m => {
-    const inst = instOf(m.id), running = inst && inst.alive;
-    return `<div class="pitem"><span class="dot ${running ? 'on' : 'off'}"></span><span class="mono">${esc(m.id)}</span><span class="right">${m.size_gb} GB${running ? ' · 运行中' : ''}<button class="sbtn del" ${running ? 'disabled title="运行中不可删"' : `onclick="delModel('${esc(m.id)}')"`}>删除</button></span></div>`;
+    const inst = instOf(m.ref), running = inst && inst.alive;
+    // 只允许删 HF 缓存里下载的（外部目录的权重是用户自己的资料，App 不碰）
+    const del = m.deletable
+      ? `<button class="sbtn del" ${running ? 'disabled title="运行中不可删"' : `onclick="delModel('${esc(m.ref)}')"`}>删除</button>`
+      : '<span style="color:var(--ink4)" title="外部目录（oMLX/MTPLX/自定义），本 App 不删除">外部</span>';
+    return `<div class="pitem"><span class="dot ${running ? 'on' : 'off'}"></span>`
+      + `<span class="tag">${esc(m.root_label || m.source || '')}</span>`
+      + `<span class="mono">${esc(m.id)}</span>`
+      + `<span class="right">${m.size_gb} GB${running ? ' · 运行中' : ''}${del}</span></div>`;
   }).join('');
 }
 
@@ -242,9 +249,10 @@ function renderChatTop() {
   const sel = $('chat-model');
   const ready = ST.inst.filter(i => i.state === 'ready' || i.state === 'starting');
   const cur = sel.value;
-  // 可选池 = ready/starting 实例 + 本机缓存模型（选中未加载的会自动拉起，见 send）
-  const cachedIds = ST.cache.map(m => m.id);
-  const poolIds = [...new Set([...ready.map(i => i.model), ...cachedIds])];
+  // 可选池 = ready/starting 实例 + 本机已有模型（含 oMLX/MTPLX/自定义目录；未加载的发送时自动拉起）
+  // 统一用 ref 作为身份：HF 模型 = owner/name，外部目录模型 = 绝对路径
+  const cachedRefs = ST.cache.map(m => m.ref);
+  const poolIds = [...new Set([...ready.map(i => i.model), ...cachedRefs])];
   sel.innerHTML = poolIds.length
     ? poolIds.map(id => {
         const st = ready.find(i => i.model === id);
@@ -450,9 +458,9 @@ window.stopAll = async function () {
     const r = await call('engine_stop', {}).catch(e => ({ error: String(e) }));
     toast(r && r.error ? r.error : '已停止全部引擎');
   } else {
-    const def = (ST.appset && ST.appset.default_model) || (ST.cache[0] && ST.cache[0].id);
-    if (!def) { toast('没有已缓存模型，去模型页下载一个'); switchPage('models'); return; }
-    toast(`正在加载 ${def.split('/').pop()} …`);
+    const def = (ST.appset && ST.appset.default_model) || (ST.cache[0] && ST.cache[0].ref);
+    if (!def) { toast('没有可用模型，去模型页下载一个，或在设置页加模型目录'); switchPage('models'); return; }
+    toast(`正在加载 ${String(def).split('/').pop()} …`);
     const r = await call('engine_start', { model: def }).catch(e => ({ error: String(e) }));
     if (r && r.error) toast('加载失败: ' + r.error);
   }
@@ -474,6 +482,63 @@ async function loadSettings() {
   $('ver-sub').textContent = `App v${ST.settings.app_version || '—'} · 引擎 ${ST.settings.version || '未安装'}${last}`;
   $('btn-copyapi').textContent = `http://127.0.0.1:${ST.settings.proxy_port || 8080}/v1 ⧉`;
   renderUpdate();
+  await refreshScanDirs();
+}
+
+/* ---------- 模型目录（扫描根） ---------- */
+async function refreshScanDirs() {
+  ST.scan = await call('scan_dirs', {}).catch(() => ST.scan || {});
+  renderScanRoots();
+}
+
+function renderScanRoots() {
+  const box = $('scan-roots');
+  if (!box) return;
+  const s = ST.scan || {};
+  const roots = s.roots || [];
+  box.innerHTML = roots.map(r => {
+    const cnt = r.exists
+      ? `<span class="cnt">${r.count} 个模型</span>`
+      : '<span class="miss">目录不存在</span>';
+    const rm = r.custom
+      ? `<button class="sbtn del" onclick="removeScanDir('${esc(r.path)}')">移除</button>`
+      : '<span style="color:var(--ink4);flex:none">内置</span>';
+    return `<div class="pitem"><span class="tag${r.custom ? ' custom' : ''}">${esc(r.label)}</span>`
+      + `<span class="pth" title="${esc(r.path)}">${esc(r.path)}</span>${cnt}${rm}</div>`;
+  }).join('') + `<div class="pitem"><span class="tag">合计</span><span class="pth">共扫到 ${s.found || 0} 个模型（模型页「本机缓存」可见）</span></div>`;
+}
+
+window.addScanDir = async function (path) {
+  const p = (path != null ? path : ($('scan-path') || {}).value || '').trim();
+  if (!p) { toast('先填目录路径，或点「选择…」'); return; }
+  const r = await call('scan_dir_add', { path: p }).catch(e => ({ error: String(e) }));
+  if (!r || r.ok === false) { toast('添加失败: ' + (r && r.error)); return; }
+  $('scan-path').value = '';
+  toast(r.added === false ? '该目录已在列表中' : `已添加，共扫到 ${r.found || 0} 个模型`);
+  ST.scan = r;
+  renderScanRoots();
+  await refreshModelsOnly();
+};
+
+window.removeScanDir = async function (path) {
+  const r = await call('scan_dir_remove', { path }).catch(e => ({ error: String(e) }));
+  if (!r || r.ok === false) { toast('移除失败: ' + (r && r.error)); return; }
+  toast('已移除');
+  ST.scan = r;
+  renderScanRoots();
+  await refreshModelsOnly();
+};
+
+async function pickScanDir() {
+  const r = await call('pick_dir', {}).catch(e => ({ error: String(e) }));
+  if (!r || r.ok === false) { if (r && r.error) toast(r.error); return; }
+  addScanDir(r.path);
+}
+
+async function refreshModelsOnly() {
+  try { ST.cache = await call('models_installed', {}); } catch (e) {}
+  renderCacheList();
+  renderChatTop();
 }
 
 function renderUpdate() {
@@ -619,6 +684,9 @@ async function boot() {
   $('btn-updcheck').addEventListener('click', doUpdateCheck);
   $('btn-updapply').addEventListener('click', doUpdateApply);
   $('btn-openhf').addEventListener('click', () => call('open_hf_cache', {}).catch(() => {}));
+  $('btn-adddir').addEventListener('click', () => addScanDir());
+  $('btn-pickdir').addEventListener('click', pickScanDir);
+  $('scan-path').addEventListener('keydown', (e) => { if (e.key === 'Enter') addScanDir(); });
   $('btn-copyapi').addEventListener('click', async () => {
     await call('copy_text', { text: `http://127.0.0.1:${ST.settings.proxy_port || 8080}/v1` }).catch(() => {});
     toast('API 端点已复制到剪贴板');
@@ -650,6 +718,7 @@ async function boot() {
   renderCards();
   renderCacheList();
   loadChats();
+  refreshScanDirs();
   await refresh();
 
   setInterval(refresh, 2500);

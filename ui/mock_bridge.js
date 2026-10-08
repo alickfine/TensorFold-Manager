@@ -9,9 +9,27 @@
     { name: 'Qwen3.6-35B-A3B', id: 'TensorFold/Qwen3.6-35B-A3B-MLX-4bit-MTP', size_gb: 20, note: '内置 MTP 头' },
     { name: 'DeepSeek-V4-Flash DSpark', id: 'TensorFold/DeepSeek-V4-Flash-DSpark-MLX', size_gb: 40, note: '256GB Mac 可跑' },
   ];
+  const SCAN = {
+    roots: [
+      { label: 'Hugging Face 缓存', path: '~/.cache/huggingface/hub', custom: false, exists: true, count: 1 },
+      { label: 'oMLX', path: '~/.omlx/models', custom: false, exists: true, count: 4 },
+      { label: 'MTPLX', path: '~/.mtplx/models', custom: false, exists: true, count: 1 },
+      { label: 'LM Studio', path: '~/.lmstudio/models', custom: false, exists: false, count: 0 },
+      { label: '自定义', path: '/Users/me/models', custom: true, exists: true, count: 2 },
+    ],
+    extra: ['/Users/me/models'],
+    found: 8,
+  };
   const METHODS = {
     families: () => FAMILY,
-    models_installed: () => [{ id: 'TensorFold/Qwen3.8-27B-MLX-4bit', size_gb: 14.98 }],
+    models_installed: () => [
+      { id: 'TensorFold/Qwen3.8-27B-MLX-4bit', ref: 'TensorFold/Qwen3.8-27B-MLX-4bit', size_gb: 14.98, source: 'hf', root_label: 'Hugging Face 缓存', deletable: true },
+      { id: 'GLM-5.3-Flash-MLX-4bit-MTP', ref: '/Users/fanwenbin/.omlx/models/GLM-5.3-Flash-MLX-4bit-MTP', size_gb: 19.4, source: 'oMLX', root_label: 'oMLX', deletable: false },
+    ],
+    scan_dirs: () => SCAN,
+    scan_dir_add: () => ({ ok: true, added: true, ...SCAN }),
+    scan_dir_remove: () => ({ ok: true, ...SCAN }),
+    pick_dir: () => ({ ok: true, path: '/Users/me/models' }),
     pull_status: () => ({}),
     overview: () => ({
       instances: [], proxy_port: 59999, mem_total: 256, mem_free: 190,

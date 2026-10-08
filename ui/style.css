@@ -205,3 +205,12 @@ input.field.num{min-width:120px}
 .hljs-comment,.hljs-quote{color:var(--ink4)}
 .hljs-title,.hljs-function .hljs-title,.hljs-section{color:var(--danger)}
 .hljs-built_in,.hljs-name{color:var(--dl-ink)}
+
+/* ---- 模型目录（扫描根） ---- */
+.field.path{text-align:left;min-width:230px;flex:1 1 auto}
+#scan-roots .pitem{gap:9px}
+.tag{font-size:10.5px;padding:2px 7px;border-radius:99px;background:var(--pill);color:var(--ink2);flex:none}
+.tag.custom{color:var(--info);border:1px solid var(--line2)}
+#scan-roots .pth{font-family:ui-monospace,monospace;font-size:11px;color:var(--ink4);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1 1 auto;min-width:0}
+#scan-roots .cnt{color:var(--ink3);flex:none}
+#scan-roots .miss{color:var(--warn);flex:none}

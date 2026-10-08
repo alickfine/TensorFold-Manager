@@ -117,8 +117,35 @@ ok('弹窗可关闭', v === true, String(v));
 
 /* ---------- 设置页字段 ---------- */
 v = await ev(`(()=>{switchPage('settings');return document.getElementById('page-settings').textContent})()`);
-for (const kw of ['并发上限', 'Prompt 缓存容量', '自动检查更新', '当前版本', '菜单栏常驻', 'API 端点']) {
+for (const kw of ['并发上限', 'Prompt 缓存容量', '自动检查更新', '当前版本', '菜单栏常驻', 'API 端点',
+                  '模型目录', '添加自定义目录']) {
   ok(`设置页含「${kw}」`, String(v).includes(kw));
+}
+
+/* ---------- 模型目录（扫描根）：mock 注入 oMLX/自定义，断言渲染与去重 ---------- */
+v = await ev(`(()=>{
+  const rows=[...document.querySelectorAll('#scan-roots .pitem')].map(el=>el.textContent);
+  return JSON.stringify({n:rows.length, text:rows.join('|')});
+})()`);
+{
+  const d = JSON.parse(v);
+  ok('模型目录列出 4 个内置根', d.n === 6, `${d.n} 行（5 根 + 合计行）`);
+  ok('模型目录含 oMLX 根', d.text.includes('oMLX'));
+  ok('模型目录含 MTPLX 根', d.text.includes('MTPLX'));
+  ok('自定义目录有「移除」按钮', await ev(`(()=>!!document.querySelector('#scan-roots .sbtn.del'))()`) === true);
+  ok('内置目录标「内置」不可删', String(d.text).includes('内置'));
+}
+
+/* ---------- 本机模型列表：外部目录模型带来源标签且不可删 ---------- */
+v = await ev(`(()=>{
+  const rows=[...document.querySelectorAll('#cache-list .pitem')].map(el=>el.textContent);
+  return JSON.stringify(rows);
+})()`);
+{
+  const rows = JSON.parse(v);
+  ok('本机模型含 oMLX 来源条目', rows.some(r => r.includes('oMLX') && r.includes('GLM-5.3-Flash-MLX-4bit-MTP')));
+  ok('外部目录模型不给删除按钮（显示"外部"）', rows.some(r => r.includes('外部')));
+  ok('HF 模型仍可删', await ev(`(()=>[...document.querySelectorAll('#cache-list .pitem')].some(el=>el.textContent.includes('Qwen3.8-27B-MLX-4bit')&&!!el.querySelector('.sbtn.del')))()`) === true);
 }
 
 /* ---------- 对话页组件 ---------- */
