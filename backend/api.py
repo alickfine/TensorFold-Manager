@@ -62,6 +62,7 @@ class Api:
             "per": mon["per"],
             "series": mon["series"],
             "mem_total": total, "mem_free": free,
+            "cpu_cores": (self.psutil.cpu_count() if self.psutil else None),
             "disk_free_gb": round(disk.free / 1024**3, 1),
             "proxy_port": self.proxy.server_address[1] if self.proxy else 0,
         }

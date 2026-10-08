@@ -175,7 +175,7 @@ input,select,textarea{-webkit-user-select:text;user-select:text}
 .chartbox{border:1px solid var(--line);border-radius:13px;padding:15px 16px;background:var(--bg)}
 .chartbox .lb{font-size:11.5px;color:var(--ink3);font-weight:600;margin-bottom:8px;display:flex;justify-content:space-between}
 .chartbox svg{width:100%;height:120px;display:block}
-.kv{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+.kv{display:grid;grid-template-columns:repeat(5,1fr);gap:12px}
 
 /* ---- 设置页 ---- */
 .setrow{display:flex;align-items:center;gap:14px;padding:13px 16px;border-bottom:1px solid var(--line)}

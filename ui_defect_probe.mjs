@@ -161,8 +161,8 @@ ok('版本提示(vtip)不溢出窗口', !vt.overWindow, `右缘${vt.right} 视�
 
 // ====== 深色主题回归（对比度/重叠常在暗色下暴露）======
 const dark = await ev(`(() => {
+  switchPage('models');   // 深色下对模型卡实测（默认页已是监控页）
   document.documentElement.setAttribute('data-theme', 'dark');
-  // 模型卡+行仍无裁切
   const cards = [...document.querySelectorAll('.mcard .row')].map(row => {
     const cr = row.closest('.mcard').getBoundingClientRect();
     return [...row.querySelectorAll('button')].every(b => b.getBoundingClientRect().width > 8 && (cr.right - b.getBoundingClientRect().right) >= -1);

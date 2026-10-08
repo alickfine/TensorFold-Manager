@@ -73,7 +73,7 @@ function renderTopbar(ov) {
   // 顶栏版本 + 绿点悬停提示（原型 .ver 组件）
   const ver = $('win-ver'), vtip = $('win-vtip');
   const eng = (ST.upd && ST.upd.engine) || {}, app = (ST.upd && ST.upd.app) || {};
-  ver.childNodes[0].nodeValue = 'v' + (ST.settings.app_version || '2.0.1');
+  ver.childNodes[0].nodeValue = 'v' + (ST.settings.app_version || '2.1.0');
   vtip.textContent = eng.available ? `引擎有新版本 v${eng.latest}，设置页一键升级`
     : app.available ? `App 有新版本 v${app.latest}`
     : `引擎 ${ST.settings.version || '—'} · 已是最新`;
@@ -238,23 +238,58 @@ function renderChatBody() {
 
 function renderChatTop() {
   const sel = $('chat-model');
-  const ready = ST.inst.filter(i => i.state === 'ready');
+  const ready = ST.inst.filter(i => i.state === 'ready' || i.state === 'starting');
   const cur = sel.value;
-  sel.innerHTML = ready.length
-    ? ready.map(i => `<option value="${esc(i.model)}">${esc(i.model.split('/').pop())}</option>`).join('')
-    : '<option value="">（无已加载模型，去模型页点「加载」）</option>';
-  if (ready.some(i => i.model === cur)) sel.value = cur;
-  else if (ST.cur && ST.cur.model && ready.some(i => i.model === ST.cur.model)) sel.value = ST.cur.model;
+  // 可选池 = ready/starting 实例 + 本机缓存模型（选中未加载的会自动拉起，见 send）
+  const cachedIds = ST.cache.map(m => m.id);
+  const poolIds = [...new Set([...ready.map(i => i.model), ...cachedIds])];
+  sel.innerHTML = poolIds.length
+    ? poolIds.map(id => {
+        const st = ready.find(i => i.model === id);
+        const tag = st ? (st.state === 'ready' ? '' : '（加载中…）') : '（未加载 · 发送时自动拉起）';
+        return `<option value="${esc(id)}">${esc(id.split('/').pop())}${tag}</option>`;
+      }).join('')
+    : '<option value="">（没有可用模型，去模型页下载）</option>';
+  if (poolIds.includes(cur)) sel.value = cur;
+  else if (ST.cur && ST.cur.model && poolIds.includes(ST.cur.model)) sel.value = ST.cur.model;
   const inst = ready.find(i => i.model === sel.value);
   $('chat-ctx').textContent = inst && inst.params && inst.params.context ? `ctx ${(inst.params.context / 1024) | 0}k` : 'ctx —';
+}
+
+/* 对话前确保模型已加载：未 ready 则 engine_start 并轮询至 ready/starting 结束 */
+async function ensureModelReady(model) {
+  const inst = ST.inst.find(i => i.model === model);
+  if (inst && inst.state === 'ready') return true;
+  toast(`正在加载 ${model.split('/').pop()} …（约 30s）`);
+  const r = await call('engine_start', { model }).catch(e => ({ error: String(e) }));
+  if (r && r.error) { toast('加载失败: ' + r.error); return false; }
+  // 轮询最多 ~150s（大模型冷启动）
+  for (let i = 0; i < 50; i++) {
+    await new Promise(res => setTimeout(res, 3000));
+    try {
+      const ov = await call('overview', {});
+      ST.inst = ov.instances || [];
+    } catch (e) {}
+    const cur = ST.inst.find(x => x.model === model);
+    if (cur && cur.state === 'ready') { refresh(); return true; }
+    if (cur && cur.state === 'error') { toast('模型加载失败，见引擎日志'); return false; }
+  }
+  toast('加载超时，可稍后重发');
+  return false;
 }
 
 async function send() {
   const ta = $('chat-text');
   const text = ta.value.trim();
-  const model = $('chat-model').value;
+  let model = $('chat-model').value;
   if (!text || ST.streaming) return;
-  if (!model) { toast('请先在模型页加载一个模型'); return; }
+  if (!model) { toast('请先在模型页下载一个模型'); return; }
+  // 选中的未加载模型：发送即自动拉起（2026-10-08 需求 4）
+  const inst = ST.inst.find(i => i.model === model);
+  if (!inst || inst.state !== 'ready') {
+    const okStart = await ensureModelReady(model);
+    if (!okStart) { refresh(); return; }
+  }
   ta.value = '';
   if (!ST.cur) ST.cur = await call('chat_create', { chat: { title: text.slice(0, 24), model } });
   if (ST.cur.title === '新对话') ST.cur.title = text.slice(0, 24);
@@ -320,6 +355,7 @@ async function send() {
 function renderMetrics(ov) {
   const L = ov.metrics_latest || {}, per = ov.per || {}, S = ov.series || {};
   $('st-tps').innerHTML = (L.tps != null ? fmtNum(L.tps) : '—') + '<small>tok/s</small>';
+  $('st-prefill').innerHTML = (L.prefill_tps != null ? fmtNum(L.prefill_tps) : '—') + '<small>tok/s</small>';
   $('st-mem').innerHTML = (L.footprint_gb != null ? L.footprint_gb : '—') + (L.footprint_gb != null ? '<small>GB</small>' : '');
   $('st-free').innerHTML = (ov.mem_free != null ? ov.mem_free : '—') + (ov.mem_free != null ? `<small>GB / ${ov.mem_total}GB</small>` : '');
   $('st-kv').innerHTML = (L.kv != null ? L.kv : '—') + '<small>%</small>';
@@ -327,11 +363,46 @@ function renderMetrics(ov) {
   $('st-req-sub').textContent = `${L.running || 0} 活跃 · ${L.waiting || 0} 排队`;
   const ratios = Object.values(per).map(p => p.accepted_ratio).filter(v => v != null);
   $('st-mtp').innerHTML = ratios.length ? (Math.max(...ratios) * 100).toFixed(1) + '<small>%</small>' : '—';
-  $('st-inst').textContent = ST.inst.filter(i => i.state === 'ready').length;
+  const nReady = ST.inst.filter(i => i.state === 'ready').length;
+  $('st-inst').textContent = nReady;
+
+  // ---- 用量行（可分行显示：请求 / token 总数 / 提示 / 输出 / 已缓存）----
+  const promptTok = L.prompt_tokens || 0, genTok = L.gen_tokens_total || 0;
+  $('st-reqs-done').textContent = fmtInt(L.requests_done);
+  $('st-tok-all').textContent = fmtInt(promptTok + genTok);
+  $('st-tok-prompt').textContent = fmtInt(promptTok);
+  $('st-tok-gen').textContent = fmtInt(genTok);
+  // 已缓存 token（估算）：Σ 每实例 kv_ratio × context；引擎未直接暴露 cached 计数
+  let cachedTok = 0, totalCtx = 0;
+  ST.inst.filter(i => i.state === 'ready').forEach(i => {
+    const p = per[i.model] || {}, ctx = (i.params && i.params.context) || 0;
+    if (ctx && p.kv != null) { cachedTok += ctx * (p.kv / 100); totalCtx += ctx; }
+  });
+  $('st-tok-cached').textContent = cachedTok ? fmtInt(Math.round(cachedTok)) : '—';
+  $('st-tok-cached-sub').textContent = cachedTok ? `KV 池驻留 · 上下文 ${fmtInt(totalCtx)}` : '需运行中实例';
+  // 缓存效率 = 已缓存 / 提示总量（>100% 说明跨请求复用，钳到 999%）
+  const eff = (promptTok > 0 && cachedTok) ? Math.min(cachedTok / promptTok * 100, 999) : null;
+  $('st-cache-eff').innerHTML = eff != null ? eff.toFixed(1) + '<small>%</small>' : '—';
+  $('st-cache-eff').parentElement.querySelector('.sub').textContent =
+    eff != null ? (cachedTok >= promptTok ? '跨请求复用生效' : '缓存命中 / 提示总量') : '等待首条请求';
+
+  // ---- 本机性能行 ----
+  $('st-cpu').innerHTML = (L.cpu_percent != null ? Math.round(L.cpu_percent) : '—') + '<small>%</small>';
+  $('st-gpu').innerHTML = (L.gpu_percent != null ? Math.round(L.gpu_percent) : '—') + '<small>%</small>';
+  const usedGb = (ov.mem_total != null && ov.mem_free != null) ? Math.max(0, ov.mem_total - ov.mem_free) : null;
+  $('st-hostmem').innerHTML = usedGb != null ? usedGb + '<small> / ' + ov.mem_total + 'GB</small>' : '—';
+  $('st-cpu-sub').textContent = ov.cpu_cores ? `${ov.cpu_cores} 核 · 整机占用` : '整机占用';
+  // 版本行：App + 引擎（升级后引擎版本即时更新）
+  $('host-versions').textContent = `App v${ST.settings.app_version || '—'} · 引擎 ${ST.settings.version || '未安装'}`;
+  // 冷热缓存：checkpoint 预算（prompt_cache_gib）占用口径，无精确命中数时标注估算
+  const pc = ST.appset && ST.appset.prompt_cache_gib;
+  $('host-cache-tier').textContent = pc ? `Prompt 缓存预算 ${pc} GiB · 热驻留（KV/快照），冷数据落盘自动换页` : '热：KV/快照驻留显存 · 冷：落盘自动换页';
 
   bars('bars-tps', (S.tps || {}).values, v => v);
   bars('bars-mem', (S.footprint_gb || {}).values, v => v);
   bars('bars-free', (S.mem_free || {}).values, v => v, true);
+  bars('bars-cpu', (S.cpu_percent || {}).values, v => v);
+  bars('bars-gpu', (S.gpu_percent || {}).values, v => v);
 
   const vals = ((S.tps || {}).values || []).slice(-60);
   const svg = $('chart-tps');
@@ -347,6 +418,8 @@ function renderMetrics(ov) {
     `<div class="pitem"><span class="dot ${i.state === 'ready' ? 'on' : 'off'}"></span><span class="mono">${esc(i.model)}</span><span class="right">:${i.port} · ${i.state}${i.uptime ? ' · ' + fmtUp(i.uptime) : ''} · ${i.params && i.params.context ? (i.params.context / 1024) + 'k' : '—'}<button class="sbtn del" ${i.state === 'idle' ? 'disabled' : `onclick="stopModel('${esc(i.model)}')"`}>停止</button></span></div>`).join('')
     : '<div class="empty" style="padding:13px 16px;color:var(--ink4)">没有引擎实例，去模型页点「加载」</div>';
 }
+
+const fmtInt = (v) => v == null ? '—' : Number(v).toLocaleString('en-US');
 
 const fmtNum = (v) => v >= 1000 ? (v / 1000).toFixed(1) + 'k' : String(Math.round(v * 10) / 10);
 function fmtUp(s) { s = Math.round(s); const h = (s / 3600) | 0, m = ((s % 3600) / 60) | 0; return h ? `${h}h ${m}m` : `${m}m ${s % 60}s`; }
@@ -567,6 +640,7 @@ async function boot() {
     });
   });
 
+  switchPage('metrics');   // 默认页=监控（2026-10-08 定序）
   ST.family = await call('families', {}).catch(() => []);
   try { ST.cache = await call('models_installed', {}); } catch (e) {}
   try { ST.appset = await call('app_settings_get', {}); } catch (e) {}

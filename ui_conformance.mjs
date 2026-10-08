@@ -65,11 +65,11 @@ let v = await ev(`(()=>{
 })()`);
 const navs = JSON.parse(v);
 ok('导航四项', navs.length === 4, v);
-ok('模型为第一导航', navs[0][0] === 'models' && navs[0][1].includes('模型'), v);
-ok('对话在模型之下', navs[1][0] === 'chat');
-ok('含监控+设置', navs[2][0] === 'metrics' && navs[3][0] === 'settings');
+ok('监控为第一导航', navs[0][0] === 'metrics' && navs[0][1].includes('监控'), v);
+ok('第二项模型', navs[1][0] === 'models' && navs[1][1].includes('模型'));
+ok('第三对话+第四设置', navs[2][0] === 'chat' && navs[3][0] === 'settings');
 v = await ev(`document.querySelector('.page.on')?.id`);
-ok('默认页=模型', v === 'page-models', v);
+ok('默认页=监控', v === 'page-metrics', v);
 
 /* ---------- 模型卡：与原型同构 ---------- */
 v = await ev(`(()=>{
@@ -135,7 +135,7 @@ v = await ev(`(()=>{switchPage('metrics');return JSON.stringify({
   svg: !!document.querySelector('#chart-tps'),
   bars: document.querySelectorAll('#page-metrics .bars').length})})()`);
 const mt = JSON.parse(v);
-ok('监控页8卡+曲线+柱图', mt.stats >= 7 && mt.svg && mt.bars >= 3, v);
+ok("监控页分区+曲线+柱图", mt.stats >= 7 && mt.svg && mt.bars >= 3, v);
 
 /* ---------- 对比度（双主题） ---------- */
 const cssCheck = `(function(){
