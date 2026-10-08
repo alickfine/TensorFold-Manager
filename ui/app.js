@@ -73,7 +73,7 @@ function renderTopbar(ov) {
   // 顶栏版本 + 绿点悬停提示（原型 .ver 组件）
   const ver = $('win-ver'), vtip = $('win-vtip');
   const eng = (ST.upd && ST.upd.engine) || {}, app = (ST.upd && ST.upd.app) || {};
-  ver.childNodes[0].nodeValue = 'v' + (ST.settings.app_version || '2.0.1');
+  ver.childNodes[0].nodeValue = 'v' + (ST.settings.app_version || '2.1.0');
   vtip.textContent = eng.available ? `引擎有新版本 v${eng.latest}，设置页一键升级`
     : app.available ? `App 有新版本 v${app.latest}`
     : `引擎 ${ST.settings.version || '—'} · 已是最新`;
