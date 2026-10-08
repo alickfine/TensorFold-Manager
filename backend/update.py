@@ -150,27 +150,63 @@ class UpdateChecker:
 
     # ---------- 一键动作 ----------
     def apply_engine(self, python_bin: str, log=print) -> dict:
-        """引擎一键 = 从 GitHub 拉该 tag 源码 pip 安装（覆盖式，pip install 支持 URL）。
+        """引擎一键 = 下载 tag tarball → 校验 → 本地 pip install。
 
-        用 codeload tarball 直链（等价 git archive），避免本机无 git / 代理干扰 git 协议。
+        不用 `pip install <URL>`：pip 构建解包目录与并发/残留竞争会偶发
+        EEXIST("file already exists, mkdir .../pip-req-build-*") 直接崩（2026-10-08 实测）。
+        三段式 + 一次重试，每段独立临时目录。
         """
+        import gzip
+        import tempfile
+
         with self.lock:
             eng = self.result.get("engine") or {}
         if not eng.get("latest"):
             return {"ok": False, "error": "先检查更新"}
         tag = eng["latest"]
         url = f"https://codeload.github.com/{ENGINE_REPO}/tar.gz/refs/tags/v{tag}"
-        pip = [python_bin, "-m", "pip", "install", "--force-reinstall", "--no-deps", url]
-        if os.path.basename(python_bin) in ("python", "python3"):
-            pass
-        log(f"更新引擎: pip install {url}")
+
+        def _fetch() -> str:
+            req = urllib.request.Request(url, headers={"User-Agent": "TensorFold-Manager"})
+            with _opener().open(req, timeout=120) as resp:
+                data = resp.read()
+            if len(data) < 1024 or not data[:2] == b"\x1f\x8b":
+                raise RuntimeError(f"tarball 异常: {len(data)}B, magic={data[:2]!r}")
+            fd, path = tempfile.mkstemp(suffix=".tar.gz", prefix=f"tf-engine-{tag}-")
+            with os.fdopen(fd, "wb") as f:
+                f.write(data)
+            return path
+
+        tarball = ""
         try:
+            for attempt in (1, 2):
+                try:
+                    tarball = _fetch()
+                    break
+                except Exception as exc:
+                    log(f"下载引擎 tarball 第{attempt}次失败: {exc}")
+                    if attempt == 2:
+                        return {"ok": False, "error": f"下载失败: {exc}"}
+                    time.sleep(2)
+            log(f"更新引擎: 安装本地包 {os.path.basename(tarball)} ({os.path.getsize(tarball) // 1024}KB)")
+            # -I 隔离模式：杜绝外部 PYTHONPATH 注入的 sitecustomize shim 劫持 os.mkdir
+            # （2026-10-08 实测：不隔离时 pip 解包 tarball 偶发 EEXIST 直接崩）
+            env = _env_no_proxy()
+            env["PYTHONPATH"] = ""
+            pip = [python_bin, "-I", "-m", "pip", "install", "--force-reinstall",
+                   "--no-deps", "--no-cache-dir", tarball]
             r = subprocess.run(pip, capture_output=True, text=True, timeout=600,
                                env=_env_no_proxy())
+            if r.returncode != 0:
+                err = (r.stderr or r.stdout)[-500:]
+                log(f"pip 安装失败: {err}")
+                return {"ok": False, "error": err}
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
-        if r.returncode != 0:
-            return {"ok": False, "error": (r.stderr or r.stdout)[-500:]}
+        finally:
+            if tarball and os.path.exists(tarball):
+                try: os.unlink(tarball)
+                except OSError: pass
         self.engine_version = tag
         return {"ok": True, "version": tag}
 

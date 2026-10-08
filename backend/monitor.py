@@ -55,6 +55,25 @@ class Monitor:
         except Exception:
             return None
 
+    _gpu_cache = {"t": 0.0, "v": None}
+
+    @classmethod
+    def _gpu_percent(cls) -> float | None:
+        """GPU 利用率（0-100）：ioreg IOAccelerator，500ms 缓存避免每 tick 都跑子进程。"""
+        now = time.time()
+        if now - cls._gpu_cache["t"] < 0.5:
+            return cls._gpu_cache["v"]
+        try:
+            import subprocess, re
+            r = subprocess.run(["ioreg", "-r", "-d", "1", "-w", "0", "-c", "IOAccelerator"],
+                               capture_output=True, text=True, timeout=2)
+            m = re.search(r'"Device Utilization %"\s*=\s*(\d+)', r.stdout or "")
+            v = float(m.group(1)) if m else None
+        except Exception:
+            v = None
+        cls._gpu_cache.update(t=now, v=v)
+        return v
+
     def parse(self, text: str) -> dict:
         out: dict = {}
         for line in text.splitlines():
@@ -91,6 +110,10 @@ class Monitor:
                     out["decode_sum"] = v
                 elif name == "tensorfold:request_decode_seconds_count":
                     out["decode_count"] = v
+                elif name == "tensorfold:time_to_first_token_seconds_sum":
+                    out["ttft_sum"] = v
+                elif name == "tensorfold:time_to_first_token_seconds_count":
+                    out["ttft_count"] = v
         return out
 
     def tick(self, pool, psutil):
@@ -103,11 +126,20 @@ class Monitor:
                 sample["mem_free"] = round(vm.available / 1024**3, 1)
             except Exception:
                 pass
+            try:
+                sample["cpu_percent"] = psutil.cpu_percent(interval=None)
+            except Exception:
+                pass
+        # GPU 利用率：Apple Silicon 用 IOAccelerator 的 Device Utilization %（实测可行，~10ms 开销）
+        if self._tick_count % 2 == 0:
+            sample["gpu_percent"] = self._gpu_percent()
         ready = pool.ready_instances() if hasattr(pool, "ready_instances") else (
             [pool] if getattr(pool, "state", "") == "ready" else [])
         if ready and self._tick_count % 2 == 0:
             now = time.time()
-            agg = {"tps": 0.0, "running": 0, "waiting": 0, "kv": 0.0, "footprint_gb": 0.0}
+            agg = {"tps": 0.0, "running": 0, "waiting": 0, "kv": 0.0, "footprint_gb": 0.0,
+                   "prompt_tokens": 0.0, "gen_tokens_total": 0.0, "ttft_avg": 0.0,
+                   "prefill_tps": 0.0, "requests_done": 0}
             per: dict[str, dict] = {}
             raws = []
             with self.lock:
@@ -131,15 +163,40 @@ class Monitor:
                 agg["waiting"] += parsed.get("waiting", 0)
                 agg["kv"] = max(agg["kv"], round(parsed.get("kv_max", 0.0) * 100, 1))
                 agg["footprint_gb"] = round(agg["footprint_gb"] + parsed.get("footprint_bytes", 0) / 1024**3, 2)
+                # 累计用量（引擎 counter 为 finished requests 口径，直接累加各实例）
+                agg["prompt_tokens"] += parsed.get("prompt_tokens", 0)
+                agg["gen_tokens_total"] += parsed.get("gen_tokens", 0)
+                if prev and dt > 0.5:
+                    # prefill 速度代理：TTFT sum 的增量 ≈ 本窗口新增 prompt 的预填时间，
+                    # 除以同窗口新增 prompt tokens（无增量时跳过）
+                    d_prompt = parsed.get("prompt_tokens", 0) - prev.get("prompt_tokens", 0)
+                    d_ttft = parsed.get("ttft_sum", 0) - prev.get("ttft_sum", 0)
+                    if d_prompt > 0 and d_ttft >= 0:
+                        agg["prefill_tps"] += round(d_prompt / d_ttft, 1) if d_ttft > 0 else None or agg["prefill_tps"]
+                # 完成请求数用 TTFT count（每个完成请求恰好计一次）
+                agg["requests_done"] += int(parsed.get("ttft_count", 0))
+                # TTFT 均值 = sum/count（有请求完成才有效）
+                tc = parsed.get("ttft_count", 0)
+                if tc:
+                    inst_ttft = parsed.get("ttft_sum", 0) / tc
+                else:
+                    inst_ttft = None
                 drafted = parsed.get("drafted", 0)
+                gen_delta_ok = prev and dt > 0.5 and parsed.get("gen_tokens", 0) >= (prev or {}).get("gen_tokens", 0)
                 per[inst.model] = {
                     "port": inst.port, "name": inst.name,
                     "tps": (round((parsed.get("gen_tokens", 0) - (prev or {}).get("gen_tokens", 0)) / dt, 1)
-                            if prev and dt > 0.5 and parsed.get("gen_tokens", 0) >= (prev or {}).get("gen_tokens", 0) else None),
+                            if gen_delta_ok else None),
                     "running": parsed.get("running", 0), "waiting": parsed.get("waiting", 0),
                     "kv": round(parsed.get("kv_max", 0.0) * 100, 1),
                     "footprint_gb": round(parsed.get("footprint_bytes", 0) / 1024**3, 2),
                     "accepted_ratio": (parsed.get("accepted", 0) / drafted) if drafted else None,
+                    "prompt_tokens": parsed.get("prompt_tokens", 0),
+                    "gen_tokens": parsed.get("gen_tokens", 0),
+                    "ttft_avg_ms": round(inst_ttft * 1000, 1) if inst_ttft is not None else None,
+                    "prefill_tps": (round(d_prompt / d_ttft, 1) if (prev and dt > 0.5
+                                    and (d_prompt := parsed.get("prompt_tokens", 0) - prev.get("prompt_tokens", 0)) > 0
+                                    and (d_ttft := parsed.get("ttft_sum", 0) - prev.get("ttft_sum", 0)) > 0) else None),
                 }
             with self.lock:
                 self.prev_time = now
@@ -149,8 +206,12 @@ class Monitor:
                     self.latest = dict(per)
                 sample.update({
                     "tps": agg["tps"] if not first else None,
+                    "prefill_tps": agg.get("prefill_tps") if not first else None,
                     "running": agg["running"], "waiting": agg["waiting"],
                     "kv": agg["kv"], "footprint_gb": agg["footprint_gb"],
+                    "prompt_tokens": agg["prompt_tokens"],
+                    "gen_tokens_total": agg["gen_tokens_total"],
+                    "requests_done": agg["requests_done"],
                 })
         with self.lock:
             self.hist.append(sample)
@@ -162,7 +223,8 @@ class Monitor:
         with self.lock:
             series = {}
             for key, kind in (("tps", "trend"), ("kv", "percent"), ("footprint_gb", "trend"),
-                              ("mem_free", "trend")):
+                              ("mem_free", "trend"), ("cpu_percent", "percent"),
+                              ("gpu_percent", "percent")):
                 vals = [s.get(key) for s in self.hist if s.get(key) is not None]
                 if len(vals) >= 2:
                     series[key] = {"kind": kind, "values": [round(v, 2) for v in vals][-120:]}
@@ -171,11 +233,17 @@ class Monitor:
                 "series": series,
                 "latest": {
                     "tps": last.get("tps"),
+                    "prefill_tps": last.get("prefill_tps"),
                     "kv": last.get("kv"),
                     "running": last.get("running"),
                     "waiting": last.get("waiting"),
                     "footprint_gb": last.get("footprint_gb"),
                     "mem_free": last.get("mem_free"),
+                    "cpu_percent": last.get("cpu_percent"),
+                    "gpu_percent": last.get("gpu_percent"),
+                    "prompt_tokens": last.get("prompt_tokens"),
+                    "gen_tokens_total": last.get("gen_tokens_total"),
+                    "requests_done": last.get("requests_done"),
                 },
                 "per": {m: dict(v) for m, v in self.per.items()},
                 "raw": self.raw,

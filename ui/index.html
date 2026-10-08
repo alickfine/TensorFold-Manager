@@ -9,9 +9,9 @@
 <body>
 <div class="app">
   <div class="side">
-    <button class="nav-item on" data-page="models"><span class="ni">📦</span>模型<span class="nbadge" id="nav-dl-badge" style="display:none">0</span></button>
+    <button class="nav-item on" data-page="metrics"><span class="ni">📊</span>监控</button>
+    <button class="nav-item" data-page="models"><span class="ni">📦</span>模型<span class="nbadge" id="nav-dl-badge" style="display:none">0</span></button>
     <button class="nav-item" data-page="chat"><span class="ni">💬</span>对话</button>
-    <button class="nav-item" data-page="metrics"><span class="ni">📊</span>监控</button>
     <button class="nav-item" data-page="settings"><span class="ni">⚙️</span>设置</button>
     <div class="sp"></div>
     <div class="foot"><span class="dot off" id="side-dot"></span><span id="side-status">引擎未运行</span></div>
@@ -27,8 +27,8 @@
       </div>
     </div>
 
-    <!-- 模型页（第一页） -->
-    <div class="page on" id="page-models">
+    <!-- 监控页（第一页，用户 2026-10-08 定序）：完整块在下方 -->
+    <div class="page" id="page-models">
       <div class="pg">
         <h3>官方支持模型</h3>
         <div class="mcards" id="mcards"></div>
@@ -61,11 +61,13 @@
       </div>
     </div>
 
-    <!-- 监控页 -->
-    <div class="page" id="page-metrics">
+    <!-- 监控页（第一页） -->
+    <div class="page on" id="page-metrics">
       <div class="pg">
+        <h3>模型实时进度</h3>
         <div class="mgrid">
-          <div class="stat"><div class="lb">生成速度<span>2s</span></div><div class="v" id="st-tps">—<small>tok/s</small></div><div class="sub" id="st-tps-sub">实时</div><div class="bars" id="bars-tps"></div></div>
+          <div class="stat"><div class="lb">生成速度<span>2s</span></div><div class="v" id="st-tps">—<small>tok/s</small></div><div class="sub" id="st-tps-sub">实时解码输出</div><div class="bars" id="bars-tps"></div></div>
+          <div class="stat"><div class="lb">Prefill 速度<span>2s</span></div><div class="v" id="st-prefill">—<small>tok/s</small></div><div class="sub" id="st-prefill-sub">提示词预填吞吐</div></div>
           <div class="stat"><div class="lb">引擎内存<span>2s</span></div><div class="v" id="st-mem">—</div><div class="sub" id="st-mem-sub">全部实例足迹</div><div class="bars" id="bars-mem"></div></div>
           <div class="stat"><div class="lb">空闲内存<span>2s</span></div><div class="v" id="st-free">—</div><div class="sub" id="st-free-sub">系统可用</div><div class="bars" id="bars-free"></div></div>
         </div>
@@ -73,11 +75,28 @@
           <div class="lb"><span>token 吞吐（近 10 分钟）</span><span style="font-family:ui-monospace,monospace">输出 <span style="color:var(--ok)">━</span></span></div>
           <svg id="chart-tps" viewBox="0 0 520 110" preserveAspectRatio="none"></svg>
         </div>
+        <h3>用量</h3>
         <div class="kv">
+          <div class="stat"><div class="lb">请求数</div><div class="v" id="st-reqs-done">—</div><div class="sub" id="st-reqs-sub">已完成请求</div></div>
+          <div class="stat"><div class="lb">Token 总数</div><div class="v" id="st-tok-all">—</div><div class="sub">提示 + 输出累计</div></div>
+          <div class="stat"><div class="lb">提示 Token</div><div class="v" id="st-tok-prompt">—</div><div class="sub" id="st-tok-prompt-sub">prefill 累计</div></div>
+          <div class="stat"><div class="lb">输出 Token</div><div class="v" id="st-tok-gen">—</div><div class="sub">decode 累计</div></div>
+          <div class="stat"><div class="lb">已缓存 Token</div><div class="v" id="st-tok-cached">—</div><div class="sub" id="st-tok-cached-sub">KV 池驻留（估算）</div></div>
+          <div class="stat"><div class="lb">缓存效率</div><div class="v" id="st-cache-eff">—</div><div class="sub">缓存命中 / 提示总量</div></div>
           <div class="stat"><div class="lb">KV 缓存占用</div><div class="v" id="st-kv">—</div><div class="sub" id="st-kv-sub">各池最大值</div></div>
           <div class="stat"><div class="lb">请求队列</div><div class="v" id="st-req">—</div><div class="sub" id="st-req-sub">活跃 · 排队</div></div>
           <div class="stat"><div class="lb">MTP 接受率</div><div class="v" id="st-mtp">—</div><div class="sub">草稿采纳</div></div>
           <div class="stat"><div class="lb">运行实例</div><div class="v" id="st-inst">0</div><div class="sub" id="st-inst-sub">多实例并行</div></div>
+        </div>
+        <h3>本机性能</h3>
+        <div class="mgrid">
+          <div class="stat"><div class="lb">CPU<span>2s</span></div><div class="v" id="st-cpu">—<small>%</small></div><div class="sub" id="st-cpu-sub">整机占用</div><div class="bars" id="bars-cpu"></div></div>
+          <div class="stat"><div class="lb">GPU<span>2s</span></div><div class="v" id="st-gpu">—<small>%</small></div><div class="sub" id="st-gpu-sub">Apple GPU 利用率</div><div class="bars" id="bars-gpu"></div></div>
+          <div class="stat"><div class="lb">内存</div><div class="v" id="st-hostmem">—</div><div class="sub" id="st-hostmem-sub">已用 / 总量</div></div>
+        </div>
+        <div class="plist">
+          <div class="pitem"><span style="color:var(--ink3);font-size:12.5px">软件版本</span><span class="right" id="host-versions">—</span></div>
+          <div class="pitem"><span style="color:var(--ink3);font-size:12.5px">冷热缓存</span><span class="right" id="host-cache-tier">—</span></div>
         </div>
         <div class="plist" id="inst-list"></div>
       </div>
