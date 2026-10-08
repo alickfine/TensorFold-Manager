@@ -121,6 +121,8 @@ function renderCards() {
     if (inst && inst.state === 'ready') badges.push('<span class="badge run">● 运行中</span>');
     else if (inst && inst.state === 'starting') badges.push('<span class="badge own">◌ 启动中</span>');
     else if (inst && inst.state === 'error') badges.push('<span class="badge" style="background:var(--danger-bg);color:var(--danger)">✕ 异常</span>');
+    // 实际在跑的引擎：升级后一眼看出有没有真的换过去（native / 回退的解释器）
+    if (inst && inst.launcher && inst.state !== 'idle') badges.push(`<span class="badge own" title="${esc(inst.launcher_path || '')}">${esc(inst.launcher)}</span>`);
     if (pull) badges.push('<span class="badge own" style="color:var(--dl-ink)">下载中</span>');
     else if (cached) badges.push('<span class="badge own">已缓存</span>');
 
@@ -498,10 +500,10 @@ async function doUpdateCheck() {
 async function doUpdateApply() {
   const eng = (ST.upd.engine || {});
   if (eng.available) {
-    if (!confirm(`升级引擎到 v${eng.latest}？\n将从 GitHub 拉取覆盖安装，运行中实例需重启生效。`)) return;
+    if (!confirm(`升级引擎到 v${eng.latest}？\n将从 GitHub 拉取覆盖安装；升级完成后会自动用新引擎重载当前运行中的模型。`)) return;
     toast('正在从 GitHub 拉取安装（可能需要 1-2 分钟）…');
     const r = await call('update_apply_engine', {}).catch(e => ({ error: String(e) }));
-    toast(r && r.ok ? `已升级到 ${r.version}，重启实例后生效` : '升级失败: ' + (r && r.error));
+    toast(r && r.ok ? `已升级到 ${r.version}${r.restarted_hint ? '，' + r.restarted_hint : ''}` : '升级失败: ' + (r && r.error));
   } else if ((ST.upd.app || {}).url) {
     call('update_open_app', {}).catch(() => {});
     toast('已在浏览器打开 App 下载页');

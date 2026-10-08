@@ -170,7 +170,50 @@ class Api:
     def update_apply_engine(self) -> dict:
         if not self.updater:
             return {"ok": False, "error": "更新检查未启用"}
-        return self.updater.apply_engine(self.pool.python_bin, log=self.pool.log)
+        # 记下升级前在跑的模型（含各自参数），升级完原样拉回来——
+        # 只"停掉等用户手动重载"会让升级看起来像失败（用户点了升级，回来模型没了）。
+        before: list[tuple[str, dict]] = []
+        for inst in self.pool.instances():
+            try:
+                if inst.alive() or inst.state in ("starting", "ready"):
+                    before.append((inst.model, dict(inst.params)))
+            except Exception:
+                pass
+        r = self.updater.apply_engine(log=self.pool.log)
+        if not r.get("ok"):
+            return r
+        # 升级落盘后：新版本二进制已在 engines/ 下，find_launcher 现在就会选中它。
+        # 1) 停掉运行中实例（旧引擎进程不会自动换血），释放端口与显存；
+        # 2) 热刷新池与下载器的启动器引用；
+        # 3) 把升级前在跑的模型用新引擎重新拉起。
+        try:
+            stopped = self.pool.stop()
+            if stopped.get("stopped"):
+                self.monitor.reset()
+        except Exception as exc:
+            self.pool.log(f"升级后停止旧实例异常: {exc}")
+        launcher = engine_mod.find_launcher(os.path.dirname(
+            os.path.dirname(os.path.abspath(engine_mod.__file__))))
+        if launcher:
+            self.pool.python_bin = launcher
+            if self.download is not None:
+                self.download.python_bin = launcher
+        restarted, failed = [], []
+        for model, params in before:
+            params.pop("port", None)   # 重新分配端口，避开旧端口的 TIME_WAIT
+            rr = self.pool.start(model, **params)
+            (restarted if rr.get("ok") else failed).append(model)
+        r["restarted"] = restarted
+        r["restart_failed"] = failed
+        if restarted:
+            r["restarted_hint"] = "已用新引擎重新加载: " + "、".join(
+                m.split("/")[-1] for m in restarted)
+        elif failed:
+            r["restarted_hint"] = "旧实例已停止，但用新引擎重载失败: " + "、".join(
+                m.split("/")[-1] for m in failed)
+        else:
+            r["restarted_hint"] = "下次加载模型即用新引擎"
+        return r
 
     def update_open_app(self) -> dict:
         if not self.updater:

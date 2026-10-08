@@ -14,6 +14,7 @@ from __future__ import annotations
 import glob
 import json
 import os
+import re
 import selectors
 import shutil
 import subprocess
@@ -60,13 +61,37 @@ DEFAULT_PARAMS = {
 }
 
 
-def find_launcher(project_dir: str) -> str:
-    """找能把 `tensorfold serve` 跑起来的启动器，返回路径或 ""。
+def native_launchers() -> list[str]:
+    """枚举原生引擎（v1.0+ 官方二进制），版本号语义降序；升级后新版本自动排前。"""
+    root = os.path.expanduser("~/.tensorfold-manager/engines")
+    if not os.path.isdir(root):
+        return []
+    cands = []
+    for d in glob.glob(os.path.join(root, "v*", "bin", "tensorfold-native")):
+        ver = d.split(os.sep)[-3].lstrip("v")
+        key = tuple(int(x) for x in re.findall(r"\d+", ver)) if re.findall(r"\d+", ver) else (0,)
+        cands.append((key, d))
+    return [p for _k, p in sorted(cands, reverse=True)]
 
-    - 打包布局（优先）: <dir>/runtime/bin/python3 = 自包含运行时
-      （site-packages 里有 tensorfold 即命中，用 `-m tensorfold` 模块式调用，路径无关）。
-    - 开发机: 隔离 venv ~/.workbuddy/binaries/python/envs/default 的 tensorfold CLI。
+
+def find_launcher(project_dir: str) -> str:
+    """找能把 `tensorfold serve` 跑起来的启动器，返回首选路径或 ""。
+
+    优先级（2026-10-08 起）：
+      1. 原生引擎目录 ~/.tensorfold-manager/engines/v*/bin/tensorfold-native
+         （版本号最高者优先；升级后自动生效的关键）。
+      2. 打包布局: <dir>/runtime/bin/python3 = 自包含运行时
+         （site-packages 里有 tensorfold 即命中，用 `-m tensorfold` 模块式调用）。
+      3. 开发机: 隔离 venv 的 tensorfold CLI。
+
+    注意：native 引擎只覆盖部分模型族/尺寸（实测 v1.0.2 的 qwen3_5 族
+    拒绝 27B checkpoint，`UnsupportedQwenConfig`），所以首选 ≠ 万能。
+    EngineInstance.start 会按 launcher_candidates() 顺序在秒退时自动降级，
+    本函数只决定"首选是谁"，兼容性兜底在启动层。
     """
+    native = native_launchers()
+    if native:
+        return native[0]
     dirs = [project_dir, os.path.dirname(project_dir), os.path.expanduser("~/.workbuddy/binaries/python/envs/default")]
     for d in dirs:
         py = os.path.join(d, "runtime", "bin", "python3")
@@ -79,6 +104,40 @@ def find_launcher(project_dir: str) -> str:
         if os.path.exists(cli):
             return cli
     return ""
+
+
+def launcher_candidates(preferred: str) -> list[str]:
+    """启动降级用完整候选链：native 各版本（新→旧）+ 解释器形态。
+
+    与 find_launcher 同源，但返回全部可用启动器；解释器去重后垫底。
+    project_dir 取本模块位置的上两级（backend/engine.py → app 根），
+    打包布局下 runtime 与 app 同在 Contents/Resources/ 下。
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def _add(p: str):
+        if p and os.path.exists(p) and p not in seen:
+            out.append(p)
+            seen.add(p)
+
+    for p in native_launchers():
+        _add(p)
+    # 解释器形态：打包 runtime。源码直跑时 runtime 在仓库根（here），
+    # .app 里 runtime 与 app 同级（dir(here)=Contents/Resources），两个位置都要看，
+    # 否则打包版只剩 native 一个候选，native 拒装某模型时无兜底 → 模型完全起不来。
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    for root in (here, os.path.dirname(here)):
+        py = os.path.join(root, "runtime", "bin", "python3")
+        if (os.path.exists(py) and is_interpreter(py)
+                and glob.glob(os.path.join(root, "runtime", "lib", "python*",
+                                           "site-packages", "tensorfold"))):
+            _add(py)
+    # 开发机 venv CLI
+    dev = os.path.expanduser("~/.workbuddy/binaries/python/envs/default")
+    if glob.glob(os.path.join(dev, "lib/python*/site-packages/tensorfold")):
+        _add(os.path.join(dev, "bin", "tensorfold"))
+    return out
 
 
 def is_interpreter(path: str) -> bool:
@@ -155,11 +214,44 @@ def build_serve_args(model: str, params: dict, port: int) -> list[str]:
     return extra
 
 
-def serve_argv(python_bin: str, model: str, params: dict, port: int) -> list[str]:
+def serve_argv(python_bin: str, model: str, params: dict, port: int,
+               dropped: list[str] | None = None) -> list[str]:
+    """编译启动命令行。python_bin 两形态：
+
+    - 解释器（runtime/venv python）→ `-m tensorfold serve`，旗标全量可用；
+    - 原生二进制（tensorfold-native, v1.0+）→ 直接 `serve`，只透传它认得的旗标，
+      其余（mtp_drafts / mtp_confidence / kv_dtype / vision）**直接丢弃**并把名字
+      记进 dropped（调用方写日志），绝不让引擎因参数拒绝启动。
+
+    ⚠️ 不要把丢掉的参数塞进 `--speed-up`：上游 1.0.x 的 `--speed-up` 是
+    「双 Mac 分布式 rank/link 设置的**文件路径**」（见上游 README 旗标表），
+    塞 JSON 会让引擎当成文件去打不开 → 秒退，正是"升级后模型起不来"的成因之一。
+    这些参数在原生引擎里没有等价旗标，只能忽略（MTP 由引擎自决，kv_dtype 由引擎自选）。
+    """
     args = build_serve_args(model, params, port)
-    if os.path.basename(python_bin) in ("python", "python3"):
+    if is_interpreter(python_bin):
         return [python_bin, "-m", "tensorfold", "serve", model] + args
-    return [python_bin, "serve", model] + args
+    # 原生二进制：过滤其不支持的旗标
+    native_known = {"--host", "--port", "--name", "--alias", "--api-key", "--api-key-file",
+                    "--metrics-open", "--dashboard", "--context", "--max-tokens",
+                    "--temperature", "--top-p", "--top-k", "--min-p", "--thinking",
+                    "--no-thinking", "--reasoning-effort", "--thinking-budget", "--loop-guard",
+                    "--no-drafts", "--keep-warm", "--prompt-cache-gib", "--prompt-cache-over-cap",
+                    "--parallel", "--backend"}
+    argv = [python_bin, "serve", model]
+    i = 0
+    while i < len(args):
+        flag = args[i]
+        if flag.startswith("--") and i + 1 < len(args) and not args[i + 1].startswith("--"):
+            val = args[i + 1]
+        else:
+            val = None
+        if flag in native_known:
+            argv += [flag] + ([val] if val is not None else [])
+        elif dropped is not None:
+            dropped.append(flag)
+        i += 2 if val is not None else 1
+    return argv
 
 
 class ModelSettings:
@@ -241,6 +333,7 @@ class EngineInstance:
         self.name = ""
         self.started_at: float | None = None
         self.params: dict = dict(DEFAULT_PARAMS)
+        self._quick_exit = False  # 上次启动尝试是否秒退（降级判定用）
 
     @property
     def host(self):
@@ -280,6 +373,9 @@ class EngineInstance:
                 "port": self.port,
                 "drafts": self.params.get("drafts", True),
                 "vision": self.params.get("vision", False),
+                # 实际在跑的启动器（升级后要能看出到底换了没换引擎）
+                "launcher": os.path.basename(self.python_bin or ""),
+                "launcher_path": self.python_bin or "",
                 "params": dict(self.params),
                 "error": self.error,
                 "uptime": (time.time() - self.started_at) if (self.state == "ready" and self.started_at) else 0,
@@ -292,28 +388,70 @@ class EngineInstance:
                 return self._err("该模型引擎已在运行")
             if not (self.python_bin and os.path.exists(self.python_bin)):
                 return self._err("未找到 tensorfold CLI，请检查安装")
+            # 候选链：native（新→旧）+ 解释器。首选引擎可能不兼容当前模型
+            # （实测 v1.0.2 native 的 qwen3_5 族拒绝 27B：UnsupportedQwenConfig），
+            # 秒退自动降级到下一候选，直到有一个真的起得来。
+            chain = launcher_candidates(self.python_bin)
+            if self.python_bin not in chain:
+                chain.insert(0, self.python_bin)
             self.params = {**DEFAULT_PARAMS, **params, "port": self.port}
-            argv = serve_argv(self.python_bin, self.model, self.params, self.port)
-            self.log(f"启动: {' '.join(argv)}")
-            try:
-                # 清掉 PAC/代理环境：本地 127.0.0.1 流量绝不外绕，
-                # 否则 HF 下载/健康探活会被系统代理劫持（实测会被 502/连接拒绝）。
-                env = {k: v for k, v in os.environ.items()
-                       if "PROXY" not in k.upper() and k.upper() != "NO_PROXY"}
-                env.update({"NO_PROXY": "127.0.0.1,localhost,::1",
-                            "no_proxy": "127.0.0.1,localhost,::1",
-                            "PYTHONUNBUFFERED": "1"})
-                self._start_pump(argv, env)
-            except Exception as exc:
-                self.state = "error"
-                self.error = f"无法启动: {exc}"
-                self.log(f"启动失败: {exc}")
-                return {"ok": False, "error": self.error}
-            self.name = self.params.get("alias") or self.model.split("/")[-1]
-            self.state = "starting"
-            self.error = ""
-            self.started_at = None
-            return {"ok": True, **self.status()}
+            last_err: dict | None = None
+            for launcher in chain:
+                r = self._try_start(launcher)
+                if r.get("ok"):
+                    return r
+                last_err = r
+                # 降级条件：进程立刻退出（引擎拒绝该模型/参数），换下一个启动器。
+                # 连接层失败（端口占用等）同样值得试下一个候选；用户主动取消不存在。
+                if not self._quick_exit:
+                    break  # 进程还活着（starting 中）但 health 未过 → 不降级，等探活
+                self.log(f"引擎 {os.path.basename(launcher)} 启动失败，尝试下一个候选 …")
+            return last_err or {"ok": False, "error": "无可用引擎启动器"}
+
+    def _try_start(self, launcher: str) -> dict:
+        """用指定启动器尝试一次启动；秒退（≤15s 退出）则返回失败并置 _quick_exit。"""
+        self.python_bin = launcher
+        self._quick_exit = False
+        unsupported: list[str] = []
+        argv = serve_argv(launcher, self.model, self.params, self.port, dropped=unsupported)
+        if unsupported:
+            # 原生引擎没有这些旗标；静默丢弃会让用户以为设置生效，必须留痕。
+            self.log(f"该引擎不支持 {', '.join(sorted(set(unsupported)))}，本次已忽略")
+        self.log(f"启动: {' '.join(argv)}")
+        try:
+            # 清掉 PAC/代理环境：本地 127.0.0.1 流量绝不外绕，
+            # 否则 HF 下载/健康探活会被系统代理劫持（实测会被 502/连接拒绝）。
+            env = {k: v for k, v in os.environ.items()
+                   if "PROXY" not in k.upper() and k.upper() != "NO_PROXY"}
+            env.update({"NO_PROXY": "127.0.0.1,localhost,::1",
+                        "no_proxy": "127.0.0.1,localhost,::1",
+                        "PYTHONUNBUFFERED": "1"})
+            self._start_pump(argv, env)
+        except Exception as exc:
+            self.state = "error"
+            self.error = f"无法启动: {exc}"
+            self.log(f"启动失败: {exc}")
+            return {"ok": False, "error": self.error}
+        # 等 ≤15s：native 引擎拒装模型是秒退（<2s）；解释器加载要几十秒但不会立刻死。
+        # health 提前 200 → 直接成功返回；健康交给主循环 mark_ready 升 ready。
+        t0 = time.time()
+        while time.time() - t0 < 15.0:
+            if self.process is None or self.process.poll() is not None:
+                err = self.error or "引擎进程启动即退出"
+                self.state = "idle"
+                self._quick_exit = True
+                return {"ok": False, "error": err, "quick_exit": True}
+            if self.health(timeout=0.8):
+                break
+            time.sleep(0.5)
+        if self.process is None or self.process.poll() is not None:
+            err = self.error or "引擎进程启动即退出"
+            self.state = "idle"
+            return {"ok": False, "error": err, "quick_exit": True}
+        # 15s 活着 → 认定启动成功（加载大模型可能要几十秒，交给 health_tick 升 ready）
+        self.name = self.params.get("alias") or self.model.split("/")[-1]
+        self.state = "starting"
+        return {"ok": True, **self.status()}
 
     def _err(self, msg: str) -> dict:
         self.error = msg
@@ -331,7 +469,7 @@ class EngineInstance:
             return
         read_fd, write_fd = os.pipe()
         try:
-            self.process = subprocess.Popen(
+            proc = subprocess.Popen(
                 argv, stdout=write_fd, stderr=subprocess.STDOUT,
                 stdin=subprocess.DEVNULL, close_fds=True,
                 cwd=os.path.expanduser("~"),
@@ -340,6 +478,7 @@ class EngineInstance:
             os.close(read_fd)
             os.close(write_fd)
             raise
+        self.process = proc
         os.close(write_fd)  # 父进程只留读端
         self._sel = selectors.DefaultSelector()
         self._sel.register(read_fd, selectors.EVENT_READ)
@@ -351,7 +490,7 @@ class EngineInstance:
             while True:
                 try:
                     if not sel.select(0.5):
-                        if self.process is not None and self.process.poll() is not None:
+                        if proc.poll() is not None:
                             break
                         continue
                     chunk = os.read(read_fd, 8192)
@@ -370,18 +509,27 @@ class EngineInstance:
                 sel.close()
             except Exception:
                 pass
-            self._on_exit()
+            self._on_exit(proc)
 
         threading.Thread(target=pump, daemon=True, name=f"tf-log-pump-{self.port}").start()
 
-    def _on_exit(self):
+    def _on_exit(self, proc: subprocess.Popen):
+        """进程收尾。只处理自己那一代：降级后旧候选的 pump 可能晚到，
+        绝不能清掉/干扰新进程的状态（实测会误杀 starting→error）。"""
         with self._lock:
-            code = self.process.returncode if self.process is not None else None
+            if self.process is not proc:
+                return  # 已被新一代启动覆盖，本次收尾静默让位
+            code = proc.returncode if proc.poll() is not None else proc.wait()
             self.process = None
             self._sel = None
             self.started_at = None
             if self.state in ("starting", "ready"):
+                # 只在已进入 starting/ready（正式启动成功后）才标 error；
+                # 启动尝试窗口内的秒退由 _try_start 自己兜住并降级。
                 self.state = "error"
+                self.error = f"引擎进程已退出 (code={code})，见日志"
+            elif self.state == "idle":
+                # 启动尝试中退出：记录错误供 _try_start 读取，不改 state（避免竞态覆盖）
                 self.error = f"引擎进程已退出 (code={code})，见日志"
             self.log(f"引擎进程退出 (code={code})")
 

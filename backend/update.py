@@ -19,7 +19,7 @@ import urllib.request
 
 ENGINE_REPO = "ashhart/TensorFold"
 APP_REPO = "alickfine/TensorFold-Manager"
-APP_VERSION = "2.1.0"
+APP_VERSION = "2.1.1"
 
 _OPENER = None
 
@@ -57,20 +57,56 @@ _TOKEN_DONE = False
 
 
 def _gh_token() -> str:
-    """GitHub 匿名限流 60 次/h，共享 IP 极易 403。优先环境变量，其次 gh CLI。"""
+    """GitHub 匿名限流 60 次/h，共享 IP 极易 403。优先环境变量，其次 gh CLI。
+
+    2026-10-08 实测：Finder 拉起的 App 子进程 PATH 只有 /usr/bin:/bin 等，
+    homebrew 的 gh（/opt/homebrew/bin/gh）不在其中 → 兜底永远失败 →
+    匿名请求撞限流 403，设置页「升级」按钮看起来"不可用"。
+    因此显式探测常见安装位置，不能只赌裸 `gh`。
+    """
     global _TOKEN, _TOKEN_DONE
     if _TOKEN_DONE:
         return _TOKEN
     _TOKEN_DONE = True
     _TOKEN = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN") or ""
-    if not _TOKEN:
+    if _TOKEN:
+        return _TOKEN
+    gh_candidates = ["gh",
+                     "/opt/homebrew/bin/gh",      # Apple Silicon homebrew
+                     "/usr/local/bin/gh",          # Intel homebrew
+                     os.path.expanduser("~/bin/gh")]
+    for gh in gh_candidates:
         try:
-            r = subprocess.run(["gh", "auth", "token"], capture_output=True, text=True, timeout=5)
-            if r.returncode == 0:
+            r = subprocess.run([gh, "auth", "token"], capture_output=True,
+                               text=True, timeout=5)
+            if r.returncode == 0 and r.stdout.strip():
                 _TOKEN = r.stdout.strip()
+                break
         except Exception:
-            pass
+            continue
+    if not _TOKEN:
+        # 兜底：直接读 gh 的配置文件（CLI 不在 PATH / 无法执行时仍能拿到 token）
+        _TOKEN = _token_from_hosts_file()
     return _TOKEN
+
+
+def _token_from_hosts_file() -> str:
+    """从 ~/.config/gh/hosts.yml 里抠 oauth_token（只做行解析，不引入 yaml 依赖）。"""
+    import glob as _glob
+    paths = [os.path.expanduser("~/.config/gh/hosts.yml")]
+    paths += _glob.glob(os.path.expanduser("~/.config/gh/hosts.yml.d/*.yml"))
+    for p in paths:
+        try:
+            with open(p, encoding="utf-8") as f:
+                for line in f:
+                    s = line.strip()
+                    if s.startswith("oauth_token:"):
+                        tok = s.split(":", 1)[1].strip().strip("'\"")
+                        if tok:
+                            return tok
+        except OSError:
+            continue
+    return ""
 
 
 def _get_json(url: str, timeout: float = 8.0):
@@ -149,14 +185,15 @@ class UpdateChecker:
         return True
 
     # ---------- 一键动作 ----------
-    def apply_engine(self, python_bin: str, log=print) -> dict:
-        """引擎一键 = 下载 tag tarball → 校验 → 本地 pip install。
+    def apply_engine(self, python_bin: str = "", log=print) -> dict:
+        """引擎一键升级：下载官方原生二进制 → SHA256 校验 → 解压到 engines/<版本>/。
 
-        不用 `pip install <URL>`：pip 构建解包目录与并发/残留竞争会偶发
-        EEXIST("file already exists, mkdir .../pip-req-build-*") 直接崩（2026-10-08 实测）。
-        三段式 + 一次重试，每段独立临时目录。
+        背景（2026-10-08 实测）：上游 v1.0+ 是原生二进制发布，pip 源码安装被官方
+        禁用（setup.py 直接 raise SystemExit），pip 通道最高只能到 0.6.x。
+        目录布局：~/.tensorfold-manager/engines/<tag>/bin/tensorfold-native
+        旧版本保留可回退；engine.py 选引擎时优先取本目录最高版本。
         """
-        import gzip
+        import tarfile
         import tempfile
 
         with self.lock:
@@ -164,51 +201,80 @@ class UpdateChecker:
         if not eng.get("latest"):
             return {"ok": False, "error": "先检查更新"}
         tag = eng["latest"]
-        url = f"https://codeload.github.com/{ENGINE_REPO}/tar.gz/refs/tags/v{tag}"
+        base = f"https://github.com/{ENGINE_REPO}/releases/download/v{tag}"
+        url = f"{base}/tensorfold-{tag}-macos-arm64.tar.gz"
+        sha_url = url + ".sha256"
 
-        def _fetch() -> str:
-            req = urllib.request.Request(url, headers={"User-Agent": "TensorFold-Manager"})
-            with _opener().open(req, timeout=120) as resp:
-                data = resp.read()
-            if len(data) < 1024 or not data[:2] == b"\x1f\x8b":
-                raise RuntimeError(f"tarball 异常: {len(data)}B, magic={data[:2]!r}")
-            fd, path = tempfile.mkstemp(suffix=".tar.gz", prefix=f"tf-engine-{tag}-")
-            with os.fdopen(fd, "wb") as f:
+        def _fetch(u: str) -> bytes:
+            req = urllib.request.Request(u, headers={"User-Agent": "TensorFold-Manager"})
+            with _opener().open(req, timeout=180) as resp:
+                return resp.read()
+
+        # 下载（带一次重试）
+        data, sha_text = b"", ""
+        for attempt in (1, 2):
+            try:
+                data = _fetch(url)
+                try: sha_text = _fetch(sha_url).decode("utf-8", errors="replace")
+                except Exception: sha_text = ""   # 无校验文件不阻断（如实标注）
+                break
+            except Exception as exc:
+                log(f"下载引擎二进制 第{attempt}次失败: {exc}")
+                if attempt == 2:
+                    return {"ok": False, "error": f"下载失败: {exc}"}
+                time.sleep(2)
+        log(f"已下载引擎包 {len(data)//1024}KB")
+
+        # SHA256 校验
+        import hashlib
+        actual = hashlib.sha256(data).hexdigest()
+        expect = sha_text.split()[0].strip().lower() if sha_text else ""
+        sha_ok = bool(expect) and expect == actual
+        if sha_text and not sha_ok:
+            return {"ok": False, "error": f"SHA256 不符: 期望 {expect[:16]}… 实得 {actual[:16]}…"}
+        log(f"SHA256 {'校验通过' if sha_ok else '未提供校验文件，跳过'}: {actual[:16]}…")
+
+        # 解压到 engines/<tag>/（临时目录再原子改名，避免半成品被选走）
+        import glob as _glob
+        root = os.path.expanduser("~/.tensorfold-manager/engines")
+        dest_parent = os.path.join(root, f"v{tag}")
+        if _glob.glob(os.path.join(dest_parent, "bin", "tensorfold-native")):
+            log(f"引擎 v{tag} 已存在，直接标记使用")
+        else:
+            os.makedirs(root, exist_ok=True)
+            tmpd = tempfile.mkdtemp(prefix=f".engine-{tag}-", dir=root)
+            tarpath = os.path.join(tmpd, "pkg.tar.gz")
+            with open(tarpath, "wb") as f:
                 f.write(data)
-            return path
-
-        tarball = ""
-        try:
-            for attempt in (1, 2):
-                try:
-                    tarball = _fetch()
-                    break
-                except Exception as exc:
-                    log(f"下载引擎 tarball 第{attempt}次失败: {exc}")
-                    if attempt == 2:
-                        return {"ok": False, "error": f"下载失败: {exc}"}
-                    time.sleep(2)
-            log(f"更新引擎: 安装本地包 {os.path.basename(tarball)} ({os.path.getsize(tarball) // 1024}KB)")
-            # -I 隔离模式：杜绝外部 PYTHONPATH 注入的 sitecustomize shim 劫持 os.mkdir
-            # （2026-10-08 实测：不隔离时 pip 解包 tarball 偶发 EEXIST 直接崩）
-            env = _env_no_proxy()
-            env["PYTHONPATH"] = ""
-            pip = [python_bin, "-I", "-m", "pip", "install", "--force-reinstall",
-                   "--no-deps", "--no-cache-dir", tarball]
-            r = subprocess.run(pip, capture_output=True, text=True, timeout=600,
-                               env=_env_no_proxy())
-            if r.returncode != 0:
-                err = (r.stderr or r.stdout)[-500:]
-                log(f"pip 安装失败: {err}")
-                return {"ok": False, "error": err}
-        except Exception as exc:
-            return {"ok": False, "error": str(exc)}
-        finally:
-            if tarball and os.path.exists(tarball):
-                try: os.unlink(tarball)
-                except OSError: pass
+            try:
+                with tarfile.open(tarpath, "r:gz") as tf:
+                    tf.extractall(tmpd)  # noqa: S202 - 官方来源 + SHA 校验后解包
+                member = [d for d in os.listdir(tmpd)
+                          if os.path.isdir(os.path.join(tmpd, d)) and d != "pkg.tar.gz"]
+                if len(member) != 1:
+                    raise RuntimeError(f"包结构异常: {member}")
+                src = os.path.join(tmpd, member[0])
+                binp = os.path.join(src, "bin", "tensorfold-native")
+                if not (os.path.exists(binp) and os.access(binp, os.X_OK)):
+                    raise RuntimeError("包内缺 bin/tensorfold-native 或无执行权限")
+                # 版本自证
+                r = subprocess.run([binp, "--version"], capture_output=True,
+                                   text=True, timeout=15, env=_env_no_proxy())
+                ver_out = (r.stdout or r.stderr).strip().splitlines()[-1] if (r.stdout or r.stderr) else ""
+                if f" {tag}" not in ver_out:
+                    raise RuntimeError(f"二进制自报版本不符: {ver_out!r} 期望 {tag}")
+                if os.path.exists(dest_parent):
+                    import shutil as _sh
+                    _sh.rmtree(dest_parent, ignore_errors=True)
+                os.rename(src, dest_parent)   # 同分区 rename，原子
+            except Exception as exc:
+                return {"ok": False, "error": f"安装失败: {exc}"}
+            finally:
+                import shutil as _sh2
+                _sh2.rmtree(tmpd, ignore_errors=True)
         self.engine_version = tag
-        return {"ok": True, "version": tag}
+        return {"ok": True, "version": tag, "path": os.path.join(dest_parent, "bin", "tensorfold-native"),
+                "sha_verified": sha_ok}
 
 
 def apply_app_open(url: str) -> dict:

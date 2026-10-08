@@ -179,6 +179,10 @@ class Shell:
             nsurl, nsurl.URLByDeletingLastPathComponent())
         self.window.center()
         self.window.makeKeyAndOrderFront_(None)
+        # 默认铺满工作区（非原生全屏：保留菜单栏/Dock；用户仍可缩放）
+        screen = AppKit.NSScreen.mainScreen()
+        if screen is not None:
+            self.window.setFrame_display_(screen.visibleFrame(), True)
         return self
 
     # ---------- 动作 ----------
