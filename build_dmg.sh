@@ -21,8 +21,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
   <key>CFBundleName</key><string>TensorFold Manager</string>
   <key>CFBundleDisplayName</key><string>TensorFold Manager</string>
   <key>CFBundleIdentifier</key><string>local.tensorfold.manager</string>
-  <key>CFBundleVersion</key><string>2.1.4</string>
-  <key>CFBundleShortVersionString</key><string>2.1.4</string>
+  <key>CFBundleVersion</key><string>2.1.5</string>
+  <key>CFBundleShortVersionString</key><string>2.1.5</string>
   <key>CFBundleExecutable</key><string>TensorFoldManager</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
@@ -47,13 +47,21 @@ mkdir -p "$BUILD/dmgroot"
 mv "$APP" "$BUILD/dmgroot/TensorFold Manager.app"
 ln -s /Applications "$BUILD/dmgroot/Applications"
 cat > "$BUILD/dmgroot/README-安装说明.txt" <<'TXT'
-TensorFold Manager v2.1.4 —— 本地 LLM 推理引擎管理端（Apple Silicon 专用）
+TensorFold Manager v2.1.5 —— 本地 LLM 推理引擎管理端（Apple Silicon 专用）
 
 安装：把 "TensorFold Manager.app" 拖到「应用」文件夹（或直接双击运行本卷里的 App）。
 如已安装旧版，先移除旧版再拖入。
 
 App 自带内嵌 Python 运行时（TensorFold 引擎 + MLX + 原生 macOS 壳），无需另装任何依赖。
 模型缓存沿用系统目录 ~/.cache/huggingface，不占 App 体积；大模型首次加载约 30-60s。
+
+v2.1.5 新特性：
+- 本机性能：真实显示 CPU 核心构成（P/E 核 + 逻辑核）、每核占用格子、GPU 型号与核心数、系统负载；
+- 实时读数修复：抓取频率与界面刷新解耦，数字不再时有时无；速率改用真解码耗时做分母；
+- 累计用量：Manager 侧记账（跨引擎重启持续、单调不减），可切会话/累计口径并清除；
+- 监听范围：仅本机(127.0.0.1) / 局域网(0.0.0.0) 一键切换，对话代理即刻重绑；换地址后一键重启实例；
+- 默认上下文多档：32k/64k/128k/256k/512k/1M 下拉 + 手动输入；
+- 对话模型下拉只显示模型名（去掉了"未加载/自动拉起"等后缀）。
 
 v2 新特性：
 - 多实例并行：可同时加载多个模型，各自独立端口/日志/监控；

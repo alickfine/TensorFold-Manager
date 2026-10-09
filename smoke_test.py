@@ -57,10 +57,24 @@ class FakeProc:
         self._dead = True
 
 
-def run_fake_server(port: int, model: str = "fake/model"):
+def run_fake_server(port: int, model: str = "fake/model", *, gen_step: int = 10,
+                    decode_step: float = 0.0, ttft: bool = False):
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-    state = {"gen": 260}
+    state = {"gen": 260, "dec": 5.2}
+
+    def metrics_text() -> str:
+        # gen_step / decode_step 可调：用来造「解码耗时也在推进」的场景，
+        # 以验证 tps 的分母用的是 Δ解码耗时（真解码速率）而不是墙钟。
+        state["gen"] += gen_step
+        state["dec"] += decode_step
+        txt = METRICS_TEXT.replace("tensorfold:request_decode_seconds_sum 5.2",
+                                   f"tensorfold:request_decode_seconds_sum {state['dec']}")
+        txt = txt.format(gen=state["gen"])
+        if ttft:
+            txt += ("tensorfold:time_to_first_token_seconds_sum 1.5\n"
+                    "tensorfold:time_to_first_token_seconds_count 3\n")
+        return txt
 
     class H(BaseHTTPRequestHandler):
         def log_message(self, *a):
@@ -70,8 +84,7 @@ def run_fake_server(port: int, model: str = "fake/model"):
             if self.path == "/health":
                 self.send_response(200); self.end_headers(); self.wfile.write(b"ok")
             elif self.path == "/metrics":
-                state["gen"] += 10
-                payload = METRICS_TEXT.format(gen=state["gen"]).encode()
+                payload = metrics_text().encode()
                 self.send_response(200)
                 self.send_header("Content-Type", "text/plain")
                 self.send_header("Content-Length", str(len(payload)))
@@ -380,6 +393,52 @@ def main():
     mon.reset_model("fake/modelB")
     check("B5 reset_model 清差分", "fake/modelB" not in mon.prev)
 
+    # 回归锁：/metrics 是 0.5Hz（每 2 个 tick 抓一次），而 UI 每 2.5s 读一次 snapshot。
+    # 旧实现 snapshot 直接取 hist[-1]，落在「没抓取」的那一 tick 上读数全是 None
+    # → 监控页实时数字一会儿有一会儿没有。现在 metrics_last 跨 tick 保留真读数。
+    monfill = Monitor()
+    monfill._tick_count = 1
+    monfill.tick(pool, None)      # →tick2（偶数）：抓一次，首轮还没有差分基线
+    time.sleep(0.7)
+    monfill._tick_count = 3
+    monfill.tick(pool, None)      # →tick4（偶数）：与上一轮差分，拿到真读数
+    got = monfill.snapshot()["latest"]
+    check("B5 抓取轮次有真读数", (got.get("tps") or 0) > 0 and (got.get("gen_avg_tps") or 0) > 0,
+          f"tps={got.get('tps')} gen_avg={got.get('gen_avg_tps')}")
+    monfill._tick_count = 4
+    monfill.tick(pool, None)      # →tick5（奇数）：本轮不抓 /metrics
+    kept = monfill.snapshot()["latest"]
+    check("B5 未抓取轮次仍显示最近一次真读数（不再时有时无）",
+          kept.get("tps") == got.get("tps") and kept.get("kv") == got.get("kv")
+          and kept.get("gen_avg_tps") == got.get("gen_avg_tps"),
+          f"kept={ {k: kept.get(k) for k in ('tps', 'kv', 'gen_avg_tps')} }")
+    # 真解码速率：分母必须是 Δ解码耗时，不是墙钟（墙钟含排队/空闲，会虚高）
+    srvR = run_fake_server(18101, "fake/rate", decode_step=0.5, ttft=True)
+    time.sleep(0.3)
+    poolR = EnginePool(python_bin=sys.executable,
+                       settings=ModelSettings(os.path.join(TMP, "rate_settings.json")),
+                       base_port=18080, spawn_hook=lambda argv, env: FakeProc())
+    poolR._alloc_port = lambda: 18101
+    poolR.start("fake/rate")
+    poolR.get("fake/rate").mark_ready()
+    monR = Monitor()
+    monR._tick_count = 1
+    monR.tick(poolR, None)
+    time.sleep(0.7)
+    monR._tick_count = 3
+    monR.tick(poolR, None)
+    lat = monR.snapshot()["latest"]
+    # 每轮 /metrics：生成 +10 token、解码耗时 +0.5s → 10/0.5 = 20.0（按墙钟算会是 ~14）
+    check("B5 真解码速率＝Δ生成/Δ解码耗时", lat.get("tps") == 20.0, f"tps={lat.get('tps')}")
+    check("B5 平均速度（累计量/累计耗时）可用",
+          (lat.get("gen_avg_tps") or 0) > 0 and (lat.get("ttft_avg_ms") or 0) > 0
+          and (lat.get("prefill_avg_tps") or 0) > 0,
+          f"gen={lat.get('gen_avg_tps')} ttft={lat.get('ttft_avg_ms')} pre={lat.get('prefill_avg_tps')}")
+    poolR.stop()
+    monR.tick(type("EmptyPool", (), {"ready_instances": lambda self: []})(), None)
+    check("B5 无实例时读数清空（不挂旧数）", monR.snapshot()["latest"].get("tps") is None,
+          f"tps={monR.snapshot()['latest'].get('tps')}")
+
     # ============ B3: 更新检查（真联网） ============
     print("== B3: 更新检查（GitHub） ==")
     uc = UpdateChecker(engine_version="0.6.4")
@@ -445,6 +504,216 @@ def main():
         else:
             os.environ["HF_HOME"] = _old_hf
         shutil.rmtree(_base, ignore_errors=True)
+
+    # ============ B7: 累计用量账本（跨引擎重启持续） ============
+    # 引擎 /metrics 的 counter 是「本进程启动以来」口径：一重启就归零、实例一停就消失。
+    # 直接相加当累计，用户会看到数字往回跳、停模型后清零。故 Manager 侧按增量自累加。
+    print("== B7: 累计用量账本 ==")
+    from backend.usage import UsageLedger
+    lpath = os.path.join(TMP, "usage.json")
+    led = UsageLedger(lpath)
+    row1 = {"model": "fake/modelB", "requests": 2, "prompt_tokens": 100, "generation_tokens": 200,
+            "drafted": 30, "accepted": 20, "decode_seconds": 4.0, "ttft_seconds": 0.5}
+    led.observe({"fake/modelB#18100": dict(row1)})
+    t1 = led.summary()["totals"]
+    check("B7 首次采样按整量计入",
+          t1["generation_tokens"] == 200 and t1["prompt_tokens"] == 100 and t1["total_tokens"] == 300,
+          f"gen={t1['generation_tokens']} prompt={t1['prompt_tokens']}")
+    row2 = {**row1, "requests": 3, "prompt_tokens": 150, "generation_tokens": 260,
+            "drafted": 40, "accepted": 28, "decode_seconds": 5.0, "ttft_seconds": 0.7}
+    led.observe({"fake/modelB#18100": dict(row2)})
+    t2 = led.summary()["totals"]
+    check("B7 同实例增量累加、不重复计整量",
+          t2["generation_tokens"] == 260 and t2["prompt_tokens"] == 150,
+          f"gen={t2['generation_tokens']} prompt={t2['prompt_tokens']}")
+    check("B7 分模型累计", any(m["model"] == "fake/modelB" and m["total_tokens"] == 410
+                             for m in led.summary()["models"]), str(led.summary()["models"])[:160])
+    # 引擎重启：counter 归零 → 差值为负，按「计数器重启」处理取当前值，总量绝不倒退
+    row3 = {"model": "fake/modelB", "requests": 1, "prompt_tokens": 40, "generation_tokens": 50,
+            "drafted": 0, "accepted": 0, "decode_seconds": 1.0, "ttft_seconds": 0.2}
+    led.observe({"fake/modelB#18100": dict(row3)})
+    t3 = led.summary()["totals"]
+    check("B7 引擎重启不倒退（负差按当前值算）",
+          t3["generation_tokens"] == 310 and t3["generation_tokens"] >= t2["generation_tokens"],
+          f"gen={t3['generation_tokens']}")
+    # 实例停止 → 丢基线；同一实例重现按整量重新计入，不能算成巨量或负数
+    led.observe({})
+    led.observe({"fake/modelB#18100": dict(row3)})
+    t4 = led.summary()["totals"]
+    check("B7 实例消失清基线、重现不产生巨量",
+          t4["generation_tokens"] == 360 and t4["generation_tokens"] < 1000,
+          f"gen={t4['generation_tokens']}")
+    led.flush(force=True)
+    check("B7 落盘可读回", os.path.isfile(lpath)
+          and json.load(open(lpath, encoding="utf-8"))["totals"]["generation_tokens"] == 360)
+    check("B7 重开账本接着累加（App 重启不丢历史）",
+          UsageLedger(lpath).summary()["totals"]["generation_tokens"] == 360)
+    r0 = led.reset()
+    check("B7 reset 清空总量", bool(r0.get("ok")) and r0["totals"]["generation_tokens"] == 0
+          and r0["totals"]["total_tokens"] == 0)
+    led.observe({"fake/modelB#18100": dict(row3)})    # 与基线相同的计数 → 增量 0
+    check("B7 reset 后不把历史重算一遍", led.summary()["totals"]["generation_tokens"] == 0,
+          f"gen={led.summary()['totals']['generation_tokens']}")
+    row4 = {**row3, "prompt_tokens": 60, "generation_tokens": 70,
+            "decode_seconds": 1.5, "ttft_seconds": 0.4}
+    led.observe({"fake/modelB#18100": dict(row4)})
+    t5 = led.summary()["totals"]
+    check("B7 reset 后新增量正常计入", t5["generation_tokens"] == 20 and t5["prompt_tokens"] == 20,
+          f"gen={t5['generation_tokens']}")
+    check("B7 平均速率＝累计量/累计耗时（不是编数）",
+          t5["gen_tps"] == 40.0 and t5["prefill_tps"] == 100.0,
+          f"gen_tps={t5['gen_tps']} prefill_tps={t5['prefill_tps']}")
+
+    # ============ B7: 监听范围（--host 真绑定） ============
+    print("== B7: 监听范围 --host 编译 ==")
+    check("B7 DEFAULT_PARAMS.host 默认 None（交给设置页决定）", DEFAULT_PARAMS.get("host") is None,
+          repr(DEFAULT_PARAMS.get("host")))
+    j_def = " ".join(build_serve_args("m", {}, 8123))
+    check("B7 缺省绑本机 127.0.0.1", "--host 127.0.0.1" in j_def, j_def[:120])
+    j_lan = " ".join(build_serve_args("m", {"host": "0.0.0.0"}, 8123))
+    check("B7 选局域网则真绑 0.0.0.0",
+          "--host 0.0.0.0" in j_lan and "--host 127.0.0.1" not in j_lan, j_lan[:120])
+
+    # ============ B7: 对话代理改监听地址（不重启 App） ============
+    print("== B7: 代理监听重绑 ==")
+    px = ChatProxy(pool)
+    px.start()
+    px_port = px.server_address[1]
+    time.sleep(0.3)
+
+    def px_chat(port, model="fake/modelB"):
+        req = urllib.request.Request(f"http://127.0.0.1:{port}/chat",
+                                     data=json.dumps({"model": model,
+                                                      "messages": [{"role": "user", "content": "hi"}]}).encode(),
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=5) as r:
+            return json.loads(r.read())["choices"][0]["message"]["content"]
+
+    check("B7 同址重绑为无操作且仍 ok",
+          px.relisten("127.0.0.1").get("changed") is False
+          and px.relisten("127.0.0.1").get("ok") is True)
+    r_lan = px.relisten("0.0.0.0")
+    check("B7 重绑到 0.0.0.0（端口不变、真绑上）",
+          r_lan.get("ok") and r_lan.get("changed") and r_lan.get("host") == "0.0.0.0"
+          and px.bind_host == "0.0.0.0" and px.server_address[1] == px_port, str(r_lan))
+    # 关键：重绑后 accept 循环必须还活着。只换 socket 不重启循环的话，
+    # selector 还盯着旧 fd → 端口在 listen 却没人 accept，这里会超时。
+    check("B7 重绑后对话仍可路由（accept 循环真的还活着）",
+          "modelB" in px_chat(px_port))
+    r_bad = px.relisten("203.0.113.9")     # 非本机地址 → 绑不上，必须回滚
+    check("B7 绑不上时回滚到原地址（不留半死状态）",
+          (not r_bad.get("ok")) and px.bind_host == "0.0.0.0" and px.server_address[1] == px_port,
+          str(r_bad))
+    check("B7 回滚后对话仍可路由", "modelB" in px_chat(px_port))
+    r_back = px.relisten("127.0.0.1")
+    check("B7 重绑回本机", r_back.get("ok") and r_back.get("changed")
+          and px.bind_host == "127.0.0.1", str(r_back))
+    check("B7 回到本机后对话仍可路由", "modelB" in px_chat(px_port))
+
+    # ============ B7: Api 网络 / 用量接口 ============
+    print("== B7: Api 网络与用量接口 ==")
+    from backend.api import Api, LISTEN_HOSTS
+    aset = os.path.join(TMP, "app_settings.json")
+    ledAPI = UsageLedger(os.path.join(TMP, "usage_api.json"))
+    monAPI = Monitor(ledger=ledAPI)
+    ap = Api(pool, None, monAPI, px, store, updater=None,
+             app_settings_path=aset, ledger=ledAPI)
+    check("B7 LISTEN_HOSTS 口径", LISTEN_HOSTS == {"local": "127.0.0.1", "lan": "0.0.0.0"},
+          str(LISTEN_HOSTS))
+    nt = ap.network()
+    check("B7 network 默认本机", nt["listen"] == "local" and nt["bind_host"] == "127.0.0.1"
+          and nt["local_url"].startswith("http://127.0.0.1:"),
+          str({k: nt[k] for k in ("listen", "bind_host", "local_url", "lan_url")}))
+    rl = ap.set_listen("lan")
+    check("B7 切局域网：设置落地 + 代理真重绑",
+          rl.get("ok") and rl["listen"] == "lan" and rl["bind_host"] == "0.0.0.0"
+          and px.bind_host == "0.0.0.0", str(rl)[:160])
+    check("B7 设置落盘", json.load(open(aset, encoding="utf-8")).get("listen") == "lan")
+    rl2 = ap.set_listen("bogus")           # 非法值按 local 处理
+    check("B7 非法值回落 local 且代理跟着回绑",
+          rl2["listen"] == "local" and px.bind_host == "127.0.0.1", str(rl2)[:160])
+    ledAPI.observe({"fake/modelB#18100": dict(row1)})
+    us = ap.usage_status()
+    check("B7 usage_status 透出账本", us["totals"]["generation_tokens"] == 200 and us["models"],
+          f"gen={us['totals']['generation_tokens']}")
+    ur = ap.usage_reset()
+    check("B7 usage_reset 清空", bool(ur.get("ok")) and ur["totals"]["generation_tokens"] == 0,
+          str(ur["totals"]["generation_tokens"]))
+    ov = ap.overview()
+    check("B7 overview 带 listen/usage", ov.get("listen") == "local"
+          and isinstance(ov.get("usage"), dict) and ov["bind_host"] == "127.0.0.1",
+          f"listen={ov.get('listen')} has_usage={'usage' in ov}")
+    # 换地址后重启运行中实例：host 要传下去、端口要重新分配（避开 TIME_WAIT）
+    class _StubPool:
+        def __init__(self):
+            self.started, self.stopped = [], 0
+        def instances(self):
+            return [type("I", (), {"model": "fake/modelB", "state": "ready",
+                                   "params": {"context": 32768, "port": 18100}})()]
+        def stop(self, *a, **k):
+            self.stopped += 1
+            return {"ok": True}
+        def start(self, model, **params):
+            self.started.append((model, params))
+            return {"ok": True, "port": 12345}
+    stub = _StubPool()
+    ap2 = Api(stub, None, Monitor(), px, store, app_settings_path=aset)
+    rr = ap2.restart_instances()
+    check("B7 换地址后重启实例（host 传下去、端口重分配）",
+          rr["restarted"] == ["fake/modelB"] and stub.stopped == 1
+          and stub.started[0][1].get("host") == "127.0.0.1" and "port" not in stub.started[0][1],
+          f"{rr} started={stub.started}")
+
+    class _EmptyPool:
+        def instances(self):
+            return []
+    rr2 = Api(_EmptyPool(), None, Monitor(), px, store,
+              app_settings_path=aset).restart_instances()
+    check("B7 无实例时重启为无操作", rr2.get("ok") and rr2["restarted"] == [] and rr2["failed"] == [],
+          str(rr2))
+
+    # ============ B8: 本机性能读数（CPU / GPU 核心数与占用） ============
+    # 核心构成取 sysctl(hw.perflevel0/1) 与 ioreg(gpu-core-count)；占用率取 psutil
+    # （必须先在 Monitor 启动时预热 —— 首次调用恒返回假的 0）与 ioreg Device Utilization %。
+    print("== B8: 本机性能 ==")
+    from backend import hostinfo as _hi
+    ci = _hi.cpu_info()
+    check("B8 CPU 逻辑核数 > 0", (ci.get("logical") or 0) > 0, str(ci))
+    check("B8 CPU 核心构成自洽（P + E == 物理核）",
+          not (ci.get("p") and ci.get("e")) or (ci["p"] + ci["e"]) == ci.get("physical"), str(ci))
+    check("B8 CPU 核心文案非空", bool(_hi.cpu_core_label()), _hi.cpu_core_label())
+    gi = _hi.gpu_info()
+    check("B8 GPU 型号/核心数取自 ioreg", bool(gi.get("name")) and bool(gi.get("cores")), str(gi))
+    check("B8 静态信息有进程内缓存（不反复跑子进程）",
+          _hi.cpu_info() is _hi.cpu_info() and _hi.gpu_info() is _hi.gpu_info())
+    try:
+        import psutil as _ps
+    except ImportError:
+        _ps = None
+    check("B8 psutil 可用（本机性能读数前提）", _ps is not None)
+    if _ps is not None:
+        monP = Monitor()
+        monP.tick(pool, _ps)                  # 首个 tick：只预热，不把假的 0 当读数
+        seed = monP.snapshot()["latest"]
+        check("B8 预热期不把假的 0 当 CPU 读数", seed.get("cpu_percent") is None,
+              f"cpu={seed.get('cpu_percent')}")
+        time.sleep(1.0)
+        monP.tick(pool, _ps)
+        got2 = monP.snapshot()["latest"]
+        check("B8 CPU 占用率是真读数（0..100）",
+              got2.get("cpu_percent") is not None and 0 <= got2["cpu_percent"] <= 100,
+              f"cpu={got2.get('cpu_percent')}")
+        check("B8 每核占用条目数 = 逻辑核数",
+              isinstance(got2.get("cpu_per"), list) and len(got2["cpu_per"]) == ci["logical"],
+              f"len={len(got2.get('cpu_per') or [])} 期望 {ci['logical']}")
+        check("B8 GPU 利用率每 tick 都采（不再隔拍为空）",
+              got2.get("gpu_percent") is None or 0 <= got2["gpu_percent"] <= 100,
+              f"gpu={got2.get('gpu_percent')}")
+        ovh = ap.overview()
+        check("B8 overview 透出 CPU/GPU 真实构成",
+              bool(ovh.get("cpu_label")) and bool(ovh.get("gpu_label"))
+              and (ovh.get("cpu_cores") or 0) > 0 and isinstance(ovh.get("load"), list),
+              f"cpu={ovh.get('cpu_label')} gpu={ovh.get('gpu_label')} load={ovh.get('load')}")
 
     # ============ 杂项 ============
     print("== 杂项 ==")

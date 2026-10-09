@@ -11,6 +11,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import threading
 import time
 import urllib.error
@@ -23,10 +24,88 @@ CHAT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 class ChatProxy(ThreadingHTTPServer):
     daemon_threads = True
+    POLL_INTERVAL = 0.2
 
-    def __init__(self, pool):
-        super().__init__(("127.0.0.1", 0), self._handler(pool))
+    def __init__(self, pool, host: str = "127.0.0.1"):
         self.pool = pool
+        self.bind_host = host
+        self._thread: threading.Thread | None = None
+        self._serving = False
+        self._rebind_lock = threading.Lock()
+        super().__init__((host, 0), self._handler(pool))
+
+    def start(self):
+        """起 accept 循环（幂等：已在跑就直接返回）。"""
+        if self._serving:
+            return
+        self._serving = True
+        self._thread = threading.Thread(target=self._serve, daemon=True, name="chat-proxy")
+        self._thread.start()
+
+    def _serve(self):
+        try:
+            self.serve_forever(poll_interval=self.POLL_INTERVAL)
+        finally:
+            self._serving = False
+
+    def _stop_loop(self, timeout: float = 3.0):
+        """停掉 accept 循环。
+
+        不用 BaseServer.shutdown()：它在「serve_forever 还没进来」时等的是一个从未
+        被 clear 过的 Event，会永久阻塞（切换监听地址时正好可能撞上这个窗口）。
+        这里直接置关闭标志再 join，两种情况都确定收敛。
+        """
+        t = self._thread
+        if t is None or not t.is_alive():
+            return
+        self._BaseServer__shutdown_request = True   # 与 socketserver 内部同名，跨版本稳定
+        t.join(timeout)
+
+    def _bind_socket(self, host: str, port: int) -> None:
+        """在指定地址上新建并激活监听 socket。
+
+        注意 socketserver 的 server_bind() 只对 **现有** self.socket 做 bind/setsockopt，
+        新建 socket 是 __init__ 里干的事；重绑时必须自己重新 socket()，否则是在一个
+        已关闭的 fd 上操作，直接 EBADF。
+        """
+        self.socket = socket.socket(self.address_family, self.socket_type)
+        self.server_address = (host, port)
+        self.server_bind()
+        self.server_activate()
+
+    def relisten(self, host: str) -> dict:
+        """把监听地址换掉（127.0.0.1 ↔ 0.0.0.0），端口不变、不用重启 App。
+
+        不能只把 socket 对象换掉就完事：serve_forever 的 selector 在注册时就把 fd
+        锁死了（kqueue/epoll 都取注册那一刻的 fd），换完还盯着已关闭的旧 fd ——
+        端口仍在 listen，连上去却没人 accept，用户看到的就是"设置切了、对话没了"。
+        所以必须「停 accept 循环 → 关旧 socket → 同一端口重绑 → 再起循环」；
+        重绑失败回滚原地址。无论成败都会把服务重新拉起来。
+        """
+        with self._rebind_lock:
+            port = self.server_address[1]
+            if host == self.bind_host:
+                return {"ok": True, "changed": False, "host": host, "port": port}
+            old = self.bind_host
+            self._stop_loop()
+            self.server_close()
+            try:
+                self._bind_socket(host, port)
+            except OSError as exc:
+                try:
+                    self.socket.close()
+                except OSError:
+                    pass
+                try:
+                    self._bind_socket(old, port)     # 回滚：必须重新建 socket 再绑
+                except OSError:
+                    pass
+                self.start()
+                return {"ok": False, "error": f"切换监听地址失败（已回滚）: {exc}",
+                        "host": self.bind_host, "port": port}
+            self.bind_host = host
+            self.start()
+            return {"ok": True, "changed": True, "host": host, "port": port}
 
     @staticmethod
     def _handler(pool):
@@ -141,9 +220,6 @@ class ChatProxy(ThreadingHTTPServer):
                     self.send_error(404)
 
         return Handler
-
-    def start(self):
-        threading.Thread(target=self.serve_forever, daemon=True, name="chat-proxy").start()
 
 
 class ChatStore:

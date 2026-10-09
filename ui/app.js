@@ -9,6 +9,8 @@ const esc = (s) => String(s == null ? '' : s)
 const ST = {
   family: [], inst: [], cache: [], pulls: {}, appset: {}, upd: {},
   chats: [], cur: null, streaming: false, settings: {},
+  usageMode: 'session',   // 用量口径：session（本次运行）| cumulative（历史累计）
+  net: null,              // 监听范围现状（network API）
 };
 
 /* ---------- 桥 ---------- */
@@ -168,8 +170,12 @@ function renderCards() {
 
     let sz, prog = '';
     if (pull) {
-      prog = '<div class="prog"><i style="width:34%"></i></div>';
-      sz = '下载中 · tensorfold pull';
+      // 进度条走真实数字：已落盘字节 ÷ 预期体积（未知体积时不给宽度，只报已下载量）
+      const pct = pull.percent != null ? pull.percent : null;
+      prog = `<div class="prog"><i style="width:${pct != null ? pct : 0}%"></i></div>`;
+      const done = pull.done_gb != null ? `${fmt0(pull.done_gb)} GB` : '';
+      const of = pct != null ? ` / ${fmt0(pull.total_gb)} GB · ${pct}%` : ' 已下载';
+      sz = `下载中 · ${done}${of}${pull.elapsed ? ' · ' + fmtUp(pull.elapsed) : ''}`;
     } else if (cached) sz = `${fmt0(cached.size_gb)} GB`;
     else sz = f.size_gb ? `未缓存 · 下载约 ${fmt0(f.size_gb)} GB` : '未缓存';
 
@@ -318,21 +324,22 @@ function renderChatTop() {
   const sel = $('chat-model');
   const ready = ST.inst.filter(i => i.state === 'ready' || i.state === 'starting');
   const cur = sel.value;
-  // 可选池 = ready/starting 实例 + 本机已有模型（含 oMLX/MTPLX/自定义目录；未加载的发送时自动拉起）
-  // 统一用 ref 作为身份：HF 模型 = owner/name，外部目录模型 = 绝对路径
-  const cachedRefs = ST.cache.map(m => m.ref);
+  // 可选池 = ready/starting 实例 + 本机已有模型（含 oMLX/MTPLX/自定义目录）。
+  // 辅助（草稿）模型不进这个列表：它只服务对应主模型，当主模型加载必然失败。
+  // 统一用 ref 作为身份：HF 模型 = owner/name，外部目录模型 = 绝对路径。
+  const cachedRefs = ST.cache.filter(m => m.role !== 'draft').map(m => m.ref);
+  // 下拉框**只放模型名**：加载状态由旁边的 ctx chip 与顶栏体现，
+  // 「（未加载 · 发送时自动拉起）」这类字样在窄选择框里会被截断、也读不出重点。
   const poolIds = [...new Set([...ready.map(i => i.model), ...cachedRefs])];
   sel.innerHTML = poolIds.length
-    ? poolIds.map(id => {
-        const st = ready.find(i => i.model === id);
-        const tag = st ? (st.state === 'ready' ? '' : '（加载中…）') : '（未加载 · 发送时自动拉起）';
-        return `<option value="${esc(id)}">${esc(id.split('/').pop())}${tag}</option>`;
-      }).join('')
+    ? poolIds.map(id => `<option value="${esc(id)}">${esc(shortName(id))}</option>`).join('')
     : '<option value="">（没有可用模型，去模型页下载）</option>';
   if (poolIds.includes(cur)) sel.value = cur;
   else if (ST.cur && ST.cur.model && poolIds.includes(ST.cur.model)) sel.value = ST.cur.model;
   const inst = ready.find(i => i.model === sel.value);
-  $('chat-ctx').textContent = inst && inst.params && inst.params.context ? `ctx ${(inst.params.context / 1024) | 0}k` : 'ctx —';
+  const loaded = !!(inst && inst.state === 'ready');
+  $('chat-ctx').textContent = loaded && inst.params && inst.params.context
+    ? `ctx ${(inst.params.context / 1024) | 0}k` : (inst ? '加载中…' : '未加载');
 }
 
 /* 对话前确保模型已加载：未 ready 则 engine_start 并轮询至 ready/starting 结束 */
@@ -445,35 +452,62 @@ function renderMetrics(ov) {
   const nReady = ST.inst.filter(i => i.state === 'ready').length;
   $('st-inst').textContent = nReady;
 
-  // ---- 用量行（可分行显示：请求 / token 总数 / 提示 / 输出 / 已缓存）----
-  const promptTok = L.prompt_tokens || 0, genTok = L.gen_tokens_total || 0;
-  $('st-reqs-done').textContent = fmtInt(L.requests_done);
-  $('st-tok-all').textContent = fmtInt(promptTok + genTok);
-  $('st-tok-prompt').textContent = fmtInt(promptTok);
-  $('st-tok-gen').textContent = fmtInt(genTok);
-  // 已缓存 token（估算）：Σ 每实例 kv_ratio × context；引擎未直接暴露 cached 计数
+  // ---- 平均速度（真实、稳定：累计量 ÷ 累计耗时，不像瞬时 tps 会跳）----
+  $('st-pre-avg').innerHTML = (L.prefill_avg_tps != null ? fmtNum(L.prefill_avg_tps) : '—')
+    + (L.prefill_avg_tps != null ? '<small>tok/s</small>' : '');
+  $('st-gen-avg').innerHTML = (L.gen_avg_tps != null ? fmtNum(L.gen_avg_tps) : '—')
+    + (L.gen_avg_tps != null ? '<small>tok/s</small>' : '');
+  $('st-ttft').innerHTML = (L.ttft_avg_ms != null ? fmt0(L.ttft_avg_ms) : '—')
+    + (L.ttft_avg_ms != null ? '<small>ms</small>' : '');
+
+  // ---- 用量行：会话 = 本次运行；累计 = Manager 账本（跨引擎重启持续）----
+  const u = usageRows(ov);
+  $('st-reqs-done').textContent = fmtInt(u.requests);
+  $('st-tok-all').textContent = fmtInt(u.total);
+  $('st-tok-prompt').textContent = fmtInt(u.prompt);
+  $('st-tok-gen').textContent = fmtInt(u.gen);
+  $('st-reqs-sub').textContent = u.sub;
+  $('st-usage-note').textContent = u.note;
+  const modeBox = $('st-usage-mode');
+  if (modeBox) modeBox.querySelectorAll('button').forEach(b =>
+    b.classList.toggle('on', b.dataset.mode === ST.usageMode));
+  const clearBtn = $('st-usage-clear');
+  if (clearBtn) clearBtn.style.display = ST.usageMode === 'cumulative' ? '' : 'none';
+  renderUsageTable(u.models);
+  // KV 缓存驻留（估算）：引擎没有"前缀缓存命中 token"计数，只有各池占用比例，
+  // 所以这里给的是 占用比例 × 上下文 的驻留量估算，不叫"已缓存 token"。
   let cachedTok = 0, totalCtx = 0;
   ST.inst.filter(i => i.state === 'ready').forEach(i => {
     const p = per[i.model] || {}, ctx = (i.params && i.params.context) || 0;
     if (ctx && p.kv != null) { cachedTok += ctx * (p.kv / 100); totalCtx += ctx; }
   });
   $('st-tok-cached').textContent = cachedTok ? fmtInt(Math.round(cachedTok)) : '—';
-  $('st-tok-cached-sub').textContent = cachedTok ? `KV 池驻留 · 上下文 ${fmtInt(totalCtx)}` : '需运行中实例';
-  // 缓存效率 = 已缓存 / 提示总量（>100% 说明跨请求复用，钳到 999%）
-  const eff = (promptTok > 0 && cachedTok) ? Math.min(cachedTok / promptTok * 100, 999) : null;
-  $('st-cache-eff').innerHTML = eff != null ? Math.round(eff) + '<small>%</small>' : '—';
-  $('st-cache-eff').parentElement.querySelector('.sub').textContent =
-    eff != null ? (cachedTok >= promptTok ? '跨请求复用生效' : '缓存命中 / 提示总量') : '等待首条请求';
+  $('st-tok-cached-sub').textContent = cachedTok
+    ? `KV 池占用估算 · 上下文 ${fmtInt(totalCtx)}` : '需运行中实例';
 
-  // ---- 本机性能行 ----
+  // ---- 本机性能行（真实读数）----
+  // 核心数来自 sysctl(hw.perflevel0/1) 与 ioreg(IOAccelerator gpu-core-count)；
+  // 占用率来自 psutil（已预热，首次读数不再是假的 0）与 ioreg Device Utilization %。
   $('st-cpu').innerHTML = (L.cpu_percent != null ? Math.round(L.cpu_percent) : '—') + '<small>%</small>';
   $('st-gpu').innerHTML = (L.gpu_percent != null ? Math.round(L.gpu_percent) : '—') + '<small>%</small>';
   const usedGb = (ov.mem_total != null && ov.mem_free != null) ? Math.max(0, ov.mem_total - ov.mem_free) : null;
   $('st-hostmem').innerHTML = usedGb != null ? fmt0(usedGb) + '<small> / ' + fmt0(ov.mem_total) + 'GB</small>' : '—';
-  $('st-cpu-sub').textContent = ov.cpu_cores ? `${ov.cpu_cores} 核 · 整机占用` : '整机占用';
+  $('st-cpu-sub').textContent = ov.cpu_label || '整机占用';
+  $('st-gpu-sub').textContent = ov.gpu_label || '整卡利用率';
+  $('st-hostmem-sub').textContent = usedGb != null ? '已用 / 总量' : '等待读数';
+  coregrid('cores-cpu', L.cpu_per);
+  $('host-cpu-cores').textContent = ov.cpu_label || '—';
+  $('host-gpu-cores').textContent = ov.gpu_label || '—';
+  const ld = Array.isArray(ov.load) ? ov.load : [];
+  $('host-load').textContent = ld.length ? `1m ${ld[0]} · 5m ${ld[1]} · 15m ${ld[2]}` : '—';
   // 版本行：App + 引擎（升级后引擎版本即时更新）
   const SS = ST.settings || {};
   $('host-versions').textContent = `App v${SS.app_version || '—'} · 引擎 ${SS.version || '未安装'}`;
+  // 监听范围：本机 = 只有这台 Mac 能连；局域网 = 同网段设备可连（真绑定地址，不是开关）
+  const lan = ov.listen === 'lan';
+  $('host-listen').textContent = lan
+    ? `局域网 · ${ov.lan_ip || '（未取到网卡地址）'}:${ov.proxy_port}`
+    : `仅本机 · 127.0.0.1:${ov.proxy_port}`;
   // 冷热缓存：checkpoint 预算（prompt_cache_gib）占用口径，无精确命中数时标注估算
   const pc = ST.appset && ST.appset.prompt_cache_gib;
   $('host-cache-tier').textContent = pc ? `Prompt 缓存预算 ${pc} GiB · 热驻留（KV/快照），冷数据落盘自动换页` : '热：KV/快照驻留显存 · 冷：落盘自动换页';
@@ -481,7 +515,6 @@ function renderMetrics(ov) {
   bars('bars-tps', (S.tps || {}).values, v => v);
   bars('bars-mem', (S.footprint_gb || {}).values, v => v);
   bars('bars-free', (S.mem_free || {}).values, v => v, true);
-  bars('bars-cpu', (S.cpu_percent || {}).values, v => v);
   bars('bars-gpu', (S.gpu_percent || {}).values, v => v);
 
   const vals = ((S.tps || {}).values || []).slice(-60);
@@ -512,8 +545,68 @@ const fmtNum = (v) => v == null ? '—' : (Number(v) >= 10000
   ? Math.round(Number(v) / 1000) + 'k' : Math.round(Number(v)).toLocaleString('en-US'));
 function fmtUp(s) { s = Math.round(s); const h = (s / 3600) | 0, m = ((s % 3600) / 60) | 0; return h ? `${h}h ${m}m` : `${m}m ${s % 60}s`; }
 
+/* ---------- 用量：会话 / 累计 两种口径 ---------- */
+// 会话 = 引擎进程自己的 counter（引擎重启就归零）；累计 = Manager 账本（跨引擎重启持续）。
+// 以前的"累计"直接把引擎 counter 相加，停一次模型就清零、还会往回跳 —— 那是错的。
+function usageRows(ov) {
+  const L = ov.metrics_latest || {};
+  const U = ov.usage || {};
+  if (ST.usageMode === 'cumulative') {
+    const t = U.totals || {};
+    return {
+      requests: t.requests, prompt: t.prompt_tokens, gen: t.generation_tokens,
+      total: t.total_tokens, sub: '历史累计',
+      note: U.since ? `累计口径 · 自 ${fmtTime(U.since)} 起，跨引擎重启持续` : '累计口径 · 跨引擎重启持续',
+      models: U.models || [],
+    };
+  }
+  const prompt = L.prompt_tokens || 0, gen = L.gen_tokens_total || 0;
+  return {
+    requests: L.requests_done, prompt, gen, total: prompt + gen, sub: '本次运行',
+    note: '会话口径 · 本次运行（引擎重启即归零，切「累计」看历史总量）',
+    models: Object.entries(ov.per || {}).map(([m, p]) => ({
+      model: m, requests: null,
+      prompt_tokens: p.prompt_tokens, generation_tokens: p.gen_tokens,
+      total_tokens: (p.prompt_tokens || 0) + (p.gen_tokens || 0), gen_tps: p.tps,
+    })).sort((a, b) => (b.total_tokens || 0) - (a.total_tokens || 0)),
+  };
+}
+
+function renderUsageTable(models) {
+  const box = $('st-usage-models');
+  if (!box) return;
+  if (!models.length) {
+    box.innerHTML = '<div class="empty">' + (ST.usageMode === 'cumulative'
+      ? '还没有累计记录 —— 跑一次对话后按模型分行显示' : '当前没有运行中的实例') + '</div>';
+    return;
+  }
+  box.innerHTML = '<div class="urow head"><span>模型</span><span class="un">请求</span>'
+    + '<span class="un">提示 Token</span><span class="un">输出 Token</span>'
+    + '<span class="un">Token 总数</span><span class="un">输出 tok/s</span></div>'
+    + models.map(m =>
+      `<div class="urow"><span class="um" title="${esc(m.model)}">${esc(shortName(m.model))}</span>`
+      + `<span class="un">${m.requests == null ? '—' : fmtInt(m.requests)}</span>`
+      + `<span class="un">${fmtInt(m.prompt_tokens || 0)}</span>`
+      + `<span class="un">${fmtInt(m.generation_tokens || 0)}</span>`
+      + `<span class="un">${fmtInt(m.total_tokens || 0)}</span>`
+      + `<span class="un">${m.gen_tps != null ? fmtNum(m.gen_tps) : '—'}</span></div>`).join('');
+}
+
+window.setUsageMode = function (mode) {
+  ST.usageMode = mode === 'cumulative' ? 'cumulative' : 'session';
+  return refresh();     // 必须把 Promise 返出去：调用方 await 它才能拿到刷新后的 DOM
+};
+
+window.clearUsage = async function () {
+  if (!confirm('清除累计用量？\n（只清 Manager 记的累计数字，不影响引擎与聊天记录；清空后从现在重新累计）')) return;
+  const r = await call('usage_reset', {}).catch(e => ({ error: String(e) }));
+  toast(r && r.ok ? '累计用量已清除' : '清除失败: ' + (r && r.error));
+  return refresh();
+};
+
 function bars(id, vals, get, invert) {
   const box = $(id);
+  if (!box) return;
   const v = (vals || []).slice(-10);
   if (!v.length) { box.innerHTML = '<i style="height:4%"></i>'.repeat(10); return; }
   const max = Math.max(...v.map(get), 1);
@@ -521,6 +614,18 @@ function bars(id, vals, get, invert) {
     const p = (get(x) / max) * 100;
     const hot = invert ? '' : (p > 90 ? ' class="max"' : p > 75 ? ' class="hot"' : '');
     return `<i${hot} style="height:${Math.max(p, 3)}%"></i>`;
+  }).join('');
+}
+
+/* 每核占用：一格一核（真实读数，来自 psutil percpu）。灰度用透明度表达占用率，
+   亮/暗主题共用一个变量，不写死颜色。 */
+function coregrid(id, arr) {
+  const box = $(id);
+  if (!box) return;
+  const v = Array.isArray(arr) ? arr : [];
+  box.innerHTML = v.map((x, i) => {
+    const p = Math.min(100, Math.max(0, Number(x) || 0));
+    return `<i title="核心 ${i} · ${Math.round(p)}%" style="opacity:${(0.14 + 0.86 * p / 100).toFixed(2)}"></i>`;
   }).join('');
 }
 
@@ -546,9 +651,87 @@ window.stopAll = async function () {
 };
 
 /* ---------- 设置页 ---------- */
+/* 上下文长度：常用档位下拉 + 手动输入并存（老板 2026-10-09 要求）。
+   - 输入框仍是唯一真值来源（闸门与保存逻辑都按它读）；
+   - 下拉只负责一键填档；填的值不在档位上时下拉显示「自定义」，输入框照样能敲任意值。 */
+const CTX_PRESETS = [['32k', 32768], ['64k', 65536], ['128k', 131072],
+                     ['256k', 262144], ['512k', 524288], ['1M', 1048576]];
+
+function fillCtxPreset(selId) {
+  const sel = $(selId);
+  if (!sel) return;
+  sel.innerHTML = CTX_PRESETS.map(([n, v]) => `<option value="${v}">${n}</option>`).join('')
+    + '<option value="">自定义</option>';
+}
+
+/* 输入框 → 下拉：值命中某档就选中它，否则落到「自定义」 */
+function syncCtxPreset(inputId, selId) {
+  const sel = $(selId), input = $(inputId);
+  if (!sel || !input) return;
+  const v = Number(String(input.value).trim());
+  const hit = CTX_PRESETS.find(([, x]) => x === v);
+  sel.value = hit ? String(hit[1]) : '';
+}
+
+window.applyCtxPreset = function (inputId, selId) {
+  const sel = $(selId), input = $(inputId);
+  if (!sel || !input) return;
+  if (sel.value) {
+    input.value = sel.value;
+    input.dispatchEvent(new Event('change'));   // 设置页的 change 会顺手落盘
+  } else {
+    input.focus();
+  }
+};
+
+/* ---------- 监听范围（仅本机 / 局域网） ---------- */
+// 这是**真绑定地址**（引擎 --host、对话代理 bind），不是"开关"：
+// 仅本机 = 127.0.0.1，只有这台 Mac 上的应用能连；局域网 = 0.0.0.0，同网段设备也能连。
+// 对话代理切换后立刻重绑（不用重启 App）；引擎实例是启动时绑定的，要重启才换地址。
+function renderListen(n) {
+  if (!n) return;
+  ST.net = n;
+  const lan = n.listen === 'lan';
+  const box = $('set-listen');
+  if (box) box.querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.listen === n.listen));
+  const sub = $('listen-sub');
+  if (sub) sub.textContent = lan
+    ? '局域网：同网段的其它设备也能连（绑定 0.0.0.0）—— 本机模型对同网段可见，注意网络环境'
+    : '仅本机：只有这台 Mac 上的应用能连（绑定 127.0.0.1）';
+  const addr = $('listen-addr');
+  if (addr) addr.textContent = lan
+    ? `对话代理 ${n.lan_url || '（未取到网卡地址）'} · 引擎实例同步绑 0.0.0.0`
+    : `对话代理 ${n.local_url || '—'} · 引擎实例绑 127.0.0.1`;
+  const btn = $('btn-listen-restart');
+  if (btn) btn.style.display = (n.running || []).length ? '' : 'none';
+}
+
+window.setListen = async function (scope) {
+  const r = await call('set_listen', { listen: scope }).catch(e => ({ error: String(e) }));
+  if (!r || r.ok === false) { toast('切换失败: ' + (r && r.error)); return; }
+  renderListen(r);
+  const n = (r.running || []).length;
+  toast(scope === 'lan'
+    ? `已切到局域网广播 · 对话代理立即生效${n ? '；' + n + ' 个运行中实例需点「重启实例生效」' : ''}`
+    : `已切回仅本机${n ? '；' + n + ' 个运行中实例需点「重启实例生效」' : ''}`);
+  return refresh();
+};
+
+window.restartForListen = async function () {
+  if (!confirm('重启全部运行中实例以应用新的监听范围？\n（大模型重新加载约 30-60s）')) return;
+  toast('正在按新监听范围重启实例 …');
+  const r = await call('restart_instances', {}).catch(e => ({ error: String(e) }));
+  if (r && r.error) toast('重启失败: ' + r.error);
+  else toast((r && r.restarted && r.restarted.length) ? `已按新地址重启 ${r.restarted.length} 个实例` : '没有实例需要重启');
+  setTimeout(refresh, 800);
+};
+
 async function loadSettings() {
   try { ST.appset = await call('app_settings_get', {}); } catch (e) { ST.appset = {}; }
   $('set-ctx').value = ST.appset.default_context;
+  fillCtxPreset('set-ctx-preset');
+  syncCtxPreset('set-ctx', 'set-ctx-preset');
+  try { renderListen(await call('network', {})); } catch (e) { renderListen(null); }
   $('set-parallel').value = ST.appset.parallel;
   $('set-pcache').value = ST.appset.prompt_cache_gib;
   $('set-autostart').classList.toggle('on', !!ST.appset.autostart_engine);
@@ -559,7 +742,9 @@ async function loadSettings() {
   catch (e) { ST.settings = ST.settings || {}; }   // 超时不阻塞设置页
   const last = ST.upd && ST.upd.checked_at ? ' · 上次检查 ' + fmtTime(ST.upd.checked_at) : '';
   $('ver-sub').textContent = `App v${ST.settings.app_version || '—'} · 引擎 ${ST.settings.version || '未安装'}${last}`;
-  $('btn-copyapi').textContent = `http://127.0.0.1:${ST.settings.proxy_port || 8080}/v1 ⧉`;
+  const apiUrl = (ST.net && ST.net.listen === 'lan' && ST.net.lan_url)
+    ? ST.net.lan_url : `http://127.0.0.1:${ST.settings.proxy_port || 8080}/v1`;
+  $('btn-copyapi').textContent = apiUrl + ' ⧉';
   renderUpdate();
   await refreshScanDirs();
 }
@@ -758,6 +943,8 @@ async function openSettings(model) {
   const defTok = (meta && meta.defaults && meta.defaults.max_tokens) || 4096;
   $('ms-context').value = raw.context != null ? p.context : defCtx;
   $('ms-maxtok').value = raw.max_tokens != null ? p.max_tokens : defTok;
+  fillCtxPreset('ms-ctx-preset');
+  syncCtxPreset('ms-context', 'ms-ctx-preset');
   const ctxHint = $('ms-ctx-hint'), tokHint = $('ms-maxtok-hint');
   if (ctxHint) ctxHint.textContent = `--context · 输入上限${meta && meta.context_max ? '（模型 ' + fmtK(meta.context_max) + '）' : ''}`;
   if (tokHint) tokHint.textContent = '--max-tokens · 输出上限';
@@ -796,6 +983,7 @@ function applyRecommended() {
     $('ms-maxtok').value = d.max_tokens != null ? d.max_tokens : '';
     $('ms-temp').value = d.temperature != null ? d.temperature : '';
     $('ms-topp').value = d.top_p != null ? d.top_p : '';
+    syncCtxPreset('ms-context', 'ms-ctx-preset');
     toast(`已回填模型默认：输入上限 ${fmtK(d.context)} tok、temperature ${d.temperature ?? '默认'}、top_p ${d.top_p ?? '默认'}，确认后保存`);
     return;
   }
@@ -887,8 +1075,11 @@ async function boot() {
   $('btn-pickdir').addEventListener('click', pickScanDir);
   $('scan-path').addEventListener('keydown', (e) => { if (e.key === 'Enter') addScanDir(); });
   $('btn-copyapi').addEventListener('click', async () => {
-    await call('copy_text', { text: `http://127.0.0.1:${ST.settings.proxy_port || 8080}/v1` }).catch(() => {});
-    toast('API 端点已复制到剪贴板');
+    const url = (ST.net && ST.net.listen === 'lan' && ST.net.lan_url)
+      ? ST.net.lan_url
+      : `http://127.0.0.1:${ST.settings.proxy_port || 8080}/v1`;
+    await call('copy_text', { text: url }).catch(() => {});
+    toast('API 端点已复制到剪贴板：' + url);
   });
   $('ms-save').addEventListener('click', saveModelSettings);
   // 恢复默认 = 清掉该模型已存的覆盖项，回到「模型自身默认配置」
@@ -903,9 +1094,12 @@ async function boot() {
     .forEach(([id, key]) => {
       $(id).addEventListener('change', async () => {
         ST.appset = await call('app_settings_save', { [key]: Number($(id).value) }).catch(() => ST.appset);
+        if (id === 'set-ctx') syncCtxPreset('set-ctx', 'set-ctx-preset');   // 手敲的值不在档位上 → 下拉转「自定义」
         toast('已保存');
       });
     });
+  fillCtxPreset('ms-ctx-preset');
+  $('btn-listen-restart').addEventListener('click', () => restartForListen());
   [['set-autostart', 'autostart_engine'], ['set-updcheck', 'auto_update_check'],
    ['set-menubar', 'menubar'], ['set-close2mb', 'close_to_menubar']].forEach(([id, key]) => {
     $(id).addEventListener('click', async () => {

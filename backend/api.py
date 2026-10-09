@@ -9,6 +9,7 @@ import os
 import shutil
 
 from . import engine as engine_mod
+from . import hostinfo
 from .chat import ChatStore
 
 DEFAULT_APP_SETTINGS = {
@@ -16,6 +17,8 @@ DEFAULT_APP_SETTINGS = {
     "parallel": 4,
     "prompt_cache_gib": 16,
     "default_model": "",
+    # 监听范围：local = 只对本机广播（127.0.0.1）；lan = 对局域网广播（0.0.0.0）
+    "listen": "local",
     "autostart_engine": False,
     "auto_update_check": True,
     "menubar": True,
@@ -24,10 +27,28 @@ DEFAULT_APP_SETTINGS = {
     "model_dirs": [],   # 自定义模型扫描目录（绝对路径；HF 缓存与 oMLX/MTPLX 已内置）
 }
 
+LISTEN_HOSTS = {"local": "127.0.0.1", "lan": "0.0.0.0"}
+
+
+def lan_ip() -> str:
+    """本机在局域网里的地址（取默认路由出口的本地地址），取不到返回 ''。
+
+    只是拿来给用户照着填；用 UDP connect 探测，不发包。
+    """
+    import socket
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("8.8.8.8", 80))
+        return s.getsockname()[0]
+    except OSError:
+        return ""
+    finally:
+        s.close()
+
 
 class Api:
     def __init__(self, pool, download, monitor, chat_proxy, store: ChatStore, updater=None,
-                 app_settings_path: str | None = None):
+                 app_settings_path: str | None = None, ledger=None):
         self.pool = pool
         self.engine = pool  # 兼容 v1 命名
         self.download = download
@@ -35,6 +56,8 @@ class Api:
         self.proxy = chat_proxy
         self.store = store
         self.updater = updater
+        # 累计用量账本（跨引擎重启持续）；缺省从 monitor 上取
+        self.ledger = ledger if ledger is not None else getattr(monitor, "ledger", None)
         self._app_settings_path = app_settings_path or os.path.expanduser(
             "~/.tensorfold-manager/app_settings.json")
         try:
@@ -57,15 +80,36 @@ class Api:
             except Exception:
                 pass
         disk = shutil.disk_usage(os.path.expanduser("~"))
+        appset = self.app_settings_get()
+        listen = appset.get("listen") or "local"
+        cpu = hostinfo.cpu_info()
+        gpu = hostinfo.gpu_info()
+        try:
+            load = [round(v, 2) for v in os.getloadavg()]
+        except OSError:
+            load = []
         return {
             "instances": st["instances"],
             "metrics_latest": mon["latest"],
             "per": mon["per"],
             "series": mon["series"],
             "mem_total": total, "mem_free": free,
-            "cpu_cores": (self.psutil.cpu_count() if self.psutil else None),
+            # CPU / GPU 真实构成（取不到就是 None / ""，不猜数）
+            "cpu_cores": cpu["logical"],
+            "cpu_physical": cpu["physical"],
+            "cpu_p": cpu["p"], "cpu_e": cpu["e"],
+            "cpu_model": cpu["model"],
+            "cpu_label": hostinfo.cpu_core_label(),
+            "gpu_name": gpu["name"], "gpu_cores": gpu["cores"],
+            "gpu_label": hostinfo.gpu_core_label(),
+            "load": load,
             "disk_free_gb": round(disk.free / 1024**3, 1),
             "proxy_port": self.proxy.server_address[1] if self.proxy else 0,
+            "listen": listen,
+            "bind_host": LISTEN_HOSTS.get(listen, "127.0.0.1"),
+            "lan_ip": lan_ip() if listen == "lan" else "",
+            # 累计用量（Manager 侧账本，跨引擎重启持续）
+            "usage": self.ledger.summary() if self.ledger else {"totals": {}, "models": [], "since": 0},
         }
 
     # ---------- 引擎 ----------
@@ -79,7 +123,7 @@ class Api:
         for k in ("thinking", "drafts", "vision"):
             if k in overrides:
                 clean[k] = bool(overrides[k])
-        for k in ("kv_dtype", "backend", "reasoning_effort"):
+        for k in ("kv_dtype", "backend", "reasoning_effort", "host"):
             if overrides.get(k):
                 clean[k] = overrides[k]
         # 全局设置兜底：仅当「本次未传且该模型也没保存」时才用设置页的值
@@ -93,6 +137,9 @@ class Api:
                       ("prompt_cache_gib", "prompt_cache_gib")):
             if clean.get(k) is None and saved.get(k) is None:
                 clean[k] = g[gk]
+        # 监听范围是全局策略（不是每模型偏好）：除非该模型显式存过 host，否则跟随设置页
+        if clean.get("host") is None and saved.get("host") is None:
+            clean["host"] = LISTEN_HOSTS.get(g.get("listen") or "local", "127.0.0.1")
         return self.pool.start(model, **clean)
 
     def engine_stop(self, model: str | None = None) -> dict:
@@ -184,7 +231,10 @@ class Api:
         repo_id = repo_id.strip()
         if not repo_id or "/" not in repo_id:
             return {"ok": False, "error": "输入完整的 Hugging Face repo id，如 TensorFold/Qwen3.8-27B-MLX-4bit"}
-        return self.download.start(repo_id)
+        # 官方模型能给出预期体积 → 进度条可以给百分比；未知 repo（如草稿模型）
+        # 就只报真实已落盘字节数，不编一个分母。
+        fam = next((f for f in engine_mod.FAMILIES if f["id"] == repo_id), None)
+        return self.download.start(repo_id, total_gb=(fam or {}).get("size_gb"))
 
     def pull_status(self) -> dict:
         return self.download.active()
@@ -321,6 +371,65 @@ class Api:
         except OSError as exc:
             return {"ok": False, "error": str(exc)}
         return {"ok": True, **cur}
+
+    # ---------- 用量（累计账本） ----------
+    def usage_status(self) -> dict:
+        return self.ledger.summary() if self.ledger else {"totals": {}, "models": [], "since": 0}
+
+    def usage_reset(self) -> dict:
+        if not self.ledger:
+            return {"ok": False, "error": "用量账本未启用"}
+        return self.ledger.reset()
+
+    # ---------- 网络（监听范围） ----------
+    def network(self) -> dict:
+        """监听范围现状 + 本机地址（设置页用）。"""
+        listen = self.app_settings_get().get("listen") or "local"
+        port = self.proxy.server_address[1] if self.proxy else 0
+        ip = lan_ip()
+        running = [i["model"] for i in self.pool.status_all()["instances"]
+                   if i.get("state") in ("ready", "starting")]
+        return {
+            "listen": listen,
+            "bind_host": LISTEN_HOSTS.get(listen, "127.0.0.1"),
+            "proxy_port": port,
+            "proxy_host": getattr(self.proxy, "bind_host", "127.0.0.1") if self.proxy else "",
+            "lan_ip": ip,
+            "local_url": f"http://127.0.0.1:{port}/v1",
+            "lan_url": (f"http://{ip}:{port}/v1" if ip else ""),
+            "running": running,
+        }
+
+    def set_listen(self, listen: str) -> dict:
+        """切监听范围。对话代理立刻重绑（不用重启 App）；引擎是 --host 真绑定，
+        运行中的实例要重启才换地址 —— 这一步由 restart_instances 单独触发。"""
+        listen = "lan" if str(listen) == "lan" else "local"
+        self.app_settings_save(listen=listen)
+        host = LISTEN_HOSTS[listen]
+        if self.proxy is not None:
+            r = self.proxy.relisten(host)
+            if not r.get("ok"):
+                # 代理没绑上就别把设置留着，否则 UI 显示"已对局域网"，实际没开
+                self.app_settings_save(listen="local")
+                return {**r, **self.network()}
+        return {"ok": True, **self.network()}
+
+    def restart_instances(self) -> dict:
+        """按当前设置重启全部运行中实例（换监听地址后让它真生效）。"""
+        before = [(i.model, dict(i.params)) for i in self.pool.instances()
+                  if getattr(i, "state", "") in ("ready", "starting")]
+        if not before:
+            return {"ok": True, "restarted": [], "failed": []}
+        self.pool.stop()
+        self.monitor.reset()
+        host = LISTEN_HOSTS.get(self.app_settings_get().get("listen") or "local", "127.0.0.1")
+        ok, failed = [], []
+        for model, params in before:
+            params.pop("port", None)      # 重新分配端口，避开旧端口的 TIME_WAIT
+            params["host"] = host
+            r = self.pool.start(model, **params)
+            (ok if r.get("ok") else failed).append(model)
+        return {"ok": True, "restarted": ok, "failed": failed}
 
     def open_hf_cache(self) -> dict:
         import subprocess

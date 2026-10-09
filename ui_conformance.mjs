@@ -177,12 +177,78 @@ ok('保存上报 drafts 参数', v === true, String(v));
 v = await ev(`(()=>{closeSettings();return !document.getElementById('ms-overlay').classList.contains('open')})()`);
 ok('弹窗可关闭', v === true, String(v));
 
+/* ---------- 下载进度：真数字，不是写死的百分比（2026-10-09） ---------- */
+// 旧实现是 `<i style="width:34%">` 写死的假进度条，不管下到哪都是 34%。
+v = await ev(`(async()=>{ window.__mock.pulling=true; await renderModelsPage();
+  const c=[...document.querySelectorAll('#mcards .mcard')].find(x=>x.textContent.includes('Qwen3.8-27B (4bit)'));
+  const i=c.querySelector('.prog i'), bar=c.querySelector('.prog');
+  return JSON.stringify({ w: i?i.style.width:'', txt: bar?bar.parentElement.textContent:'',
+                          sz: c.querySelector('.sz')?c.querySelector('.sz').textContent:'' })})()`);
+{
+  const d = JSON.parse(v);
+  ok('下载进度条宽度来自后端真实百分比', d.w === '43%', v);
+  ok('下载卡显示已下载量 / 预期体积 / 百分比',
+     d.sz.includes('43%') && d.sz.includes('6 GB') && d.sz.includes('15 GB'), v);
+  ok('下载进度不再写死 34%', d.w !== '34%', v);
+}
+await ev(`(async()=>{ window.__mock.pulling=false; await renderModelsPage(); })()`);
+
 /* ---------- 设置页字段 ---------- */
 v = await ev(`(()=>{switchPage('settings');return document.getElementById('page-settings').textContent})()`);
 for (const kw of ['并发上限', 'Prompt 缓存容量', '自动检查更新', '当前版本', '菜单栏常驻', 'API 端点',
-                  '模型目录', '添加自定义目录']) {
+                  '模型目录', '添加自定义目录', '监听范围', '默认上下文长度']) {
   ok(`设置页含「${kw}」`, String(v).includes(kw));
 }
+
+/* ---------- 默认上下文长度：多档可调 + 手动输入（2026-10-09 用户要求） ---------- */
+v = await ev(`(async()=>{ await loadSettings();
+  const sel=document.getElementById('set-ctx-preset'), inp=document.getElementById('set-ctx');
+  const opts=[...sel.options].map(o=>o.textContent);
+  sel.value='262144'; sel.dispatchEvent(new Event('change'));
+  return JSON.stringify({ opts, inp: inp.value, selVal: sel.value })})()`);
+{
+  const d = JSON.parse(v);
+  ok('上下文档位含 64k/128k/256k/512k/1M',
+     ['64k', '128k', '256k', '512k', '1M'].every(n => d.opts.includes(n)) && d.opts.includes('自定义'), v);
+  ok('选档位填进输入框（256k→262144）', d.inp === '262144', v);
+}
+// 手动敲一个不在档位上的值 → 下拉转「自定义」，输入框保留原值
+v = await ev(`(async()=>{ const inp=document.getElementById('set-ctx');
+  inp.value='200000'; inp.dispatchEvent(new Event('change'));
+  await new Promise(r=>setTimeout(r,300));
+  const sel=document.getElementById('set-ctx-preset');
+  return JSON.stringify({ inp: inp.value, sel: sel.value })})()`);
+{
+  const d = JSON.parse(v);
+  ok('手动输入的值不落在档位上时下拉转「自定义」', d.sel === '' && d.inp === '200000', v);
+}
+
+/* ---------- 监听范围：仅本机 / 局域网 ---------- */
+v = await ev(`(async()=>{ await loadSettings(); return JSON.stringify({
+  on: document.querySelector('#set-listen button.on') ? document.querySelector('#set-listen button.on').dataset.listen : '',
+  addr: document.getElementById('listen-addr').textContent,
+  sub: document.getElementById('listen-sub').textContent })})()`);
+{
+  const d = JSON.parse(v);
+  ok('监听范围默认「仅本机」', d.on === 'local', v);
+  ok('仅本机显示 127.0.0.1 接口地址', d.addr.includes('127.0.0.1'), v);
+}
+v = await ev(`(async()=>{ window.__listenCalls=[]; await setListen('lan'); return JSON.stringify({
+  calls: window.__listenCalls,
+  on: document.querySelector('#set-listen button.on') ? document.querySelector('#set-listen button.on').dataset.listen : '',
+  addr: document.getElementById('listen-addr').textContent,
+  sub: document.getElementById('listen-sub').textContent })})()`);
+{
+  const d = JSON.parse(v);
+  ok('切局域网调后端并高亮', d.calls.join(',') === 'lan' && d.on === 'lan', v);
+  ok('局域网显示网卡地址（可给同网段设备）', d.addr.includes('192.168.100.101'), v);
+  ok('局域网文案说明同网段可见', d.sub.includes('同网段'), v);
+}
+v = await ev(`(async()=>{ await setListen('local'); const b=document.getElementById('btn-listen-restart');
+  return JSON.stringify({ on: document.querySelector('#set-listen button.on').dataset.listen,
+                          btn: getComputedStyle(b).display })})()`);
+ok('可切回仅本机（无运行实例时不显示重启按钮）',
+   JSON.parse(v).on === 'local' && JSON.parse(v).btn === 'none', v);
 
 /* ---------- 模型目录（扫描根）：mock 注入 oMLX/自定义，断言渲染与去重 ---------- */
 v = await ev(`(()=>{
@@ -242,6 +308,17 @@ v = await ev(`(()=>{switchPage('chat');return JSON.stringify({
   ta: !!document.getElementById('chat-text'),
   send: !!document.getElementById('btn-send')})})()`);
 ok('对话页四组件', JSON.parse(v).conv && JSON.parse(v).sel && JSON.parse(v).ta && JSON.parse(v).send, v);
+// 下拉框只放模型名（2026-10-09 用户要求：不要「（未加载 · 发送时自动拉起）」这类字样）
+v = await ev(`(()=>{renderChatTop();const o=[...document.querySelectorAll('#chat-model option')];
+  return JSON.stringify({n:o.length, txt:o.map(x=>x.textContent).join('|')})})()`);
+{
+  const d = JSON.parse(v);
+  ok('对话下拉框列出本机模型', d.n >= 2, v);
+  ok('对话下拉框只有模型名（无加载状态字样）',
+     d.txt.includes('Qwen3.8-27B-MLX-4bit') && !/未加载|自动拉起|加载中/.test(d.txt), v);
+  ok('下拉框不带 provider 前缀', !d.txt.includes('TensorFold/'), v);
+  ok('下拉框不含辅助（草稿）模型', !d.txt.includes('DFlash2'), v);
+}
 
 /* ---------- 监控页组件 ---------- */
 v = await ev(`(()=>{switchPage('metrics');return JSON.stringify({
@@ -265,8 +342,8 @@ const chart = await ev(`(()=>{
     hasOverlay: !!ov, text: ov ? ov.textContent.trim() : '',
     shown: ov ? getComputedStyle(ov).display !== 'none' : false,
     textInSvg: document.querySelectorAll('#chart-tps text').length,
-    readouts: ['st-tps','st-prefill','st-mem','st-free','st-kv','st-mtp','st-cache-eff',
-               'st-cpu','st-gpu','st-hostmem'].map(i => (document.getElementById(i)||{}).textContent || ''),
+    readouts: ['st-tps','st-prefill','st-mem','st-free','st-kv','st-mtp','st-pre-avg',
+               'st-gen-avg','st-ttft','st-cpu','st-gpu','st-hostmem'].map(i => (document.getElementById(i)||{}).textContent || ''),
   })})()`);
 const ch = JSON.parse(chart);
 ok("空态文案在 HTML 覆盖层（不在被拉伸的 SVG 内）",
@@ -284,6 +361,119 @@ const chartOn = await ev(`(()=>{
 const chOn = JSON.parse(chartOn);
 ok("有吞吐数据时隐藏空态并画曲线",
    !chOn.shown && chOn.poly === 1 && chOn.textInSvg === 0, chartOn);
+
+/* ---------- 用量：会话 / 累计 两种口径（2026-10-09 用户反馈：累计值有问题） ---------- */
+// 会话口径 = 引擎自己 counter；累计口径 = Manager 账本（跨引擎重启持续）。
+// 旧实现把引擎 counter 当累计：停一次模型就清零、还会往回跳。
+v = await ev(`(()=>{
+  ST.usageMode='session';
+  renderMetrics({ mem_total: 256, mem_free: 190,
+    metrics_latest: { prompt_tokens: 1000, gen_tokens_total: 2000, requests_done: 7 },
+    per: {}, series: {}, usage: window.__mockUsage });
+  return JSON.stringify({ req: document.getElementById('st-reqs-done').textContent,
+                 all: document.getElementById('st-tok-all').textContent,
+                 prompt: document.getElementById('st-tok-prompt').textContent,
+                 gen: document.getElementById('st-tok-gen').textContent,
+                 sub: document.getElementById('st-reqs-sub').textContent });
+})()`);
+{
+  const d = JSON.parse(v);
+  ok('会话口径读数来自引擎 counter', d.all === '3,000' && d.req === '7'
+     && d.prompt === '1,000' && d.gen === '2,000', v);
+  ok('会话口径标注「本次运行」', d.sub === '本次运行', v);
+}
+// 切累计：数字换成账本（mock: 4,490,900 / 1,850,000 / 2,640,900），并把每模型表填出来
+v = await ev(`(async()=>{
+  await setUsageMode('cumulative');
+  const box=document.getElementById('st-usage-models');
+  return JSON.stringify({
+    all: document.getElementById('st-tok-all').textContent,
+    prompt: document.getElementById('st-tok-prompt').textContent,
+    gen: document.getElementById('st-tok-gen').textContent,
+    on: document.querySelector('#st-usage-mode button.on').dataset.mode,
+    rows: box.querySelectorAll('.urow').length,
+    head: box.querySelector('.urow.head') ? box.querySelector('.urow.head').textContent : '',
+    first: box.querySelectorAll('.urow')[1] ? box.querySelectorAll('.urow')[1].textContent : '',
+    clearVisible: getComputedStyle(document.getElementById('st-usage-clear')).display !== 'none',
+  });
+})()`);
+{
+  const d = JSON.parse(v);
+  ok('切累计显示账本总量', d.all === '4,490,900' && d.prompt === '1,850,000' && d.gen === '2,640,900', v);
+  ok('切换按钮高亮在累计', d.on === 'cumulative', v);
+  ok('累计口径列出每模型分行', d.rows === 3 && d.head.includes('模型') && d.head.includes('输出 tok/s'), v);
+  ok('每模型行显示模型名与总量', d.first.includes('Qwen3.8-27B-MLX-4bit') && d.first.includes('4,260,000'), v);
+  ok('累计口径显示「清除累计」', d.clearVisible, v);
+}
+// 清除累计必须真的调后端（不是只清 UI）
+v = await ev(`(async()=>{ window.__usageReset=0; window.confirm=()=>true;
+  await clearUsage(); return String(window.__usageReset) })()`);
+ok('清除累计调用后端 usage_reset', v === '1', String(v));
+// 会话口径不显示「清除」（累计才有意义）
+v = await ev(`(async()=>{ await setUsageMode('session');
+  return getComputedStyle(document.getElementById('st-usage-clear')).display })()`);
+ok('会话口径隐藏「清除累计」', v === 'none', String(v));
+
+/* ---------- KV 驻留标注（引擎没有"缓存命中 token"计数，不能编） ---------- */
+v = await ev(`(()=>{ ST.inst=[{model:'m',state:'ready',params:{context:262144}}];
+  renderMetrics({ mem_total:256, mem_free:190,
+    metrics_latest:{ kv: 62.4 }, per:{ m:{ kv:62.4 } }, series:{}, usage:{} });
+  return JSON.stringify({ v: document.getElementById('st-tok-cached').textContent,
+                          sub: document.getElementById('st-tok-cached-sub').textContent,
+                          eff: !!document.getElementById('st-cache-eff') })})()`);
+{
+  const d = JSON.parse(v);
+  ok('KV 驻留给的是占用估算并如实标注', /\d/.test(d.v) && d.sub.includes('估算'), v);
+  ok('不再显示靠编的「缓存效率」', d.eff === false, v);
+  await ev(`ST.inst=[]`);
+}
+/* ---------- 本机性能：CPU/GPU 核心数与使用情况都是真读数（2026-10-09 用户要求） ---------- */
+// 核心构成来自 sysctl(hw.perflevel0/1) 与 ioreg(gpu-core-count)；占用率来自 psutil
+// （已在 Monitor 启动时预热，首次读数不再是假的 0）与 ioreg Device Utilization %。
+// 旧版只显示一句「36 核 · 整机占用」，看不出 P/E 构成，也没有每核占用。
+v = await ev(`(()=>{
+  const PER = Array.from({length:36},(_,i)=>i<12?90:30);
+  renderMetrics({ mem_total:256, mem_free:190,
+    cpu_label:'12P + 24E · 36 逻辑核', gpu_label:'Apple M5 Ultra · 80 核',
+    load:[11.24,12.41,10.93],
+    metrics_latest:{ cpu_percent:62, gpu_percent:71, cpu_per:PER }, per:{}, series:{} });
+  const cells=[...document.querySelectorAll('#cores-cpu i')];
+  const op=cells.map(c=>parseFloat(c.style.opacity));
+  return JSON.stringify({
+    cpu: document.getElementById('st-cpu').textContent,
+    gpu: document.getElementById('st-gpu').textContent,
+    cpusub: document.getElementById('st-cpu-sub').textContent,
+    gpusub: document.getElementById('st-gpu-sub').textContent,
+    core: document.getElementById('host-cpu-cores').textContent,
+    gcore: document.getElementById('host-gpu-cores').textContent,
+    load: document.getElementById('host-load').textContent,
+    cells: cells.length,
+    hi: Math.max(...op), lo: Math.min(...op),
+  });
+})()`);
+{
+  const d = JSON.parse(v);
+  ok('CPU 使用率是真读数（整数 %）', d.cpu === '62%', v);
+  ok('GPU 使用率是真读数（整数 %）', d.gpu === '71%', v);
+  ok('CPU 核心构成真实显示（P/E + 逻辑核）', /12P \+ 24E/.test(d.cpusub) && /36/.test(d.cpusub), v);
+  ok('GPU 型号与核心数真实显示', /M5 Ultra/.test(d.gpusub) && /80 核/.test(d.gpusub), v);
+  ok('CPU/GPU 核心数各有独立一行', /12P/.test(d.core) && /80 核/.test(d.gcore), v);
+  ok('系统负载（1/5/15m）真实显示', /1m 11\.24/.test(d.load) && /15m 10\.93/.test(d.load), v);
+  ok('每核占用格子数 = 逻辑核数', d.cells === 36, v);
+  ok('每核格子按占用率区分深浅', d.hi - d.lo > 0.3, v);
+}
+// 读不到就读不到：不许填假数字，也不许把页面搞崩
+v = await ev(`(()=>{ renderMetrics({ mem_total:256, mem_free:190, metrics_latest:{}, per:{}, series:{} });
+  const cells=document.querySelectorAll('#cores-cpu i').length;
+  return JSON.stringify({ cpu: document.getElementById('st-cpu').textContent,
+                          core: document.getElementById('host-cpu-cores').textContent,
+                          load: document.getElementById('host-load').textContent, cells })})()`);
+{
+  const d = JSON.parse(v);
+  ok('本机性能缺失时显示占位而非编数',
+     d.cpu === '—%' && d.core === '—' && d.load === '—' && d.cells === 0, v);
+}
+
 // 版本信息必须启动即加载（旧版只在打开设置页时取 settings，监控页长期显示 "App v— · 引擎 未安装"）
 const verTxt = await ev(`JSON.stringify({
   win: (document.getElementById('win-ver')||{}).textContent || '',

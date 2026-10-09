@@ -47,6 +47,7 @@ FAMILIES = [
 # 而不是被写死的 32768 覆盖。UI 弹窗会把模型默认值填出来供用户改。
 DEFAULT_PARAMS = {
     "port": None,          # None = 池自动分配
+    "host": None,          # None = 只对本机广播（127.0.0.1）；"0.0.0.0" = 对局域网广播
     "context": None,
     "max_tokens": None,
     "temperature": None,
@@ -433,7 +434,10 @@ def build_serve_args(model: str, params: dict, port: int) -> list[str]:
     context/max_tokens 为 None 时不传该旗标 —— 引擎按模型 config 的自身上限自决，
     这是"初始设置 = 模型默认配置"的落地（UI 填出的默认值若被用户改动才会显式传）。
     """
-    extra = ["--host", "127.0.0.1", "--port", str(port)]
+    # 监听地址：默认只对本机广播；设置页切到「局域网」时传 0.0.0.0。
+    # 注意 --host 是真绑定地址，不是"广播"开关：127.0.0.1 下同网段设备连不上端口。
+    host = str(params.get("host") or "127.0.0.1")
+    extra = ["--host", host, "--port", str(port)]
     if params.get("context") is not None:
         extra += ["--context", str(params["context"])]
     if params.get("max_tokens") is not None:

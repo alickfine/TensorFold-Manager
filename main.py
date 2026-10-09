@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import json
 import os
 import sys
 import threading
@@ -31,6 +32,7 @@ from backend.monitor import Monitor  # noqa: E402
 from backend.shell import Shell  # noqa: E402
 from backend.tray import Tray  # noqa: E402
 from backend.update import UpdateChecker  # noqa: E402
+from backend.usage import UsageLedger  # noqa: E402
 
 try:
     import psutil
@@ -43,12 +45,22 @@ LAUNCHER = os.environ.get("TFM_CLI") or find_launcher(HERE)
 POOL = EnginePool(python_bin=LAUNCHER, settings=ModelSettings(
     os.path.join(DATA_DIR, "model_settings.json")))
 DOWNLOAD = DownloadManager(LAUNCHER) if LAUNCHER else None
-MONITOR = Monitor()
+# 累计用量账本：Manager 侧自己按增量累加，引擎重启/停止都不丢历史
+MONITOR = Monitor(ledger=UsageLedger(os.path.join(DATA_DIR, "usage.json")))
 UPDATER = UpdateChecker()
 PROXY: ChatProxy | None = None
 SHELL: Shell | None = None
 TRAY: Tray | None = None
 STOP = threading.Event()
+
+
+def listen_host() -> str:
+    """对话代理的绑定地址，跟设置页「监听范围」一致（lan → 0.0.0.0）。"""
+    try:
+        with open(os.path.join(DATA_DIR, "app_settings.json"), encoding="utf-8") as f:
+            return "0.0.0.0" if json.load(f).get("listen") == "lan" else "127.0.0.1"
+    except (OSError, ValueError):
+        return "127.0.0.1"
 
 
 def background_loop():
@@ -109,9 +121,9 @@ def main():
     store = ChatStore(os.path.join(DATA_DIR, "chats"))
     migrate_legacy_chat(store)
 
-    PROXY = ChatProxy(POOL)
+    PROXY = ChatProxy(POOL, listen_host())
     PROXY.start()
-    api = Api(POOL, DOWNLOAD, MONITOR, PROXY, store, UPDATER)
+    api = Api(POOL, DOWNLOAD, MONITOR, PROXY, store, UPDATER, ledger=MONITOR.ledger)
 
     threading.Thread(target=background_loop, daemon=True, name="monitor-loop").start()
 
