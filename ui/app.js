@@ -139,7 +139,9 @@ function renderBadge() {
 
 /* ---------- 模型页（第一页） ---------- */
 async function renderModelsPage() {
-  if (!ST.family.length) ST.family = await call('families', {}).catch(() => []);
+  // 每次都重取官方模型表：卡片上的加速配套（草稿模型有没有下载）会随下载/删除变化，
+  // 只在表为空时取的话，下完草稿模型再回到这一页，卡片口径还停在旧值。
+  try { const fam = await call('families', {}); if (fam && fam.length) ST.family = fam; } catch (e) {}
   try { ST.cache = await call('models_installed', {}); } catch (e) {}
   try { ST.pulls = await call('pull_status', {}); } catch (e) {}
   renderCards();
@@ -180,10 +182,22 @@ function renderCards() {
     const delBtn = (cached && !running)
       ? `<button class="sbtn del" onclick="delModel('${esc(f.id)}')">删除</button>`
       : `<button class="sbtn del" disabled${running ? ' title="运行中不可删"' : ''}>删除</button>`;
+    // 加速配套 chip：把「官方支持模型」与缓存里的辅助模型联起来 —— 卡片上直接看到
+    // 草稿模型叫什么、有没有下载，点一下进设置配置。刻意用 span 而非 .sbtn：
+    // 卡片按钮数是原型闸门锁死的（加载/设置/删除三枚）。
+    const acc = f.accel || {};
+    let accelChip = '';
+    if (acc.draft_repo) {
+      const dn = esc(shortName(acc.draft_repo));
+      accelChip = acc.draft_cached
+        ? `<div class="accline"><span class="accelchip on" title="草稿模型 ${esc(acc.draft_repo)} 已下载${acc.draft_size_gb ? '（' + fmt0(acc.draft_size_gb) + ' GB）' : ''} · 点击配置" onclick="openSettings('${esc(f.id)}')">⚡ 草稿加速已就绪<span class="ar">· ${dn}</span></span></div>`
+        : `<div class="accline"><span class="accelchip off" title="草稿模型 ${esc(acc.draft_repo)} 未下载 · 点击进设置下载" onclick="openSettings('${esc(f.id)}')">⚡ 草稿模型未下载<span class="ar">· 点此配置</span></span></div>`;
+    }
     return `<div class="mcard${inst && inst.state === 'ready' ? ' active' : ''}">
       <div class="mt"><b>${esc(f.name)}</b>${badges.join('')}</div>
       <div class="rid" title="${esc(f.id)}">${esc(shortName(f.id))}</div>
       <div class="desc">${esc(f.note || '')}</div>
+      ${accelChip}
       ${prog}
       <div class="row"><span class="sz">${esc(sz)}</span>${loadBtn}<button class="sbtn" onclick="openSettings('${esc(f.id)}')">设置</button>${delBtn}</div>
     </div>`;
@@ -224,13 +238,23 @@ function renderCacheList() {
       : '<span style="color:var(--ink4)" title="外部目录（oMLX/MTPLX/自定义），本 App 不删除">外部</span>';
     // 非官方宣传的模型（不在官方族列表里）也能一键开启：这就是"可以使用就给出开启选项"
     const official = officialIds.has(m.id) || officialIds.has(m.ref);
-    const loadOrStop = running
-      ? '<span class="mini-chip" style="color:var(--run-ink)">● 运行中</span>'
-      : `<button class="sbtn" onclick="loadModel('${esc(m.ref)}')">开启</button>`;
-    return `<div class="pitem"><span class="dot ${running ? 'on' : 'off'}"></span>`
+    // 辅助（草稿）模型：它是主模型的推测解码配套，不能单独开启 —— 单开只会把它当主模型
+    // 加载（必然失败）。所以这里不给「开启」，改标「辅助模型」并联到主模型的设置里去配置。
+    const isDraft = m.role === 'draft';
+    const loadOrStop = isDraft
+      ? (m.used_by && m.used_by.length
+          ? `<button class="sbtn" onclick="openSettings('${esc(m.used_by[0])}')">用于 ${esc(shortName(m.used_by[0]))}</button>`
+          : '')
+      : (running
+          ? '<span class="mini-chip" style="color:var(--run-ink)">● 运行中</span>'
+          : `<button class="sbtn" onclick="loadModel('${esc(m.ref)}')">开启</button>`);
+    const roleTag = isDraft
+      ? '<span class="tag draft" title="推测解码用的草稿模型，不能单独开启；在上方主模型的设置里启用或关闭">辅助模型</span>'
+      : (official ? '' : '<span class="tag" style="color:var(--warn)">非官方</span>');
+    return `<div class="pitem"><span class="dot ${isDraft ? 'off' : (running ? 'on' : 'off')}"></span>`
       + `<span class="tag">${esc(m.root_label || m.source || '')}</span>`
       + `<span class="mono" title="${esc(m.ref)}">${esc(shortName(m.id))}</span>`
-      + (official ? '' : '<span class="tag" style="color:var(--warn)">非官方</span>')
+      + roleTag
       + `<span class="right">${fmt0(m.size_gb)} GB${loadOrStop}${del}</span></div>`;
   }).join('');
 }
@@ -651,12 +675,70 @@ function renderAttrs(meta) {
     ? `<span class="at on">● 内置 MTP 头${acc.mtp_layers ? '（' + acc.mtp_layers + ' 层）' : ''}</span>`
     : '<span class="at dim">无内置 MTP 头</span>');
   if (acc.draft_repo) {
+    const sz = acc.draft_size_gb ? ' ' + fmt0(acc.draft_size_gb) + ' GB' : '';
     items.push(acc.draft_cached
-      ? `<span class="at on" title="${esc(acc.draft_repo)}">● 草稿模型已下载</span>`
+      ? `<span class="at on" title="${esc(acc.draft_repo)}">● 草稿模型已下载${sz}</span>`
       : `<span class="at warn" title="tensorfold pull ${esc(acc.draft_repo)}">○ 草稿模型未下载</span>`);
   }
   box.innerHTML = items.join('');
 }
+
+/* ---------- 加速配套区块（设置弹窗基础段） ---------- */
+// 以前这里只有一枚只读徽标「草稿模型已下载」：看不到是哪个模型、多大、也没法开或关。
+// 现在把它变成可配置区块：草稿模型全名 + 状态/体积 + 一键下载 + 推测解码总开关。
+function renderAccel(meta, p) {
+  const box = $('ms-accel');
+  if (!box) return;
+  const acc = (meta && meta.accel) || {};
+  const draftRepo = acc.draft_repo || '';
+  if (!meta || !meta.found || (!draftRepo && !acc.builtin_mtp)) {
+    box.style.display = 'none';
+    box.innerHTML = '';
+    return;
+  }
+  box.style.display = '';
+  const pulling = !!(ST.pulls || {})[draftRepo];
+  const rows = [];
+  if (acc.builtin_mtp) {
+    rows.push('<div class="arow"><span class="aname">内置 MTP 头</span>'
+      + `<span class="astate on">● ${acc.mtp_layers ? acc.mtp_layers + ' 层' : '可用'}</span></div>`);
+  }
+  if (draftRepo) {
+    const st = pulling
+      ? '<span class="astate off">◌ 下载中</span>'
+      : acc.draft_cached
+        ? `<span class="astate on">● 已下载${acc.draft_size_gb ? ' ' + fmt0(acc.draft_size_gb) + ' GB' : ''}</span>`
+        : '<span class="astate off">○ 未下载</span>';
+    rows.push(`<div class="arow"><span class="aname" title="${esc(draftRepo)}">${esc(draftRepo)}</span>${st}</div>`);
+    if (!acc.draft_cached && !pulling) {
+      rows.push('<div class="abtns">'
+        + `<button class="sbtn pri" onclick="pullDraft('${esc(draftRepo)}')">↓ 下载草稿模型</button>`
+        + `<span class="acode">tensorfold pull ${esc(draftRepo)}</span></div>`);
+    }
+    rows.push('<div class="anote">草稿模型用于推测解码：每轮先猜几个 token 再由主模型校验，'
+      + '输出与逐个解码一致、通常更快。尚未下载时引擎自动只用内置 MTP 头。</div>');
+  }
+  const on = p ? p.drafts !== false : true;   // 缺省 = 开
+  rows.push('<div class="arow"><span class="aname" style="font-family:inherit;font-size:12.5px;color:var(--ink2)">'
+    + '启用推测解码<div class="hint2">--no-drafts · 关掉后内置 MTP 与草稿模型一并停用</div></span>'
+    + `<span class="switch${on ? ' on' : ''}" id="ms-drafts" onclick="toggleSwitch(this)"></span></div>`);
+  box.innerHTML = '<div class="ah">加速配套</div>' + rows.join('');
+}
+
+/* 弹窗里的开关统一走这里。此前 #ms-thinking / #ms-vision 没绑任何点击处理，
+   点上去毫无反应（开关是死的），保存时也只能读到初始值。 */
+window.toggleSwitch = function (el) { if (el) el.classList.toggle('on'); };
+
+/* 下载辅助（草稿）模型：复用模型页那条 pull 链路，下完刷新弹窗状态 */
+window.pullDraft = async function (repo) {
+  toast(`开始下载草稿模型 ${repo}（后台进行，可继续操作）`);
+  const r = await call('model_pull', { repo_id: repo }).catch(e => ({ error: String(e) }));
+  if (r && r.error) { toast('下载失败: ' + r.error); return; }
+  // 卡片上的加速 chip 取自 families，这里同步刷新一次，免得退出弹窗后还是旧口径
+  try { const fam = await call('families', {}); if (fam && fam.length) ST.family = fam; } catch (e) {}
+  renderCards();
+  if (ST.msModel) await openSettings(ST.msModel);
+};
 
 /* ---------- 模型设置弹窗 ---------- */
 async function openSettings(model) {
@@ -667,6 +749,8 @@ async function openSettings(model) {
   try { meta = await call('model_info', { ref: model }); } catch (e) {}
   ST.msMeta = meta;
   renderAttrs(meta);
+  try { ST.pulls = await call('pull_status', {}); } catch (e) {}
+  renderAccel(meta, p);
   // 初始值 = 模型自身默认配置（用户可改）；用户显式存过的字段优先。
   // 后端把「显式存过哪些键」放在 _raw（合并默认值后的 p 无法区分二者）。
   const raw = (p && p._raw) || {};
@@ -753,6 +837,9 @@ async function saveModelSettings() {
     vision: $('ms-vision').classList.contains('on'),
     backend: $('ms-backend').value || null,
   };
+  // 推测解码总开关：只有模型确实有加速配套（草稿模型 / 内置 MTP）时才上报，
+  // 免得给无关模型平白写一个 drafts 覆盖项。对应引擎 --no-drafts。
+  if ($('ms-drafts')) params.drafts = $('ms-drafts').classList.contains('on');
   const r = await call('model_settings_save', { model: ST.msModel, params }).catch(e => ({ error: String(e) }));
   if (r && r.error) { toast('保存失败: ' + r.error); return; }
   const inst = instOf(ST.msModel);

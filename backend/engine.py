@@ -267,6 +267,11 @@ def cached_models(extra_dirs: list | None = None) -> list[dict]:
             seen.add(key)
             e["root"] = r["path"]
             e["root_label"] = r["label"]
+            # 辅助（草稿）模型打标：UI 据此写「辅助模型 · 供 X 使用」并联到主模型，
+            # 而不是给一个会把它当主模型加载的「开启」按钮。
+            used_by = DRAFT_OF.get(e["id"]) or DRAFT_OF.get(e["ref"]) or []
+            e["role"] = "draft" if used_by else "model"
+            e["used_by"] = list(used_by)
             out.append(e)
     return out
 
@@ -289,6 +294,19 @@ ACCEL_DRAFTS = {
 }
 
 
+def _draft_reverse() -> dict[str, list[str]]:
+    """草稿模型 → 用到它的主模型列表（ACCEL_DRAFTS 的反查）。"""
+    out: dict[str, list[str]] = {}
+    for main, draft in ACCEL_DRAFTS.items():
+        out.setdefault(draft, []).append(main)
+    return out
+
+
+# 2026-10-09：UI 靠它把「本机缓存」里的辅助模型跟主模型联起来 —— 辅助模型不是能单独
+# 开启的模型，卡片上要写「供 X 使用」并联到主模型的设置，而不是给一个「开启」按钮。
+DRAFT_OF = _draft_reverse()
+
+
 def _model_config_path(ref: str) -> str:
     """定位模型 config.json：ref 是 HF repo id 或本地目录绝对路径。"""
     if os.path.isabs(ref) or ref.startswith("~"):
@@ -308,6 +326,34 @@ def _is_cached(repo: str) -> bool:
     if not os.path.isdir(d):
         return False
     return bool(glob.glob(os.path.join(d, "snapshots", "*")))
+
+
+def draft_cached_size_gb(repo: str) -> float:
+    """该 repo 在 HF 缓存里的 snapshots 体积（GB，跟随软链）；没缓存返 0。"""
+    d = os.path.join(hf_cache_dir(), _repo_dir_name(repo))
+    if not os.path.isdir(d):
+        return 0.0
+    total = 0
+    for snap in glob.glob(os.path.join(d, "snapshots", "*")):
+        total += _dir_bytes(snap)
+    return round(total / 1024 ** 3, 2)
+
+
+def draft_status(ref: str) -> dict:
+    """主模型 ref → 它的外部草稿模型配套；没有配套返空 dict。
+
+    模型页卡片（families 接口）与设置弹窗（model_meta）共用同一份口径，
+    避免两处各写一遍"有没有下载"。
+    """
+    repo = ACCEL_DRAFTS.get(ref)
+    if not repo:
+        return {}
+    return {
+        "draft_repo": repo,
+        "draft_cached": _is_cached(repo),
+        "draft_size_gb": draft_cached_size_gb(repo),
+        "draft_used_by": list(DRAFT_OF.get(repo, [])),
+    }
 
 
 def model_meta(ref: str) -> dict:
@@ -351,12 +397,13 @@ def model_meta(ref: str) -> dict:
         "top_k": gc.get("top_k", cfg.get("top_k")),
     }
     # 加速配套：内置 MTP 头（config 声明） + 外部草稿模型（是否已下载）
-    draft_repo = ACCEL_DRAFTS.get(ref)
     accel = {
         "builtin_mtp": bool(mtp_layers),
         "mtp_layers": int(mtp_layers or 0),
-        "draft_repo": draft_repo or "",
-        "draft_cached": _is_cached(draft_repo) if draft_repo else False,
+        "draft_repo": "",
+        "draft_cached": False,
+        "draft_size_gb": 0.0,
+        **draft_status(ref),
     }
     display = ref.split("/")[-1] if "/" in ref else os.path.basename(ref)
     provider = ref.rsplit("/", 1)[0] if "/" in ref else ""
@@ -1037,6 +1084,15 @@ class EnginePool:
             return {"ok": False, "error": "缓存目录异常，拒绝操作"}
         if not os.path.isdir(target):
             return {"ok": False, "error": f"缓存中不存在 {repo_id}（外部目录的模型需自行管理）"}
+        # 本机约定：权重放在缓存外、缓存里只留软链（主模型与草稿模型都是这形态）。
+        # 这种条目的「删缓存」= 摘掉链接入口，真实权重一律不动；以前直接 rmtree(软链)
+        # 会抛 "Cannot call rmtree on a symbolic link"，删除按钮点了必然报错。
+        if os.path.islink(target):
+            os.remove(target)
+            self.log(f"已移除缓存入口（软链）: {repo_id} · 真实权重未删除")
+            self.settings.delete_for(repo_id)
+            return {"ok": True, "unlinked": True,
+                    "hint": "只摘除了缓存链接，权重文件仍在原目录"}
         shutil.rmtree(target)
         self.log(f"已删除缓存: {repo_id}")
         self.settings.delete_for(repo_id)

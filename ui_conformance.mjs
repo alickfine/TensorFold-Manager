@@ -90,6 +90,20 @@ ok('每卡三钮(加载|下载/设置/删除)', cards.every(c => c.btns.length =
   && ['加载', '↓ 下载'].some(t => c.btns[0] === t) && c.btns[1] === '设置' && ['删除', '取消'].includes(c.btns[2])), v);
 ok('禁用钮透明度置灰', cards.flatMap(c => c.disabledOpacity).every(o => parseFloat(o) < 1));
 
+/* ---------- 模型卡 ↔ 辅助模型联动（2026-10-09：草稿模型要能一眼看到并点进去配） ---------- */
+v = await ev(`(()=>{
+  const c=[...document.querySelectorAll('#mcards .mcard')].find(x=>x.textContent.includes('Qwen3.8-27B (4bit)'));
+  const ch=c && c.querySelector('.accelchip');
+  return JSON.stringify({has:!!ch, cls:ch?ch.className:'', txt:ch?ch.textContent:'', once:ch?!!ch.getAttribute('onclick'):false});
+})()`);
+{
+  const d = JSON.parse(v);
+  ok('模型卡有加速 chip', d.has === true, v);
+  ok('加速 chip 报已就绪并带模型名', d.cls.includes('on') && d.txt.includes('已就绪') && d.txt.includes('Qwen3.8-27B-DFlash2'), v);
+  ok('加速 chip 非按钮（不破坏卡上三钮约束）', await ev(`(()=>{const c=[...document.querySelectorAll('#mcards .mcard')].find(x=>x.textContent.includes('Qwen3.8-27B (4bit)'));const ch=c.querySelector('.accelchip');return !!ch && !ch.classList.contains('sbtn')})()`) === true);
+  ok('加速 chip 点了进该模型设置', d.once === true, v);
+}
+
 /* ---------- 缓存列表 ---------- */
 v = await ev(`document.querySelectorAll('#cache-list .pitem').length>0`);
 ok('HF缓存列表有内容', v === true, String(v));
@@ -137,6 +151,29 @@ ok('输出提示标注输出上限', v === true, String(v));
 // 模型支持图像 → 视觉开关可用（非 disabled）
 v = await ev(`!document.getElementById('ms-vision').classList.contains('disabled')`);
 ok('支持图像的模型视觉开关可用', v === true, String(v));
+/* ---------- 加速配套区块：草稿模型从「只读徽标」升级为「可配置」（2026-10-09） ---------- */
+v = await ev(`(()=>{
+  const b=document.getElementById('ms-accel');
+  return JSON.stringify({disp:getComputedStyle(b).display!=='none', txt:b.textContent});
+})()`);
+{
+  const d = JSON.parse(v);
+  ok('设置弹窗有加速配套区块', d.disp === true, v);
+  ok('加速区块显示草稿模型全名', d.txt.includes('z-lab/Qwen3.8-27B-DFlash2'), v);
+  ok('加速区块显示已下载与体积', d.txt.includes('已下载') && /\d+ GB/.test(d.txt), v);
+  ok('加速区块标注 --no-drafts 口径', d.txt.includes('--no-drafts'), v);
+}
+ok('推测解码开关存在且默认开', await ev(`(()=>{const el=document.getElementById('ms-drafts');return !!el && el.classList.contains('on')})()`) === true);
+ok('推测解码开关可点击切换', await ev(`(()=>{const el=document.getElementById('ms-drafts');el.click();const off=!el.classList.contains('on');el.click();return off&&el.classList.contains('on')})()`) === true);
+// 回归防护：这两个开关此前根本没绑点击处理（点上去毫无反应）
+ok('思考模式开关已绑点击', await ev(`(()=>{const el=document.getElementById('ms-thinking');const was=el.classList.contains('on');el.click();const f=el.classList.contains('on')!==was;el.click();return f})()`) === true);
+ok('视觉开关已绑点击', await ev(`(()=>{const el=document.getElementById('ms-vision');const was=el.classList.contains('on');el.click();const f=el.classList.contains('on')!==was;el.click();return f})()`) === true);
+// 保存必须把开关落成 drafts 参数（对应引擎 --no-drafts）
+await ev(`(()=>{const el=document.getElementById('ms-drafts');if(!el.classList.contains('on'))el.click();document.getElementById('ms-save').click()})()`);
+await new Promise(r => setTimeout(r, 400));
+v = await ev(`(window.__lastSave||{}).params && window.__lastSave.params.drafts`);
+ok('保存上报 drafts 参数', v === true, String(v));
+
 v = await ev(`(()=>{closeSettings();return !document.getElementById('ms-overlay').classList.contains('open')})()`);
 ok('弹窗可关闭', v === true, String(v));
 
@@ -174,6 +211,28 @@ v = await ev(`(()=>{
   // 2026-10-09：列表展示名去 provider（不出现 TensorFold/ 前缀）；非官方模型给「开启」入口
   ok('缓存列表展示名不带 provider', !rows.some(r => r.includes('TensorFold/')));
   ok('非官方模型有「开启」按钮', await ev(`(()=>[...document.querySelectorAll('#cache-list .pitem')].some(el=>el.textContent.includes('非官方')&&[...el.querySelectorAll('.sbtn')].some(b=>b.textContent.trim()==='开启')))()`) === true);
+  /* ---------- 辅助（草稿）模型：不给「开启」，要联到主模型（2026-10-09） ---------- */
+  const draftRow = `[...document.querySelectorAll('#cache-list .pitem')].find(e=>e.textContent.includes('Qwen3.8-27B-DFlash2'))`;
+  ok('缓存列表把草稿标成「辅助模型」', rows.some(r => r.includes('辅助模型') && r.includes('Qwen3.8-27B-DFlash2')), rows.join('|'));
+  ok('辅助模型不给「开启」（不能当主模型加载）', await ev(`(()=>{const el=${draftRow};return !!el && ![...el.querySelectorAll('.sbtn')].some(b=>b.textContent.trim()==='开启')})()`) === true);
+  ok('辅助模型联到主模型设置', await ev(`(()=>{const el=${draftRow};const b=el&&[...el.querySelectorAll('.sbtn')].find(x=>x.textContent.includes('用于'));return !!b && String(b.getAttribute('onclick')).includes('openSettings')})()`) === true);
+
+  /* ---------- 草稿模型未下载分支：卡片改口径 + 弹窗给下载入口 ---------- */
+  await ev(`(()=>{window.__mock.draftCached=false;return renderModelsPage()})()`);
+  await new Promise(r => setTimeout(r, 400));
+  v = await ev(`(()=>{const c=[...document.querySelectorAll('#mcards .mcard')].find(x=>x.textContent.includes('Qwen3.8-27B (4bit)'));const ch=c.querySelector('.accelchip');return ch?ch.textContent:''})()`);
+  ok('草稿未下载时卡片改口径', String(v).includes('未下载'), v);
+  await ev(`openSettings('TensorFold/Qwen3.8-27B-MLX-4bit')`);
+  await new Promise(r => setTimeout(r, 350));
+  v = await ev(`(()=>{const b=document.getElementById('ms-accel');return JSON.stringify({txt:b.textContent,btn:!!b.querySelector('.sbtn')})})()`);
+  {
+    const d = JSON.parse(v);
+    ok('未下载时加速区块出现下载按钮', d.btn === true, v);
+    ok('未下载时给出 pull 命令', d.txt.includes('tensorfold pull z-lab/Qwen3.8-27B-DFlash2'), v);
+  }
+  await ev(`closeSettings()`);
+  await ev(`(()=>{window.__mock.draftCached=true;return renderModelsPage()})()`);
+  await new Promise(r => setTimeout(r, 300));
 }
 
 /* ---------- 对话页组件 ---------- */

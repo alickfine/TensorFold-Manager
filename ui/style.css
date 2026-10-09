@@ -82,6 +82,28 @@ input,select,textarea{-webkit-user-select:text;user-select:text}
 .attrs .at.warn{color:var(--danger);border-color:currentColor}
 .attrs .at .k{font-weight:400;color:var(--ink4)}
 .attrs .at .k::after{content:'：'}
+/* ---- 加速配套：设置弹窗里的可配置区块（草稿模型 + 推测解码开关） ---- */
+.accelbox{border:1px solid var(--line);border-radius:11px;padding:11px 12px;margin:0 0 12px;background:var(--bg2)}
+.accelbox .ah{font-size:11px;font-weight:700;color:var(--ink3);letter-spacing:.04em;margin-bottom:9px}
+.accelbox .arow{display:flex;align-items:center;gap:10px;font-size:12.5px}
+.accelbox .arow+.arow{margin-top:9px;padding-top:9px;border-top:1px solid var(--line)}
+.accelbox .aname{font-family:ui-monospace,monospace;font-size:11.5px;color:var(--ink2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;flex:1 1 auto}
+.accelbox .aname .hint2{margin-top:1px}
+.accelbox .astate{font-size:11px;flex:none;display:inline-flex;align-items:center;gap:5px;font-weight:600}
+.accelbox .astate.on{color:var(--ok)}
+.accelbox .astate.off{color:var(--warn)}
+.accelbox .anote{font-size:11px;color:var(--ink4);margin-top:7px;line-height:1.5}
+.accelbox .abtns{display:flex;gap:7px;margin-top:9px;flex-wrap:wrap;align-items:center}
+.accelbox .acode{font-family:ui-monospace,monospace;font-size:11px;background:var(--code-bg);border:1px solid var(--line);border-radius:7px;padding:4px 8px;color:var(--ink3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}
+/* ---- 模型卡上的加速 chip：非按钮（卡片按钮数被原型闸门锁死），点了进设置 ---- */
+.mcard .accline{display:flex;flex-wrap:wrap;gap:6px;margin:-4px 0 9px}
+.accelchip{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:600;padding:3px 9px;border-radius:999px;border:1px solid var(--line);background:var(--bg3);color:var(--ink2);cursor:pointer;max-width:100%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.accelchip:hover{border-color:var(--line2);color:var(--ink)}
+.accelchip.on{background:var(--ok-bg);color:var(--ok);border-color:currentColor}
+.accelchip.off{background:var(--danger-bg);color:var(--danger);border-color:currentColor}
+.accelchip .ar{font-weight:400;opacity:.85}
+/* ---- 缓存列表里的辅助（草稿）模型标签 ---- */
+.tag.draft{background:var(--ok-bg);color:var(--ok);border:1px solid currentColor}
 .mf{display:flex;gap:8px;justify-content:flex-end;padding:12px 18px;border-top:1px solid var(--line);background:var(--bg2)}
 .mbtn{padding:7px 14px;border-radius:9px;font-size:12.5px;font-weight:600;border:1px solid var(--line);color:var(--ink2)}
 .mbtn:hover{color:var(--ink);border-color:var(--line2)}

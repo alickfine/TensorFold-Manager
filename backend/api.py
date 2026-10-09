@@ -169,7 +169,9 @@ class Api:
             return {"ok": False, "error": f"无法打开选择框: {exc}"}
 
     def families(self) -> list[dict]:
-        return engine_mod.FAMILIES
+        # 每张卡片带上自己的加速配套（草稿模型有没有下载、多大），模型页直接显示，
+        # 点一下就能进设置里配置 —— 不用先去「本机缓存」列表里自己找。
+        return [{**f, "accel": engine_mod.draft_status(f["id"])} for f in engine_mod.FAMILIES]
 
     def model_info(self, ref: str) -> dict:
         """模型元信息：默认配置/能力/加速配套（设置弹窗初值与属性区用）。"""

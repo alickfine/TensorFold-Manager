@@ -386,6 +386,57 @@ def main():
     check("B3 缓存可读", uc.cached().get("checked_at", 0) > 0)
     check("B3 maybe_background 节流", uc.maybe_background(3600) and not uc.maybe_background(3600))
 
+    # ============ B6: 加速配套（主模型 ↔ 辅助模型联动） ============
+    print("== B6: 加速配套（草稿模型联动） ==")
+    import tempfile
+    from backend import engine as _eng
+    check("B6 草稿反查表可用", isinstance(_eng.DRAFT_OF, dict)
+          and all(isinstance(v, list) and v for v in _eng.DRAFT_OF.values()),
+          f"DRAFT_OF={_eng.DRAFT_OF}")
+    _st = _eng.draft_status("TensorFold/Qwen3.8-27B-MLX-4bit")
+    check("B6 主模型给出草稿配套口径", bool(_st.get("draft_repo")) and "draft_cached" in _st,
+          f"draft={_st.get('draft_repo')} cached={_st.get('draft_cached')}")
+    _ents = cached_models()
+    check("B6 缓存条目都带 role/used_by",
+          all(e.get("role") in ("model", "draft") and isinstance(e.get("used_by"), list)
+              for e in _ents))
+    for _draft in _eng.DRAFT_OF:
+        _e = next((e for e in _ents if e["id"] == _draft), None)
+        if _e is not None:   # 本机缓存里确实有这个草稿模型才断言
+            check(f"B6 {_draft} 标为辅助模型并联到主模型",
+                  _e.get("role") == "draft" and _e.get("used_by") == _eng.DRAFT_OF[_draft],
+                  f"role={_e.get('role')} used_by={_e.get('used_by')}")
+    # 删缓存的两条路径：软链形态（权重在缓存外）只摘链接；真实目录形态整删。
+    # 用临时 HF_HOME 隔离，绝不碰用户真实缓存。注意 delete_model 有一道安全闸门
+    # "缓存目录必须位于家目录下"，所以临时缓存根要建在 ~ 里（建在 /var/folders 会被拒）。
+    _base = tempfile.mkdtemp(prefix=".tfm-smoke-cache-", dir=os.path.expanduser("~"))
+    _old_hf = os.environ.get("HF_HOME")
+    _real = None
+    os.environ["HF_HOME"] = _base
+    try:
+        _link = os.path.join(_base, _eng._repo_dir_name("zz-selftest/DraftLinkProbe"))
+        _real = tempfile.mkdtemp(prefix="tfm-smoke-link-")
+        open(os.path.join(_real, "keepme.txt"), "w").write("x")
+        os.symlink(_real, _link)
+        _r = pool.delete_model("zz-selftest/DraftLinkProbe")
+        check("B6 软链条目只摘链接（不报错）",
+              bool(_r.get("ok")) and bool(_r.get("unlinked")) and not os.path.lexists(_link), str(_r))
+        check("B6 软链条目不动缓存外的真实权重",
+              os.path.isfile(os.path.join(_real, "keepme.txt")))
+        _d = os.path.join(_base, _eng._repo_dir_name("zz-selftest/DirProbe"))
+        os.makedirs(os.path.join(_d, "snapshots", "abc"), exist_ok=True)
+        open(os.path.join(_d, "snapshots", "abc", "config.json"), "w").write("{}")
+        _r = pool.delete_model("zz-selftest/DirProbe")
+        check("B6 真实目录形态仍整删", bool(_r.get("ok")) and not os.path.exists(_d), str(_r))
+    finally:
+        if _real:
+            shutil.rmtree(_real, ignore_errors=True)
+        if _old_hf is None:
+            os.environ.pop("HF_HOME", None)
+        else:
+            os.environ["HF_HOME"] = _old_hf
+        shutil.rmtree(_base, ignore_errors=True)
+
     # ============ 杂项 ============
     print("== 杂项 ==")
     check("cached_models 可运行", isinstance(cached_models(), list))

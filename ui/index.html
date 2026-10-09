@@ -157,11 +157,12 @@
         </div>
         <div id="ms-basic">
           <div class="attrs" id="ms-attrs"></div>
+          <div class="accelbox" id="ms-accel" style="display:none"></div>
           <div class="frow"><label>上下文长度<div class="hint2" id="ms-ctx-hint">--context · 输入上限</div></label><input id="ms-context" type="number" value="32768"></div>
           <div class="frow"><label>最大输出<div class="hint2" id="ms-maxtok-hint">--max-tokens · 输出上限</div></label><input id="ms-maxtok" type="number" value="4096"></div>
           <div class="frow"><label>温度<div class="hint2">--temperature</div></label><input id="ms-temp" type="number" step="0.05" placeholder="引擎默认"></div>
           <div class="frow"><label>Top-P / Top-K<div class="hint2">--top-p / --top-k</div></label><input id="ms-topp" type="number" step="0.01" placeholder="引擎默认"></div>
-          <div class="frow"><label>思考模式<div class="hint2">--thinking / --no-thinking</div></label><span class="switch" id="ms-thinking"></span></div>
+          <div class="frow"><label>思考模式<div class="hint2">--thinking / --no-thinking</div></label><span class="switch" id="ms-thinking" onclick="toggleSwitch(this)"></span></div>
           <div class="frow"><label>推理强度<div class="hint2">--reasoning-effort</div></label><select id="ms-effort"><option value="">默认</option><option>low</option><option>medium</option><option>high</option><option>xhigh</option></select></div>
         </div>
         <div id="ms-adv" style="display:none">
@@ -171,7 +172,7 @@
           <div class="frow"><label>MTP 置信阈值<div class="hint2">--mtp-confidence</div></label><input id="ms-mtpc" type="number" step="0.05" placeholder="引擎默认"></div>
           <div class="frow"><label>KV 精度<div class="hint2">--kv-dtype · int8/int4 省内存</div></label><select id="ms-kvdt"><option value="">默认(bf16)</option><option>int8</option><option>int4</option></select></div>
           <div class="frow"><label>Prompt 缓存<div class="hint2">--prompt-cache-gib</div></label><input id="ms-pcache" type="number" placeholder="用全局设置"></div>
-          <div class="frow"><label>视觉输入<div class="hint2">--vision · 需模型支持</div></label><span class="switch" id="ms-vision"></span></div>
+          <div class="frow"><label>视觉输入<div class="hint2">--vision · 需模型支持</div></label><span class="switch" id="ms-vision" onclick="toggleSwitch(this)"></span></div>
           <div class="frow"><label>后端<div class="hint2">--backend</div></label><select id="ms-backend"><option value="">auto</option><option>mlx</option></select></div>
         </div>
       </div>
@@ -188,6 +189,9 @@
 <script src="vendor/marked-highlight.umd.js"></script>
 <script src="vendor/highlight.min.js"></script>
 <script src="vendor/purify.min.js"></script>
+<!-- 开发/评审开关：index.html?mock=1 时先装假桥（ui/mock_bridge.js），浏览器里直接点着看，
+     不需要起 App。真壳（WKWebView）与打包版不带这个查询串，走的仍是原生桥，互不影响。 -->
+<script>if (new URLSearchParams(location.search).get('mock') === '1') document.write('<script src="mock_bridge.js"><\/script>');</script>
 <script src="app.js"></script>
 </body>
 </html>
