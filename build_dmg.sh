@@ -21,8 +21,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
   <key>CFBundleName</key><string>TensorFold Manager</string>
   <key>CFBundleDisplayName</key><string>TensorFold Manager</string>
   <key>CFBundleIdentifier</key><string>local.tensorfold.manager</string>
-  <key>CFBundleVersion</key><string>2.1.2</string>
-  <key>CFBundleShortVersionString</key><string>2.1.2</string>
+  <key>CFBundleVersion</key><string>2.1.3</string>
+  <key>CFBundleShortVersionString</key><string>2.1.3</string>
   <key>CFBundleExecutable</key><string>TensorFoldManager</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
@@ -47,7 +47,7 @@ mkdir -p "$BUILD/dmgroot"
 mv "$APP" "$BUILD/dmgroot/TensorFold Manager.app"
 ln -s /Applications "$BUILD/dmgroot/Applications"
 cat > "$BUILD/dmgroot/README-安装说明.txt" <<'TXT'
-TensorFold Manager v2.1.2 —— 本地 LLM 推理引擎管理端（Apple Silicon 专用）
+TensorFold Manager v2.1.3 —— 本地 LLM 推理引擎管理端（Apple Silicon 专用）
 
 安装：把 "TensorFold Manager.app" 拖到「应用」文件夹（或直接双击运行本卷里的 App）。
 如已安装旧版，先移除旧版再拖入。

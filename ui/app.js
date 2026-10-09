@@ -17,6 +17,16 @@ async function call(method, args) {
   return window.bridge.call(method, args || {});
 }
 
+// 带超时的桥调用：settings 里含 pool.detect()（会 spawn 一次子进程），
+// 实测冷启动时该调用可能长时间不返回；桥本身无超时保护，一旦不返回，
+// 任何 await 它的地方（含 boot）都会永久挂住。
+function callTimeout(method, args, ms) {
+  return Promise.race([
+    call(method, args),
+    new Promise((_, rej) => setTimeout(() => rej(new Error('bridge timeout: ' + method)), ms || 15000)),
+  ]);
+}
+
 function toast(msg, ms) {
   let t = $('toast');
   if (!t) { t = document.createElement('div'); t.id = 'toast'; document.body.appendChild(t); }
@@ -44,6 +54,7 @@ async function refresh() {
     const ov = await call('overview', {});
     ST.inst = ov.instances || [];
     ST.proxyPort = ov.proxy_port || 0;
+    ST.lastOv = ov;
     renderTopbar(ov);
     renderSide(ov);
     if ($('page-models').classList.contains('on')) await renderModelsPage();
@@ -72,12 +83,37 @@ function renderTopbar(ov) {
   }
   // 顶栏版本 + 绿点悬停提示（原型 .ver 组件）
   const ver = $('win-ver'), vtip = $('win-vtip');
+  const S = ST.settings || {};
   const eng = (ST.upd && ST.upd.engine) || {}, app = (ST.upd && ST.upd.app) || {};
-  ver.childNodes[0].nodeValue = 'v' + (ST.settings.app_version || '2.1.0');
+  ver.childNodes[0].nodeValue = 'v' + (S.app_version || '—');
   vtip.textContent = eng.available ? `引擎有新版本 v${eng.latest}，设置页一键升级`
     : app.available ? `App 有新版本 v${app.latest}`
-    : `引擎 ${ST.settings.version || '—'} · 已是最新`;
+    : `引擎 ${S.version || '—'} · 已是最新`;
   ver.classList.toggle('new', !!(eng.available || app.available));
+}
+
+// 后台加载版本信息（settings 含 pool.detect()，冷启动可能慢/不返回 → 必须带超时且不可 await）。
+// 取到后立刻回填顶栏与监控页版本行；失败则稍后重试（最多 3 次），仍失败就保持 "—"。
+let _verLoading = false;
+async function loadVersions(tries) {
+  if (_verLoading) return;
+  tries = tries == null ? 3 : tries;
+  _verLoading = true;
+  let ok = false;
+  try {
+    const s = await callTimeout('settings', {}, 15000);
+    if (s && typeof s === 'object') { ST.settings = s; ok = true; }
+  } catch (e) { /* 超时/失败 */ }
+  _verLoading = false;
+  if (!ok) {
+    if (tries > 1) setTimeout(() => loadVersions(tries - 1), 4000);
+    return;
+  }
+  const ov = ST.lastOv;
+  if (ov) {
+    renderTopbar(ov);
+    if ($('page-metrics').classList.contains('on')) renderMetrics(ov);
+  }
 }
 
 function renderSide(ov) {
@@ -113,6 +149,8 @@ async function renderModelsPage() {
 
 const instOf = (id) => ST.inst.find(i => i.model === id);
 const cacheOf = (id) => ST.cache.find(m => m.ref === id || m.id === id);
+// 展示名去 provider：TensorFold/Qwen3.8-27B-MLX-4bit → Qwen3.8-27B-MLX-4bit；本地路径取末段
+const shortName = (ref) => { const s = String(ref || '').replace(/\/+$/, ''); return s.split('/').pop() || s; };
 
 function renderCards() {
   $('mcards').innerHTML = ST.family.map(f => {
@@ -130,8 +168,8 @@ function renderCards() {
     if (pull) {
       prog = '<div class="prog"><i style="width:34%"></i></div>';
       sz = '下载中 · tensorfold pull';
-    } else if (cached) sz = `${cached.size_gb} GB`;
-    else sz = f.size_gb ? `未缓存 · 下载约 ${f.size_gb} GB` : '未缓存';
+    } else if (cached) sz = `${fmt0(cached.size_gb)} GB`;
+    else sz = f.size_gb ? `未缓存 · 下载约 ${fmt0(f.size_gb)} GB` : '未缓存';
 
     const running = !!(inst && inst.state !== 'idle');
     const loadBtn = running
@@ -144,7 +182,7 @@ function renderCards() {
       : `<button class="sbtn del" disabled${running ? ' title="运行中不可删"' : ''}>删除</button>`;
     return `<div class="mcard${inst && inst.state === 'ready' ? ' active' : ''}">
       <div class="mt"><b>${esc(f.name)}</b>${badges.join('')}</div>
-      <div class="rid">${esc(f.id)}</div>
+      <div class="rid" title="${esc(f.id)}">${esc(shortName(f.id))}</div>
       <div class="desc">${esc(f.note || '')}</div>
       ${prog}
       <div class="row"><span class="sz">${esc(sz)}</span>${loadBtn}<button class="sbtn" onclick="openSettings('${esc(f.id)}')">设置</button>${delBtn}</div>
@@ -177,16 +215,23 @@ window.delModel = async function (id) {
 function renderCacheList() {
   const box = $('cache-list');
   if (!ST.cache.length) { box.innerHTML = '<div class="empty" style="padding:13px 16px;color:var(--ink4)">没有扫到模型，去设置页「模型目录」加一个目录，或点上方「↓ 下载」拉官方模型</div>'; return; }
+  const officialIds = new Set((ST.family || []).map(f => f.id));
   box.innerHTML = ST.cache.map(m => {
     const inst = instOf(m.ref), running = inst && inst.alive;
     // 只允许删 HF 缓存里下载的（外部目录的权重是用户自己的资料，App 不碰）
     const del = m.deletable
       ? `<button class="sbtn del" ${running ? 'disabled title="运行中不可删"' : `onclick="delModel('${esc(m.ref)}')"`}>删除</button>`
       : '<span style="color:var(--ink4)" title="外部目录（oMLX/MTPLX/自定义），本 App 不删除">外部</span>';
+    // 非官方宣传的模型（不在官方族列表里）也能一键开启：这就是"可以使用就给出开启选项"
+    const official = officialIds.has(m.id) || officialIds.has(m.ref);
+    const loadOrStop = running
+      ? '<span class="mini-chip" style="color:var(--run-ink)">● 运行中</span>'
+      : `<button class="sbtn" onclick="loadModel('${esc(m.ref)}')">开启</button>`;
     return `<div class="pitem"><span class="dot ${running ? 'on' : 'off'}"></span>`
       + `<span class="tag">${esc(m.root_label || m.source || '')}</span>`
-      + `<span class="mono">${esc(m.id)}</span>`
-      + `<span class="right">${m.size_gb} GB${running ? ' · 运行中' : ''}${del}</span></div>`;
+      + `<span class="mono" title="${esc(m.ref)}">${esc(shortName(m.id))}</span>`
+      + (official ? '' : '<span class="tag" style="color:var(--warn)">非官方</span>')
+      + `<span class="right">${fmt0(m.size_gb)} GB${loadOrStop}${del}</span></div>`;
   }).join('');
 }
 
@@ -366,13 +411,13 @@ function renderMetrics(ov) {
   const L = ov.metrics_latest || {}, per = ov.per || {}, S = ov.series || {};
   $('st-tps').innerHTML = (L.tps != null ? fmtNum(L.tps) : '—') + '<small>tok/s</small>';
   $('st-prefill').innerHTML = (L.prefill_tps != null ? fmtNum(L.prefill_tps) : '—') + '<small>tok/s</small>';
-  $('st-mem').innerHTML = (L.footprint_gb != null ? L.footprint_gb : '—') + (L.footprint_gb != null ? '<small>GB</small>' : '');
-  $('st-free').innerHTML = (ov.mem_free != null ? ov.mem_free : '—') + (ov.mem_free != null ? `<small>GB / ${ov.mem_total}GB</small>` : '');
-  $('st-kv').innerHTML = (L.kv != null ? L.kv : '—') + '<small>%</small>';
+  $('st-mem').innerHTML = (L.footprint_gb != null ? fmt0(L.footprint_gb) : '—') + (L.footprint_gb != null ? '<small>GB</small>' : '');
+  $('st-free').innerHTML = (ov.mem_free != null ? fmt0(ov.mem_free) : '—') + (ov.mem_free != null ? `<small>GB / ${fmt0(ov.mem_total)}GB</small>` : '');
+  $('st-kv').innerHTML = (L.kv != null ? fmt0(L.kv) : '—') + '<small>%</small>';
   $('st-req').innerHTML = (L.running != null ? L.running : '—') + '<small>活跃</small>';
   $('st-req-sub').textContent = `${L.running || 0} 活跃 · ${L.waiting || 0} 排队`;
   const ratios = Object.values(per).map(p => p.accepted_ratio).filter(v => v != null);
-  $('st-mtp').innerHTML = ratios.length ? (Math.max(...ratios) * 100).toFixed(1) + '<small>%</small>' : '—';
+  $('st-mtp').innerHTML = ratios.length ? Math.round(Math.max(...ratios) * 100) + '<small>%</small>' : '—';
   const nReady = ST.inst.filter(i => i.state === 'ready').length;
   $('st-inst').textContent = nReady;
 
@@ -392,7 +437,7 @@ function renderMetrics(ov) {
   $('st-tok-cached-sub').textContent = cachedTok ? `KV 池驻留 · 上下文 ${fmtInt(totalCtx)}` : '需运行中实例';
   // 缓存效率 = 已缓存 / 提示总量（>100% 说明跨请求复用，钳到 999%）
   const eff = (promptTok > 0 && cachedTok) ? Math.min(cachedTok / promptTok * 100, 999) : null;
-  $('st-cache-eff').innerHTML = eff != null ? eff.toFixed(1) + '<small>%</small>' : '—';
+  $('st-cache-eff').innerHTML = eff != null ? Math.round(eff) + '<small>%</small>' : '—';
   $('st-cache-eff').parentElement.querySelector('.sub').textContent =
     eff != null ? (cachedTok >= promptTok ? '跨请求复用生效' : '缓存命中 / 提示总量') : '等待首条请求';
 
@@ -400,10 +445,11 @@ function renderMetrics(ov) {
   $('st-cpu').innerHTML = (L.cpu_percent != null ? Math.round(L.cpu_percent) : '—') + '<small>%</small>';
   $('st-gpu').innerHTML = (L.gpu_percent != null ? Math.round(L.gpu_percent) : '—') + '<small>%</small>';
   const usedGb = (ov.mem_total != null && ov.mem_free != null) ? Math.max(0, ov.mem_total - ov.mem_free) : null;
-  $('st-hostmem').innerHTML = usedGb != null ? usedGb + '<small> / ' + ov.mem_total + 'GB</small>' : '—';
+  $('st-hostmem').innerHTML = usedGb != null ? fmt0(usedGb) + '<small> / ' + fmt0(ov.mem_total) + 'GB</small>' : '—';
   $('st-cpu-sub').textContent = ov.cpu_cores ? `${ov.cpu_cores} 核 · 整机占用` : '整机占用';
   // 版本行：App + 引擎（升级后引擎版本即时更新）
-  $('host-versions').textContent = `App v${ST.settings.app_version || '—'} · 引擎 ${ST.settings.version || '未安装'}`;
+  const SS = ST.settings || {};
+  $('host-versions').textContent = `App v${SS.app_version || '—'} · 引擎 ${SS.version || '未安装'}`;
   // 冷热缓存：checkpoint 预算（prompt_cache_gib）占用口径，无精确命中数时标注估算
   const pc = ST.appset && ST.appset.prompt_cache_gib;
   $('host-cache-tier').textContent = pc ? `Prompt 缓存预算 ${pc} GiB · 热驻留（KV/快照），冷数据落盘自动换页` : '热：KV/快照驻留显存 · 冷：落盘自动换页';
@@ -416,22 +462,30 @@ function renderMetrics(ov) {
 
   const vals = ((S.tps || {}).values || []).slice(-60);
   const svg = $('chart-tps');
+  const chartEmpty = $('chart-tps-empty');
   if (vals.length >= 2) {
     const max = Math.max(...vals, 1);
     const pts = vals.map((v, i) => `${(i / (vals.length - 1)) * 520},${110 - (v / max) * 100}`).join(' ');
     svg.innerHTML = `<g stroke="var(--line)" stroke-width="1"><line x1="0" y1="27" x2="520" y2="27"/><line x1="0" y1="55" x2="520" y2="55"/><line x1="0" y1="82" x2="520" y2="82"/></g><polyline fill="none" stroke="var(--ok)" stroke-width="2" points="${pts}"/>`;
+    if (chartEmpty) chartEmpty.classList.remove('on');
   } else {
-    svg.innerHTML = '<text x="260" y="55" fill="var(--ink4)" font-size="11" text-anchor="middle">暂无吞吐数据</text>';
+    // 空态不写 SVG <text>：该 svg 非等比拉伸会把文字压扁，改用 HTML 覆盖层
+    svg.innerHTML = '';
+    if (chartEmpty) chartEmpty.classList.add('on');
   }
 
   $('inst-list').innerHTML = ST.inst.length ? ST.inst.map(i =>
-    `<div class="pitem"><span class="dot ${i.state === 'ready' ? 'on' : 'off'}"></span><span class="mono">${esc(i.model)}</span><span class="right">:${i.port} · ${i.state}${i.uptime ? ' · ' + fmtUp(i.uptime) : ''} · ${i.params && i.params.context ? (i.params.context / 1024) + 'k' : '—'}<button class="sbtn del" ${i.state === 'idle' ? 'disabled' : `onclick="stopModel('${esc(i.model)}')"`}>停止</button></span></div>`).join('')
+    `<div class="pitem"><span class="dot ${i.state === 'ready' ? 'on' : 'off'}"></span><span class="mono">${esc(i.model)}</span><span class="right">:${i.port} · ${i.state}${i.uptime ? ' · ' + fmtUp(i.uptime) : ''} · ${i.params && i.params.context ? fmtK(i.params.context) : '—'}<button class="sbtn del" ${i.state === 'idle' ? 'disabled' : `onclick="stopModel('${esc(i.model)}')"`}>停止</button></span></div>`).join('')
     : '<div class="empty" style="padding:13px 16px;color:var(--ink4)">没有引擎实例，去模型页点「加载」</div>';
 }
 
 const fmtInt = (v) => v == null ? '—' : Number(v).toLocaleString('en-US');
 
-const fmtNum = (v) => v >= 1000 ? (v / 1000).toFixed(1) + 'k' : String(Math.round(v * 10) / 10);
+// 展示型数值统一 0 位小数（用户 2026-10-09 要求：所有读数不留小数）
+const fmt0 = (v) => v == null || Number.isNaN(Number(v)) ? '—' : String(Math.round(Number(v)));
+// 速度类：<10000 直接给整数千分位（保留精度且无小数），≥10000 折成 Nk
+const fmtNum = (v) => v == null ? '—' : (Number(v) >= 10000
+  ? Math.round(Number(v) / 1000) + 'k' : Math.round(Number(v)).toLocaleString('en-US'));
 function fmtUp(s) { s = Math.round(s); const h = (s / 3600) | 0, m = ((s % 3600) / 60) | 0; return h ? `${h}h ${m}m` : `${m}m ${s % 60}s`; }
 
 function bars(id, vals, get, invert) {
@@ -477,7 +531,8 @@ async function loadSettings() {
   $('set-updcheck').classList.toggle('on', ST.appset.auto_update_check !== false);
   $('set-menubar').classList.toggle('on', ST.appset.menubar !== false);
   $('set-close2mb').classList.toggle('on', ST.appset.close_to_menubar !== false);
-  ST.settings = await call('settings', {}).catch(() => ST.settings || {});
+  try { ST.settings = (await callTimeout('settings', {}, 15000)) || ST.settings || {}; }
+  catch (e) { ST.settings = ST.settings || {}; }   // 超时不阻塞设置页
   const last = ST.upd && ST.upd.checked_at ? ' · 上次检查 ' + fmtTime(ST.upd.checked_at) : '';
   $('ver-sub').textContent = `App v${ST.settings.app_version || '—'} · 引擎 ${ST.settings.version || '未安装'}${last}`;
   $('btn-copyapi').textContent = `http://127.0.0.1:${ST.settings.proxy_port || 8080}/v1 ⧉`;
@@ -557,7 +612,7 @@ async function doUpdateCheck() {
   toast('正在检查 GitHub 更新 …');
   ST.upd = await call('update_check', {}).catch(e => ({ error: String(e) }));
   if (ST.upd && ST.upd.error) toast('检查失败: ' + ST.upd.error); else toast('检查完成');
-  ST.settings = await call('settings', {}).catch(() => ST.settings);
+  try { ST.settings = (await callTimeout('settings', {}, 15000)) || ST.settings || {}; } catch (e) {}
   loadSettings();
   renderTopbar(await call('overview', {}).catch(() => ({ instances: [] })));
 }
@@ -575,14 +630,53 @@ async function doUpdateApply() {
   }
 }
 
+/* ---------- 模型属性区（设置弹窗基础段顶部） ---------- */
+// 画像来源：后端 model_meta(ref) 读模型自身 config.json；没读到就退化成“引擎默认”提示。
+const fmtK = (n) => (n == null ? '—' : n >= 1024 ? `${Math.round(n / 1024)}k` : String(n));
+
+function renderAttrs(meta) {
+  const box = $('ms-attrs');
+  if (!meta || !meta.found) {
+    box.innerHTML = '<span class="at dim">未读到模型 config.json — 输入/输出上限用引擎默认</span>';
+    return;
+  }
+  const cap = meta.capabilities || {}, acc = meta.accel || {}, d = meta.defaults || {};
+  const items = [];
+  items.push(`<span class="at dim"><span class="k">架构</span>${esc(meta.model_type || '—')}</span>`);
+  items.push(`<span class="at dim"><span class="k">输入上限</span>${fmtK(d.context ?? meta.context_max)} tok</span>`);
+  items.push(cap.vision
+    ? '<span class="at on">● 支持图像</span>'
+    : '<span class="at off">○ 不支持图像</span>');
+  items.push(cap.mtp
+    ? `<span class="at on">● 内置 MTP 头${acc.mtp_layers ? '（' + acc.mtp_layers + ' 层）' : ''}</span>`
+    : '<span class="at dim">无内置 MTP 头</span>');
+  if (acc.draft_repo) {
+    items.push(acc.draft_cached
+      ? `<span class="at on" title="${esc(acc.draft_repo)}">● 草稿模型已下载</span>`
+      : `<span class="at warn" title="tensorfold pull ${esc(acc.draft_repo)}">○ 草稿模型未下载</span>`);
+  }
+  box.innerHTML = items.join('');
+}
+
 /* ---------- 模型设置弹窗 ---------- */
 async function openSettings(model) {
   ST.msModel = model;
   $('ms-title').textContent = '模型设置 — ' + model.split('/').pop();
-  let p = {};
+  let p = {}, meta = null;
   try { p = await call('model_settings_get', { model }); } catch (e) {}
-  $('ms-context').value = p.context || 32768;
-  $('ms-maxtok').value = p.max_tokens || 4096;
+  try { meta = await call('model_info', { ref: model }); } catch (e) {}
+  ST.msMeta = meta;
+  renderAttrs(meta);
+  // 初始值 = 模型自身默认配置（用户可改）；用户显式存过的字段优先。
+  // 后端把「显式存过哪些键」放在 _raw（合并默认值后的 p 无法区分二者）。
+  const raw = (p && p._raw) || {};
+  const defCtx = (meta && meta.defaults && meta.defaults.context) || 32768;
+  const defTok = (meta && meta.defaults && meta.defaults.max_tokens) || 4096;
+  $('ms-context').value = raw.context != null ? p.context : defCtx;
+  $('ms-maxtok').value = raw.max_tokens != null ? p.max_tokens : defTok;
+  const ctxHint = $('ms-ctx-hint'), tokHint = $('ms-maxtok-hint');
+  if (ctxHint) ctxHint.textContent = `--context · 输入上限${meta && meta.context_max ? '（模型 ' + fmtK(meta.context_max) + '）' : ''}`;
+  if (tokHint) tokHint.textContent = '--max-tokens · 输出上限';
   $('ms-temp').value = p.temperature != null ? p.temperature : '';
   $('ms-topp').value = p.top_p != null ? p.top_p : '';
   $('ms-thinking').classList.toggle('on', !!p.thinking);
@@ -594,23 +688,40 @@ async function openSettings(model) {
   $('ms-kvdt').value = p.kv_dtype || '';
   $('ms-pcache').value = p.prompt_cache_gib != null ? p.prompt_cache_gib : '';
   $('ms-vision').classList.toggle('on', !!p.vision);
+  // 视觉开关按模型能力限制：不支持图像的模型禁用并标注（保存时也不会上报 vision=true）
+  const vrow = $('ms-vision');
+  const visionSupported = !meta || !meta.found || !!(meta.capabilities || {}).vision;
+  if (vrow) {
+    if (!visionSupported) vrow.classList.remove('on');
+    vrow.classList.toggle('disabled', !visionSupported);
+    vrow.title = visionSupported ? '模型支持图像输入' : '该模型 config 未声明视觉能力，不可开启';
+  }
   $('ms-backend').value = p.backend || '';
   $('ms-overlay').classList.add('open');
 }
 function closeSettings() { $('ms-overlay').classList.remove('open'); ST.msModel = null; }
 window.openSettings = openSettings; window.closeSettings = closeSettings;
 
-/* 推荐值：按模型规模给出保守起点（用户可再改），不自动保存 */
+/* 模型默认：把输入/输出上限与采样回填为模型自身 config 的默认（用户可再改，不自动保存） */
 function applyRecommended() {
   if (!ST.msModel) return;
+  const meta = ST.msMeta;
+  const d = (meta && meta.defaults) || {};
+  if (meta && meta.found && d.context) {
+    $('ms-context').value = d.context;
+    $('ms-maxtok').value = d.max_tokens != null ? d.max_tokens : '';
+    $('ms-temp').value = d.temperature != null ? d.temperature : '';
+    $('ms-topp').value = d.top_p != null ? d.top_p : '';
+    toast(`已回填模型默认：输入上限 ${fmtK(d.context)} tok、temperature ${d.temperature ?? '默认'}、top_p ${d.top_p ?? '默认'}，确认后保存`);
+    return;
+  }
+  // 没读到模型 config：按体积给保守起点（旧行为兜底）
   const cached = cacheOf(ST.msModel);
   const gb = cached && cached.size_gb ? cached.size_gb : (ST.family.find(f => f.id === ST.msModel) || {}).size_gb;
-  // 规模越大上下文越保守：<10GB→64k，<20GB→32k，<40GB→16k，其余 8k
   const ctx = !gb ? 32768 : gb < 10 ? 65536 : gb < 20 ? 32768 : gb < 40 ? 16384 : 8192;
   $('ms-context').value = ctx;
   if ($('ms-maxtok').value === '' || Number($('ms-maxtok').value) > 8192) $('ms-maxtok').value = 4096;
-  if (!$('ms-parallel').value) $('ms-parallel').value = '';
-  toast(`已填推荐值：上下文 ${ctx / 1024 | 0}k（按模型约 ${gb || '?'} GB 估算），确认后点「保存并重启引擎」`);
+  toast(`未读到模型 config，按体积给保守值：上下文 ${ctx / 1024 | 0}k（约 ${gb ? fmt0(gb) : '?'} GB）`);
 }
 window.applyRecommended = applyRecommended;
 
@@ -626,8 +737,9 @@ const numOrNull = (id) => { const v = $(id).value.trim(); return v === '' ? null
 async function saveModelSettings() {
   if (!ST.msModel) return;
   const params = {
-    context: numOrNull('ms-context') || 32768,
-    max_tokens: numOrNull('ms-maxtok') || 4096,
+    // 留空 = 不传旗标 = 引擎按模型默认自决（不再是写死的 32768/4096）
+    context: numOrNull('ms-context'),
+    max_tokens: numOrNull('ms-maxtok'),
     temperature: numOrNull('ms-temp'),
     top_p: numOrNull('ms-topp'),
     thinking: $('ms-thinking').classList.contains('on'),
@@ -692,7 +804,13 @@ async function boot() {
     toast('API 端点已复制到剪贴板');
   });
   $('ms-save').addEventListener('click', saveModelSettings);
-  $('ms-reset').addEventListener('click', () => { if (ST.msModel) openSettings(ST.msModel); });
+  // 恢复默认 = 清掉该模型已存的覆盖项，回到「模型自身默认配置」
+  $('ms-reset').addEventListener('click', async () => {
+    if (!ST.msModel) return;
+    await call('model_settings_reset', { model: ST.msModel }).catch(() => {});
+    await openSettings(ST.msModel);
+    toast('已恢复为模型默认配置（未保存，点「保存并重启引擎」生效）');
+  });
   $('ms-recommend').addEventListener('click', applyRecommended);
   [['set-ctx', 'default_context'], ['set-parallel', 'parallel'], ['set-pcache', 'prompt_cache_gib']]
     .forEach(([id, key]) => {
@@ -711,6 +829,12 @@ async function boot() {
   });
 
   switchPage('metrics');   // 默认页=监控（2026-10-08 定序）
+  // 版本信息：旧版只在打开设置页时才取 settings，于是监控页的「软件版本」
+  // 长期显示 "App v— · 引擎 未安装"、顶栏回退到写死版本号。
+  // 这里改为启动即后台加载 —— 但**绝不能 await**：settings 内含 pool.detect()
+  // （spawn 子进程），冷启动时可能长时间不返回，await 会把整个 boot 挂死，
+  // 后半段的 renderCards/refresh/setInterval 全部不执行。
+  loadVersions();
   ST.family = await call('families', {}).catch(() => []);
   try { ST.cache = await call('models_installed', {}); } catch (e) {}
   try { ST.appset = await call('app_settings_get', {}); } catch (e) {}

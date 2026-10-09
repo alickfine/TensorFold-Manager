@@ -171,6 +171,65 @@ def main():
     ms2.delete_for("TensorFold/ModelA")
     check("删除模型设置", "TensorFold/ModelA" not in ModelSettings(spath).all())
 
+    # ============ B1c: 旧版硬编码默认值一次性迁移 ============
+    # 2.1.2 及以前保存路径无条件写 context=32768/max_tokens=4096，导致"没改过设置"
+    # 的模型看起来像用户显式选了这两个值，令新规则"初始值=模型默认"失效。
+    print("== B1: 旧默认值一次性迁移 ==")
+    mpath = os.path.join(TMP, "migrate_settings.json")
+    with open(mpath, "w", encoding="utf-8") as f:
+        json.dump({
+            "TensorFold/A": {"context": 32768, "max_tokens": 4096, "parallel": 4},
+            "TensorFold/B": {"context": 65536, "max_tokens": 4096},
+            "TensorFold/C": {"context": 32768, "max_tokens": 8192},
+        }, f)
+    mig = ModelSettings(mpath)
+    rawA = mig.raw_for("TensorFold/A")
+    rawB = mig.raw_for("TensorFold/B")
+    rawC = mig.raw_for("TensorFold/C")
+    check("旧硬编码默认值被抹掉（A: 两者都==旧默认）",
+          "context" not in rawA and "max_tokens" not in rawA and rawA.get("parallel") == 4,
+          str(rawA))
+    check("自定义值保留（B: context 非默认 / C: max_tokens 非默认）",
+          rawB.get("context") == 65536 and "max_tokens" not in rawB
+          and rawC.get("max_tokens") == 8192 and "context" not in rawC,
+          f"B={rawB} C={rawC}")
+    check("迁移打标 _schema=2", mig.raw_for("__none__") == {}
+          and json.load(open(mpath, encoding="utf-8")).get("_schema") == 2)
+    check("迁移前留备份 .pre-2.1.3.bak", os.path.exists(mpath + ".pre-2.1.3.bak"))
+    check("all() 不暴露内部键", set(ModelSettings(mpath).all()) == {"TensorFold/A", "TensorFold/B", "TensorFold/C"},
+          str(sorted(ModelSettings(mpath).all())))
+
+    # 迁移只跑一次：用户在新版显式存 32768 必须被尊重，不能被再度抹掉
+    mig.save_for("TensorFold/A", {"context": 32768, "parallel": 2})
+    check("迁移后显式保存的旧默认值被尊重（只跑一次）",
+          ModelSettings(mpath).raw_for("TensorFold/A").get("context") == 32768,
+          str(ModelSettings(mpath).raw_for("TensorFold/A")))
+
+    # "初始值=模型默认" 的编译口径：未设置时不传 --context/--max-tokens
+    print("== B1: 未设置 → 交由模型自决 ==")
+    j_default = " ".join(build_serve_args("m", {"context": None, "max_tokens": None}, 8123))
+    check("未设置时不传 --context/--max-tokens",
+          "--context" not in j_default and "--max-tokens" not in j_default, j_default)
+    j_explicit = " ".join(build_serve_args("m", {"context": 262144, "max_tokens": 8192}, 8123))
+    check("显式设置时照传",
+          "--context 262144" in j_explicit and "--max-tokens 8192" in j_explicit, j_explicit)
+
+    # ============ B1d: detect() 不得 fork ============
+    # 背景（2026-10-09 实测）：打包 App 是 AppKit+WebKit 多线程进程。CPython 的
+    # subprocess 默认 close_fds=True → 走 fork()，会和 malloc/atfork 锁打架死锁，
+    # 表现为桥线程永久卡在 lock acquire，连带 models_installed 等后续调用全挂、
+    # 模型页空白。修法是 close_fds=False 逼它走 posix_spawn。
+    # 这条断言直接数 fork 次数，改回 fork 会立刻变红。
+    print("== B1: detect 不许 fork ==")
+    _forks = []
+    os.register_at_fork(before=lambda: _forks.append(1))
+    _dp = EnginePool(python_bin=sys.executable)
+    _d1 = _dp.detect()
+    _d2 = _dp.detect()          # 第二次应命中 TTL 缓存
+    check("detect 返回已安装且有版本", _d1.get("installed") is True, str(_d1)[:120])
+    check("detect 未使用 fork()（走 posix_spawn）", not _forks, f"fork 次数={len(_forks)}")
+    check("detect 结果有 TTL 缓存（第二次不再 spawn）", _d2 == _d1, str(_d2)[:120])
+
     # ============ 多实例池：真 FakeServer + spawn_hook ============
     print("== B2: 多实例并行 ==")
     srvA = run_fake_server(18099, "fake/modelA")

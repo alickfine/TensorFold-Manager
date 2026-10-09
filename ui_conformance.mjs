@@ -84,7 +84,8 @@ v = await ev(`(()=>{
 })()`);
 const cards = JSON.parse(v);
 ok('模型卡6张', cards.length === 6, v);
-ok('每卡有真实repo id行(rid)', cards.every(c => c.rid && c.ridText.startsWith('TensorFold/')));
+// 2026-10-09：模型 id 展示不带提供者（TensorFold/），完整 ref 保留在 title 里
+ok('每卡有 id 行且不带 provider 前缀', cards.every(c => c.rid && !c.ridText.includes('/')), v);
 ok('每卡三钮(加载|下载/设置/删除)', cards.every(c => c.btns.length === 3
   && ['加载', '↓ 下载'].some(t => c.btns[0] === t) && c.btns[1] === '设置' && ['删除', '取消'].includes(c.btns[2])), v);
 ok('禁用钮透明度置灰', cards.flatMap(c => c.disabledOpacity).every(o => parseFloat(o) < 1));
@@ -112,6 +113,30 @@ for (const h of advs) {
 }
 v = await ev(`(()=>{document.querySelector('#ms-overlay .seg2 button:last-child').click();return getComputedStyle(document.getElementById('ms-adv')).display!=='none'})()`);
 ok('高级分段可切换', v === true, String(v));
+
+/* ---------- 模型属性区与默认值（2026-10-09 老板四项要求） ---------- */
+v = await ev(`(()=>{
+  const ats=[...document.querySelectorAll('#ms-attrs .at')].map(e=>e.textContent);
+  return JSON.stringify({n:ats.length, text:ats.join('|')});
+})()`);
+{
+  const d = JSON.parse(v);
+  ok('属性区有徽标', d.n >= 4, v);
+  ok('属性区标出支持图像', d.text.includes('支持图像'));
+  ok('属性区标出内置 MTP', d.text.includes('MTP'));
+  ok('属性区标出加速配套草稿模型', d.text.includes('草稿模型'));
+  ok('属性区标出输入上限', d.text.includes('输入上限'));
+}
+// 初始值取模型默认（mock 的 config: max_position_embeddings=262144），不是写死的 32768
+v = await ev(`document.getElementById('ms-context').value`);
+ok('上下文初值=模型默认(262144)', String(v) === '262144', String(v));
+v = await ev(`document.getElementById('ms-ctx-hint').textContent.includes('输入上限')`);
+ok('上下文提示标注输入上限', v === true, String(v));
+v = await ev(`document.getElementById('ms-maxtok-hint').textContent.includes('输出上限')`);
+ok('输出提示标注输出上限', v === true, String(v));
+// 模型支持图像 → 视觉开关可用（非 disabled）
+v = await ev(`!document.getElementById('ms-vision').classList.contains('disabled')`);
+ok('支持图像的模型视觉开关可用', v === true, String(v));
 v = await ev(`(()=>{closeSettings();return !document.getElementById('ms-overlay').classList.contains('open')})()`);
 ok('弹窗可关闭', v === true, String(v));
 
@@ -146,6 +171,9 @@ v = await ev(`(()=>{
   ok('本机模型含 oMLX 来源条目', rows.some(r => r.includes('oMLX') && r.includes('GLM-5.3-Flash-MLX-4bit-MTP')));
   ok('外部目录模型不给删除按钮（显示"外部"）', rows.some(r => r.includes('外部')));
   ok('HF 模型仍可删', await ev(`(()=>[...document.querySelectorAll('#cache-list .pitem')].some(el=>el.textContent.includes('Qwen3.8-27B-MLX-4bit')&&!!el.querySelector('.sbtn.del')))()`) === true);
+  // 2026-10-09：列表展示名去 provider（不出现 TensorFold/ 前缀）；非官方模型给「开启」入口
+  ok('缓存列表展示名不带 provider', !rows.some(r => r.includes('TensorFold/')));
+  ok('非官方模型有「开启」按钮', await ev(`(()=>[...document.querySelectorAll('#cache-list .pitem')].some(el=>el.textContent.includes('非官方')&&[...el.querySelectorAll('.sbtn')].some(b=>b.textContent.trim()==='开启')))()`) === true);
 }
 
 /* ---------- 对话页组件 ---------- */
@@ -163,6 +191,60 @@ v = await ev(`(()=>{switchPage('metrics');return JSON.stringify({
   bars: document.querySelectorAll('#page-metrics .bars').length})})()`);
 const mt = JSON.parse(v);
 ok("监控页分区+曲线+柱图", mt.stats >= 7 && mt.svg && mt.bars >= 3, v);
+
+/* ---------- 监控页：空态文案 + 读数整数化（2026-10-09 用户反馈） ---------- */
+// 缺陷1「暂无吞吐数据字体变形」：chart-tps 是 preserveAspectRatio="none" 的拉伸坐标系，
+// 文案若写在 <svg><text> 里会被横向压扁 → 必须走 HTML 覆盖层。
+const chart = await ev(`(()=>{
+  renderMetrics({ mem_total: 256, mem_free: 170.2,
+    metrics_latest: { tps: 8.4, prefill_tps: 2431.7, footprint_gb: 107.7, kv: 62.4,
+                      running: 1, waiting: 0, prompt_tokens: 12345, gen_tokens_total: 6789,
+                      requests_done: 12, cpu_percent: 33.4, gpu_percent: 12.6 },
+    per: { 'mock/m': { kv: 62.4, accepted_ratio: 0.7273 } }, series: {} });
+  const ov = document.getElementById('chart-tps-empty');
+  return JSON.stringify({
+    hasOverlay: !!ov, text: ov ? ov.textContent.trim() : '',
+    shown: ov ? getComputedStyle(ov).display !== 'none' : false,
+    textInSvg: document.querySelectorAll('#chart-tps text').length,
+    readouts: ['st-tps','st-prefill','st-mem','st-free','st-kv','st-mtp','st-cache-eff',
+               'st-cpu','st-gpu','st-hostmem'].map(i => (document.getElementById(i)||{}).textContent || ''),
+  })})()`);
+const ch = JSON.parse(chart);
+ok("空态文案在 HTML 覆盖层（不在被拉伸的 SVG 内）",
+   ch.hasOverlay && ch.textInSvg === 0 && /暂无吞吐数据/.test(ch.text), chart);
+ok("空态覆盖层可见", ch.shown, chart);
+ok("监控读数无小数（0 位）", ch.readouts.every(t => !/\d\.\d/.test(t)), JSON.stringify(ch.readouts));
+// 有数据时覆盖层应隐藏、改由 SVG polyline 呈现
+const chartOn = await ev(`(()=>{
+  renderMetrics({ mem_total: 256, mem_free: 190, metrics_latest: { tps: 8 },
+    per: {}, series: { tps: { values: [1,5,9,3,8] } } });
+  const ov = document.getElementById('chart-tps-empty');
+  return JSON.stringify({ shown: getComputedStyle(ov).display !== 'none',
+    poly: document.querySelectorAll('#chart-tps polyline').length,
+    textInSvg: document.querySelectorAll('#chart-tps text').length })})()`);
+const chOn = JSON.parse(chartOn);
+ok("有吞吐数据时隐藏空态并画曲线",
+   !chOn.shown && chOn.poly === 1 && chOn.textInSvg === 0, chartOn);
+// 版本信息必须启动即加载（旧版只在打开设置页时取 settings，监控页长期显示 "App v— · 引擎 未安装"）
+const verTxt = await ev(`JSON.stringify({
+  win: (document.getElementById('win-ver')||{}).textContent || '',
+  host: (document.getElementById('host-versions')||{}).textContent || '' })`);
+const vj = JSON.parse(verTxt);
+ok("顶栏版本取自后端（不是写死的回退值）", /v2\.0\.0/.test(vj.win), verTxt);
+ok("监控页「软件版本」行已填充", /App v2\.0\.0/.test(vj.host) && /引擎 0\.6\.4/.test(vj.host), verTxt);
+// 版本晚到也必须能回填：settings 含 pool.detect()，冷启动可能很慢或压根不返回，
+// 因此 boot 不得 await 它（曾把整个 boot 挂死，导致 2.5s 轮询都没注册上）。
+const late = await ev(`(async () => {
+  switchPage('metrics');
+  ST.settings = {};
+  document.getElementById('win-ver').childNodes[0].nodeValue = 'v—';
+  await loadVersions();
+  return JSON.stringify({ win: document.getElementById('win-ver').textContent,
+                          host: document.getElementById('host-versions').textContent });
+})()`);
+const lj = JSON.parse(late);
+ok("版本晚到也能回填顶栏与监控页版本行",
+   /v2\.0\.0/.test(lj.win) && /App v2\.0\.0/.test(lj.host), late);
 
 /* ---------- 对比度（双主题） ---------- */
 const cssCheck = `(function(){

@@ -26,6 +26,8 @@ import urllib.request
 LOG_CAP = 800  # 内存里保留的日志行数
 DEFAULT_BASE_PORT = 8080
 SETTINGS_DIR = os.path.expanduser("~/.tensorfold-manager")
+MIGRATION_KEY = "_schema"       # settings 文件里的内部键（非模型名）
+MIGRATION_VER = 2               # 2 = 已清理旧版硬编码 context/max_tokens 默认值
 
 _OPENER = None
 
@@ -39,11 +41,14 @@ FAMILIES = [
     {"name": "DeepSeek-V4-Flash DSpark", "id": "TensorFold/DeepSeek-V4-Flash-DSpark-MLX", "size_gb": 40, "note": "256GB Mac 可跑"},
 ]
 
-# 每模型默认参数（与 serve --help 实测字段对齐；None = 不传该旗标，用引擎默认）
+# 每模型默认参数（与 serve --help 实测字段对齐；None = 不传该旗标，用引擎/模型默认）
+# 2026-10-09：context/max_tokens 默认改为 None —— 老板要求"初始设置 = 模型默认配置"，
+# 不传旗标时引擎按模型 config 的 max_position_embeddings 自决（实测 27B = 262144），
+# 而不是被写死的 32768 覆盖。UI 弹窗会把模型默认值填出来供用户改。
 DEFAULT_PARAMS = {
     "port": None,          # None = 池自动分配
-    "context": 32768,
-    "max_tokens": 4096,
+    "context": None,
+    "max_tokens": None,
     "temperature": None,
     "top_p": None,
     "top_k": None,
@@ -273,11 +278,119 @@ def scan_summary(extra_dirs: list | None = None) -> list[dict]:
             for r in model_roots(extra_dirs)]
 
 
+# ---------- 模型元信息（设置弹窗默认值 / 能力 / 加速配套检查） ----------
+# 2026-10-09 老板要求：初始设置取模型自身默认配置（含输入输出上限）、模型属性可控
+# （是否支持图像等）、模型 id 展示不带提供者、加速配套模型要有检查。
+# 事实来源 = 模型目录里的 config.json（HF 缓存与本地目录两形态都能定位）。
+ACCEL_DRAFTS = {
+    # 主模型 → 可配的外部草稿（推测解码）模型。来源：引擎启动日志
+    # "no draft model: `tensorfold pull z-lab/Qwen3.8-27B-DFlash2` once to draft with it"。
+    "TensorFold/Qwen3.8-27B-MLX-4bit": "z-lab/Qwen3.8-27B-DFlash2",
+}
+
+
+def _model_config_path(ref: str) -> str:
+    """定位模型 config.json：ref 是 HF repo id 或本地目录绝对路径。"""
+    if os.path.isabs(ref) or ref.startswith("~"):
+        p = os.path.expanduser(ref)
+        return os.path.join(p, "config.json") if os.path.isdir(p) else ""
+    base = hf_cache_dir()
+    snaps = sorted(glob.glob(os.path.join(base, _repo_dir_name(ref), "snapshots", "*")))
+    for snap in reversed(snaps):   # 多 revision 时用最新的
+        cfg = os.path.join(snap, "config.json")
+        if os.path.exists(cfg):
+            return cfg
+    return ""
+
+
+def _is_cached(repo: str) -> bool:
+    d = os.path.join(hf_cache_dir(), _repo_dir_name(repo))
+    if not os.path.isdir(d):
+        return False
+    return bool(glob.glob(os.path.join(d, "snapshots", "*")))
+
+
+def model_meta(ref: str) -> dict:
+    """读模型 config.json，给出默认配置、能力与加速配套状态。
+
+    返回键：
+      defaults      模型自身默认（context=输入上限、max_tokens 建议、采样参数），UI 用它填初值
+      capabilities  能力探测：vision（视觉输入）/thinking（推理模式）/mtp（内置多 token 头）
+      accel         加速配套：内置 MTP 头 + 外部草稿模型是否已下载
+      display       id（去 provider 的展示名）与 provider
+    """
+    ref = (ref or "").strip()
+    cfg_path = _model_config_path(ref)
+    cfg: dict = {}
+    if cfg_path:
+        try:
+            with open(cfg_path, encoding="utf-8") as f:
+                cfg = json.load(f)
+        except (OSError, ValueError):
+            cfg = {}
+    tc = cfg.get("text_config") if isinstance(cfg.get("text_config"), dict) else {}
+    gc = cfg.get("generation_config") if isinstance(cfg.get("generation_config"), dict) else {}
+
+    def _pick(key, fallback=None):
+        if key in tc:
+            return tc[key]
+        if key in cfg:
+            return cfg[key]
+        return fallback
+
+    ctx_max = _pick("max_position_embeddings") or None
+    vocab = _pick("vocab_size") or None
+    mtp_layers = _pick("mtp_num_hidden_layers") or 0
+    has_vision = bool(cfg.get("vision_config")) or cfg.get("image_token_id") is not None
+    # 默认采样：模型 generation_config 优先，其次顶层字段（同一份配置两种写法）
+    defaults = {
+        "context": ctx_max,                       # 输入上限 = 模型位置编码上限
+        "max_tokens": None,                       # 输出上限由引擎默认（config 通常不写）
+        "temperature": gc.get("temperature", cfg.get("temperature")),
+        "top_p": gc.get("top_p", cfg.get("top_p")),
+        "top_k": gc.get("top_k", cfg.get("top_k")),
+    }
+    # 加速配套：内置 MTP 头（config 声明） + 外部草稿模型（是否已下载）
+    draft_repo = ACCEL_DRAFTS.get(ref)
+    accel = {
+        "builtin_mtp": bool(mtp_layers),
+        "mtp_layers": int(mtp_layers or 0),
+        "draft_repo": draft_repo or "",
+        "draft_cached": _is_cached(draft_repo) if draft_repo else False,
+    }
+    display = ref.split("/")[-1] if "/" in ref else os.path.basename(ref)
+    provider = ref.rsplit("/", 1)[0] if "/" in ref else ""
+    return {
+        "ref": ref,
+        "found": bool(cfg),
+        "config_path": cfg_path,
+        "context_max": ctx_max,
+        "vocab_size": vocab,
+        "model_type": cfg.get("model_type") or tc.get("model_type") or "",
+        "architectures": cfg.get("architectures") or [],
+        "defaults": defaults,
+        "capabilities": {
+            "vision": has_vision,
+            "thinking": True,          # 引擎对 Qwen 系默认开启思考（可用 --no-thinking 关）
+            "mtp": bool(mtp_layers),
+        },
+        "accel": accel,
+        "display": display,
+        "provider": provider,
+    }
+
+
 def build_serve_args(model: str, params: dict, port: int) -> list[str]:
-    """把模型参数表编译成 `serve` 旗标列表（纯函数，便于测试）。"""
-    extra = ["--host", "127.0.0.1", "--port", str(port),
-             "--context", str(params.get("context") or 32768),
-             "--max-tokens", str(params.get("max_tokens") or 4096)]
+    """把模型参数表编译成 `serve` 旗标列表（纯函数，便于测试）。
+
+    context/max_tokens 为 None 时不传该旗标 —— 引擎按模型 config 的自身上限自决，
+    这是"初始设置 = 模型默认配置"的落地（UI 填出的默认值若被用户改动才会显式传）。
+    """
+    extra = ["--host", "127.0.0.1", "--port", str(port)]
+    if params.get("context") is not None:
+        extra += ["--context", str(params["context"])]
+    if params.get("max_tokens") is not None:
+        extra += ["--max-tokens", str(params["max_tokens"])]
     if params.get("temperature") is not None:
         extra += ["--temperature", str(params["temperature"])]
     if params.get("top_p") is not None:
@@ -353,10 +466,21 @@ def serve_argv(python_bin: str, model: str, params: dict, port: int,
 class ModelSettings:
     """每模型参数持久化：~/.tensorfold-manager/model_settings.json。"""
 
+    # 旧版（≤2.1.2）保存路径无条件写入整份 DEFAULT_PARAMS，其中 context=32768 /
+    # max_tokens=4096 是写死的默认值，于是"从没改过这两个字段"的模型在磁盘上也像
+    # 用户显式选过 —— 会让新规则"初始设置 = 模型自身默认配置"看起来没生效
+    # （实测 UI 仍显示 32768，而模型 config 是 262144）。
+    # 一次性迁移：**逐键**判断，只要该键的值恰好等于旧硬编码默认就视为未设置并抹掉。
+    # 逐键而非整条：旧版用户常常只改了其中一项（例如只把 max_tokens 调到 8192），
+    # 若按"两项都等于旧默认才清理"就会漏掉另一项，UI 依旧显示 32768。
+    # 用 _schema 标记防止重复执行（否则用户在新版显式保存 32768 会被下次加载再度抹掉）。
+    LEGACY_DEFAULTS = {"context": 32768, "max_tokens": 4096}
+
     def __init__(self, path: str | None = None):
         self.path = path or os.path.join(SETTINGS_DIR, "model_settings.json")
         self._lock = threading.Lock()
         self._cache: dict | None = None
+        self.log_migration = False
 
     def _load(self) -> dict:
         if self._cache is not None:
@@ -367,7 +491,33 @@ class ModelSettings:
             self._cache = data if isinstance(data, dict) else {}
         except (OSError, ValueError):
             self._cache = {}
+        self._migrate_legacy_defaults()
         return self._cache
+
+    def _migrate_legacy_defaults(self):
+        data = self._cache or {}
+        if data.get(MIGRATION_KEY) == MIGRATION_VER:
+            return                      # 已迁移过：此后用户显式存的值一律尊重
+        changed = False
+        for model, cfg in data.items():
+            if model.startswith("_") or not isinstance(cfg, dict):
+                continue
+            for k, v in self.LEGACY_DEFAULTS.items():
+                if cfg.get(k) == v:          # 逐键：恰好等于旧硬编码默认 → 视为未设置
+                    cfg.pop(k, None)
+                    changed = True
+        # 迁移前留一份原文件（可逆；只在首次产生 .pre-2.1.3.bak）
+        try:
+            bak = self.path + ".pre-2.1.3.bak"
+            if not os.path.exists(bak) and os.path.exists(self.path):
+                import shutil as _sh
+                _sh.copy2(self.path, bak)
+        except OSError:
+            pass
+        data[MIGRATION_KEY] = MIGRATION_VER
+        self._save(data)
+        if changed:
+            self.log_migration = True
 
     def _save(self, data: dict):
         try:
@@ -407,7 +557,8 @@ class ModelSettings:
 
     def all(self) -> dict:
         with self._lock:
-            return {k: dict(v) for k, v in self._load().items()}
+            return {k: dict(v) for k, v in self._load().items()
+                    if not k.startswith("_") and isinstance(v, dict)}
 
 
 class EngineInstance:
@@ -681,6 +832,7 @@ class EnginePool:
     """多实例池：每模型独立进程/端口/日志；端口从 base_port 起找空闲；内存闸门。"""
 
     MEM_MARGIN_GB = 10.0  # 空闲内存需 ≥ 模型估计大小 + 该余量才允许新加载
+    DETECT_TTL = 60.0     # detect() 结果缓存秒数（settings() 每次都会问，别反复 spawn）
 
     def __init__(self, python_bin: str = "", settings: ModelSettings | None = None,
                  base_port: int = DEFAULT_BASE_PORT, spawn_hook=None):
@@ -693,6 +845,7 @@ class EnginePool:
         self._instances: dict[str, EngineInstance] = {}
         self._pool_log: list[str] = []
         self._psutil = None
+        self._detect_cache: tuple[float, str, str] | None = None  # (ts, python_bin, version)
 
     def cached(self) -> list[dict]:
         """本机可见模型（HF 缓存 + oMLX/MTPLX/LM Studio + 自定义目录）。"""
@@ -710,21 +863,32 @@ class EnginePool:
 
     # ---------- 基本信息 ----------
     def detect(self) -> dict:
+        """引擎探测。结果带 TTL 缓存：settings() 会调用它，走得太频繁会反复 spawn。"""
+        installed = bool(self.python_bin and os.path.exists(self.python_bin))
+        now = time.time()
+        cached = self._detect_cache
+        if cached and now - cached[0] < self.DETECT_TTL and cached[1] == self.python_bin:
+            return {"installed": installed, "path": self.python_bin, "version": cached[2]}
         ver = ""
-        if self.python_bin and os.path.exists(self.python_bin):
+        if installed:
             # CLI 入口脚本直接 --version；内嵌解释器才走 -m（与 serve_argv 同一分支规则）
             if os.path.basename(self.python_bin) in ("python", "python3"):
                 cmd = [self.python_bin, "-m", "tensorfold", "--version"]
             else:
                 cmd = [self.python_bin, "--version"]
             try:
-                r = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+                # close_fds=False 很关键：CPython 只在 close_fds 为假时才用 posix_spawn，
+                # 否则走 fork()。本进程是 AppKit+WebKit 多线程环境，fork 会与
+                # malloc/atfork 锁竞争而**死锁**（实测：桥线程卡死在 lock acquire，
+                # 连带 models_installed 等后续调用全部挂住，模型页空白）。
+                r = subprocess.run(cmd, capture_output=True, text=True, timeout=20,
+                                   close_fds=False)
                 out = (r.stdout or r.stderr).strip()
                 ver = out.splitlines()[-1] if out else ""
             except Exception:
                 ver = ""
-        return {"installed": bool(self.python_bin and os.path.exists(self.python_bin)),
-                "path": self.python_bin, "version": ver}
+        self._detect_cache = (now, self.python_bin, ver)
+        return {"installed": installed, "path": self.python_bin, "version": ver}
 
     def get(self, model: str) -> EngineInstance | None:
         with self._lock:

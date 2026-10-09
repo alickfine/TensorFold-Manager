@@ -85,11 +85,12 @@ class Api:
         # 全局设置兜底：仅当「本次未传且该模型也没保存」时才用设置页的值
         # （优先级：本次参数 > 每模型已存 > 全局默认；pool 里 load_for(model).update(overrides)，
         #  所以这里绝不能把全局值塞进 overrides 覆盖每模型已存值）
+        # context 不在此列：2026-10-09 起"初始设置 = 模型自身默认配置"，
+        # 不显式传就由引擎按模型 config 自决（不传 --context 即模型默认）。
         g = self.app_settings_get()
         saved = self.pool.settings.raw_for(model)
         for k, gk in (("parallel", "parallel"),
-                      ("prompt_cache_gib", "prompt_cache_gib"),
-                      ("context", "default_context")):
+                      ("prompt_cache_gib", "prompt_cache_gib")):
             if clean.get(k) is None and saved.get(k) is None:
                 clean[k] = g[gk]
         return self.pool.start(model, **clean)
@@ -170,6 +171,10 @@ class Api:
     def families(self) -> list[dict]:
         return engine_mod.FAMILIES
 
+    def model_info(self, ref: str) -> dict:
+        """模型元信息：默认配置/能力/加速配套（设置弹窗初值与属性区用）。"""
+        return engine_mod.model_meta(ref)
+
     def model_delete(self, repo_id: str) -> dict:
         return self.pool.delete_model(repo_id)
 
@@ -187,11 +192,19 @@ class Api:
 
     # ---------- 每模型设置 ----------
     def model_settings_get(self, model: str) -> dict:
-        return self.pool.settings.load_for(model)
+        """合并默认值后的有效参数 + _raw（用户显式存过的键，UI 用来区分默认与用户值）。"""
+        eff = self.pool.settings.load_for(model)
+        eff["_raw"] = self.pool.settings.raw_for(model)
+        return eff
 
     def model_settings_save(self, model: str, params: dict) -> dict:
         params = params or {}
         self.pool.settings.save_for(model, params)
+        return {"ok": True}
+
+    def model_settings_reset(self, model: str) -> dict:
+        """清除该模型的覆盖项 → 回到模型自身默认配置（设置弹窗「恢复默认」）。"""
+        self.pool.settings.delete_for(model)
         return {"ok": True}
 
     # ---------- 聊天 ----------
@@ -312,13 +325,13 @@ class Api:
         d = engine_mod.hf_cache_dir()
         if not os.path.isdir(d):
             return {"ok": False, "error": "缓存目录还不存在"}
-        subprocess.run(["open", d], check=False, timeout=10)
+        subprocess.run(["open", d], check=False, timeout=10, close_fds=False)  # posix_spawn，勿 fork
         return {"ok": True}
 
     def copy_text(self, text: str) -> dict:
         try:
             import subprocess
-            p = subprocess.run(["pbcopy"], input=(text or "").encode(), timeout=5)
+            p = subprocess.run(["pbcopy"], input=(text or "").encode(), timeout=5, close_fds=False)
             return {"ok": p.returncode == 0}
         except Exception as exc:
             return {"ok": False, "error": str(exc)}

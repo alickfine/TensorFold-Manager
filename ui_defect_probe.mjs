@@ -206,6 +206,43 @@ const frow = await ev(`(() => {
 const badFrow = frow.filter(f => (f.overlap != null && f.overlap < 0) || f.labelH > 45);
 ok('弹窗表单行无重叠/异常换行', badFrow.length === 0, JSON.stringify(badFrow));
 
+// ====== 空态文案几何校验：不得出现横向拉伸（"字体变形"）======
+// 回归背景：chart-tps 是 viewBox 520×110 + preserveAspectRatio="none" 的非等比坐标系，
+// 文案曾写在 <svg><text> 里 → 随容器宽度被横向压扁。现在必须走 HTML 覆盖层，
+// 用「同字体参考 span 的 natural width」与「实际渲染宽度」比对来判定。
+const stretch = await ev(`(() => {
+  closeSettings(); switchPage('metrics');   // 前面的用例把页面切到了 chat/弹窗，必须切回来否则量到 0×0
+  renderMetrics({ mem_total: 256, mem_free: 96.3,
+    metrics_latest: { tps: 0, kv: 0, running: 0, waiting: 0, footprint_gb: 0 },
+    per: {}, series: {} });
+  const el = document.getElementById('chart-tps-empty');
+  if (!el) return JSON.stringify({ missing: true });
+  const cs = getComputedStyle(el);
+  const rng = document.createRange(); rng.selectNodeContents(el);
+  const r = rng.getBoundingClientRect();
+  const ref = document.createElement('span');
+  ref.textContent = el.textContent;
+  ref.style.cssText = 'position:absolute;left:-9999px;top:0;white-space:nowrap;'
+    + 'font-weight:' + cs.fontWeight + ';font-size:' + cs.fontSize + ';font-family:' + cs.fontFamily;
+  document.body.appendChild(ref);
+  const rr = ref.getBoundingClientRect();
+  ref.remove();
+  return JSON.stringify({
+    text: el.textContent.trim(), shown: getComputedStyle(el).display !== 'none',
+    inSvg: !!el.closest('svg'),
+    w: +r.width.toFixed(2), h: +r.height.toFixed(2),
+    refW: +rr.width.toFixed(2), refH: +rr.height.toFixed(2),
+    textInSvg: document.querySelectorAll('#chart-tps text').length,
+  });
+})()`);
+let st = {};
+try { st = JSON.parse(stretch); } catch (e) { st = { __err: String(e) }; }
+ok('空态文案在 HTML 层（不在 SVG 坐标系内）', st.inSvg === false && st.textInSvg === 0, stretch);
+// 横向拉伸看宽度（必须≈自然宽度）；高度受 flex 行高影响，给 3px 容差
+ok('空态文案未被横向拉伸（宽度≈同字体自然宽度）',
+   !st.missing && !st.__err && st.shown && st.textInSvg === 0
+   && Math.abs(st.w - st.refW) <= 1.5 && Math.abs(st.h - st.refH) <= 3, stretch);
+
 console.log(`RESULT: ${pass} PASS / ${fail} FAIL`);
 chrome.kill();
 srv.close();

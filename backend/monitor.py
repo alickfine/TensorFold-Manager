@@ -65,8 +65,9 @@ class Monitor:
             return cls._gpu_cache["v"]
         try:
             import subprocess, re
+            # close_fds=False → 走 posix_spawn（fork 在 AppKit+WebKit 多线程进程里会死锁）
             r = subprocess.run(["ioreg", "-r", "-d", "1", "-w", "0", "-c", "IOAccelerator"],
-                               capture_output=True, text=True, timeout=2)
+                               capture_output=True, text=True, timeout=2, close_fds=False)
             m = re.search(r'"Device Utilization %"\s*=\s*(\d+)', r.stdout or "")
             v = float(m.group(1)) if m else None
         except Exception:

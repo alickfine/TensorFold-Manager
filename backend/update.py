@@ -19,7 +19,7 @@ import urllib.request
 
 ENGINE_REPO = "ashhart/TensorFold"
 APP_REPO = "alickfine/TensorFold-Manager"
-APP_VERSION = "2.1.2"
+APP_VERSION = "2.1.3"
 
 _OPENER = None
 
@@ -78,7 +78,7 @@ def _gh_token() -> str:
     for gh in gh_candidates:
         try:
             r = subprocess.run([gh, "auth", "token"], capture_output=True,
-                               text=True, timeout=5)
+                               text=True, timeout=5, close_fds=False)  # posix_spawn；fork 会死锁
             if r.returncode == 0 and r.stdout.strip():
                 _TOKEN = r.stdout.strip()
                 break
@@ -259,7 +259,8 @@ class UpdateChecker:
                     raise RuntimeError("包内缺 bin/tensorfold-native 或无执行权限")
                 # 版本自证
                 r = subprocess.run([binp, "--version"], capture_output=True,
-                                   text=True, timeout=15, env=_env_no_proxy())
+                                   text=True, timeout=15, env=_env_no_proxy(),
+                                   close_fds=False)  # posix_spawn；fork 会死锁
                 ver_out = (r.stdout or r.stderr).strip().splitlines()[-1] if (r.stdout or r.stderr) else ""
                 if f" {tag}" not in ver_out:
                     raise RuntimeError(f"二进制自报版本不符: {ver_out!r} 期望 {tag}")
@@ -282,7 +283,7 @@ def apply_app_open(url: str) -> dict:
     if not url:
         return {"ok": False, "error": "没有可打开的地址"}
     try:
-        subprocess.run(["open", url], check=False, timeout=10)
+        subprocess.run(["open", url], check=False, timeout=10, close_fds=False)  # posix_spawn
         return {"ok": True}
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
