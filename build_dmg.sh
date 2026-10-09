@@ -21,8 +21,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
   <key>CFBundleName</key><string>TensorFold Manager</string>
   <key>CFBundleDisplayName</key><string>TensorFold Manager</string>
   <key>CFBundleIdentifier</key><string>local.tensorfold.manager</string>
-  <key>CFBundleVersion</key><string>2.1.3</string>
-  <key>CFBundleShortVersionString</key><string>2.1.3</string>
+  <key>CFBundleVersion</key><string>2.1.4</string>
+  <key>CFBundleShortVersionString</key><string>2.1.4</string>
   <key>CFBundleExecutable</key><string>TensorFoldManager</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
@@ -47,7 +47,7 @@ mkdir -p "$BUILD/dmgroot"
 mv "$APP" "$BUILD/dmgroot/TensorFold Manager.app"
 ln -s /Applications "$BUILD/dmgroot/Applications"
 cat > "$BUILD/dmgroot/README-安装说明.txt" <<'TXT'
-TensorFold Manager v2.1.3 —— 本地 LLM 推理引擎管理端（Apple Silicon 专用）
+TensorFold Manager v2.1.4 —— 本地 LLM 推理引擎管理端（Apple Silicon 专用）
 
 安装：把 "TensorFold Manager.app" 拖到「应用」文件夹（或直接双击运行本卷里的 App）。
 如已安装旧版，先移除旧版再拖入。
@@ -59,6 +59,7 @@ v2 新特性：
 - 多实例并行：可同时加载多个模型，各自独立端口/日志/监控；
 - 原生壳：主窗口 + 菜单栏常驻，关窗不退出，托盘直接启停模型；
 - 每模型参数：上下文/采样/MTP 推测解码/并发等按模型保存，弹窗修改即时生效；
+- 加速配套联动：主模型卡片直接显示草稿模型状态，设置里可一键下载并开关推测解码；
 - 对话增强：流式输出、Markdown/代码高亮、多会话管理；
 - 自动更新：检查 TensorFold 引擎与 App 新版本，引擎一键升级。
 

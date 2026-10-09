@@ -19,7 +19,7 @@ import urllib.request
 
 ENGINE_REPO = "ashhart/TensorFold"
 APP_REPO = "alickfine/TensorFold-Manager"
-APP_VERSION = "2.1.3"
+APP_VERSION = "2.1.4"
 
 _OPENER = None
 
