@@ -157,8 +157,23 @@ class ChatStore:
     def __init__(self, chats_dir: str):
         self.chats_dir = chats_dir
         self.lock = threading.Lock()
+        self._seq = 0
 
     # ---------- 底层 ----------
+    def _new_id(self) -> str:
+        """生成唯一会话 id（毫秒时间戳 + 进程内自增序号，并确保不与已有文件相撞）。
+
+        只取时间戳不够：同一毫秒内连续创建（双击「新对话」、并发请求）会撞 id，
+        第二次会静默覆盖第一条会话造成记录丢失。故此处不依赖时钟前进。
+        调用方须已持有 self.lock。
+        """
+        for _ in range(1000):
+            self._seq += 1
+            cid = f"c{int(time.time() * 1000):x}{self._seq:x}"
+            if not os.path.exists(os.path.join(self.chats_dir, f"{cid}.json")):
+                return cid
+        return f"c{int(time.time() * 1000):x}{os.urandom(4).hex()}"
+
     def _path(self, conv_id: str) -> str:
         if not CHAT_ID_RE.match(conv_id or ""):
             raise ValueError(f"非法会话 id: {conv_id!r}")
@@ -184,7 +199,7 @@ class ChatStore:
     def create(self, chat: dict | None = None) -> dict:
         with self.lock:
             chat = dict(chat or {})
-            chat["id"] = chat.get("id") or f"c{int(time.time() * 1000):x}"
+            chat["id"] = chat.get("id") or self._new_id()
             chat.setdefault("title", "新对话")
             chat.setdefault("model", "")
             chat.setdefault("messages", [])

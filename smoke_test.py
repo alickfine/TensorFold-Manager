@@ -337,6 +337,15 @@ def main():
     check("列表含两会话", {c1["id"], c2["id"]} <= ids)
     check("删除一个另一还在", store.delete_chat(c1["id"]) and store.get_chat(c1["id"]) is None
           and store.get_chat(c2["id"]) is not None)
+    # 回归锁：同一毫秒内连续创建不得撞 id（唯一性不得依赖时钟前进。
+    # 旧实现 `c{int(time.time()*1000):x}` 在时钟不推进时两次创建得到同一个 id，
+    # 第二次会静默覆盖第一条会话 —— 已修，此断言防回归。）
+    c3 = store.create({"title": "会话三"})
+    c4 = store.create({"title": "会话四"})
+    check("连续创建 id 唯一（不依赖时钟前进）",
+          len({c1["id"], c2["id"], c3["id"], c4["id"]}) == 4
+          and all(os.path.exists(os.path.join(TMP, "chats", c["id"] + ".json"))
+                  for c in (c3, c4)))
     # 旧数据归档
     legacy = os.path.join(TMP, "history.json")
     with open(legacy, "w") as f:
