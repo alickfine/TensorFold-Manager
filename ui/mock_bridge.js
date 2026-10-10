@@ -3,7 +3,8 @@
 (() => {
   // 闸门可翻转的开关：覆盖「草稿模型已下载 / 未下载」「推测解码开 / 关」「下载进度条」
   // 「监听范围 本机 / 局域网」几条分支
-  const S = window.__mock = { draftCached: true, drafts: true, pulling: false, listen: 'local' };
+  const S = window.__mock = { draftCached: true, drafts: true, pulling: false, listen: 'local',
+                              updStatus: null };
   // 每核占用 mock（Apple Silicon：12 性能核 + 24 能效核，与真机读数同构）
   const ARM_P12 = [88, 74, 91, 66, 82, 79, 95, 70, 63, 87, 72, 80];
   const ARM_E24 = [41, 33, 52, 28, 45, 37, 22, 49, 31, 44, 26, 38,
@@ -138,8 +139,8 @@
         display: ref.split('/').pop(), provider: ref.split('/')[0],
       };
     },
-    update_status: () => ({ checked_at: 0, engine: null, app: null, error: '' }),
-    update_check: () => ({ checked_at: 1, engine: { available: true, latest: '0.6.5' }, app: { available: false }, error: '' }),
+    update_status: () => S.updStatus || ({ checked_at: 0, engine: null, app: null, error: '' }),
+    update_check: () => S.updStatus || ({ checked_at: 1, engine: { available: true, latest: '0.6.5', current: '0.6.4' }, app: { available: false, current: '2.0.0' }, error: '' }),
     chat_list: () => [],
     chat_create: ({ chat }) => Object.assign({ id: 'mock1', messages: [] }, chat, { updated: Date.now() / 1000 }),
     chat_get: () => null,

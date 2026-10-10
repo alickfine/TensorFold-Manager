@@ -21,8 +21,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
   <key>CFBundleName</key><string>TensorFold Manager</string>
   <key>CFBundleDisplayName</key><string>TensorFold Manager</string>
   <key>CFBundleIdentifier</key><string>local.tensorfold.manager</string>
-  <key>CFBundleVersion</key><string>2.1.5</string>
-  <key>CFBundleShortVersionString</key><string>2.1.5</string>
+  <key>CFBundleVersion</key><string>2.1.6</string>
+  <key>CFBundleShortVersionString</key><string>2.1.6</string>
   <key>CFBundleExecutable</key><string>TensorFoldManager</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
@@ -47,13 +47,18 @@ mkdir -p "$BUILD/dmgroot"
 mv "$APP" "$BUILD/dmgroot/TensorFold Manager.app"
 ln -s /Applications "$BUILD/dmgroot/Applications"
 cat > "$BUILD/dmgroot/README-安装说明.txt" <<'TXT'
-TensorFold Manager v2.1.5 —— 本地 LLM 推理引擎管理端（Apple Silicon 专用）
+TensorFold Manager v2.1.6 —— 本地 LLM 推理引擎管理端（Apple Silicon 专用）
 
 安装：把 "TensorFold Manager.app" 拖到「应用」文件夹（或直接双击运行本卷里的 App）。
 如已安装旧版，先移除旧版再拖入。
 
 App 自带内嵌 Python 运行时（TensorFold 引擎 + MLX + 原生 macOS 壳），无需另装任何依赖。
 模型缓存沿用系统目录 ~/.cache/huggingface，不占 App 体积；大模型首次加载约 30-60s。
+
+v2.1.6 新特性：
+- 更新状态行永远有结果：未检查 / 发现新版本（含当前→最新）/ 已是最新 / 检查失败（原因留在页面上）；
+- 版本号归一：不再显示 "tensorfold-native 1.0.2" 这种 CLI 自报原文；
+- 「检查更新」按钮有进行中状态，检查结论同时给在提示与页面上。
 
 v2.1.5 新特性：
 - 本机性能：真实显示 CPU 核心构成（P/E 核 + 逻辑核）、每核占用格子、GPU 型号与核心数、系统负载；

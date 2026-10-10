@@ -474,6 +474,55 @@ v = await ev(`(()=>{ renderMetrics({ mem_total:256, mem_free:190, metrics_latest
      d.cpu === '—%' && d.core === '—' && d.load === '—' && d.cells === 0, v);
 }
 
+/* ---------- 更新状态行：永远有结果（2026-10-10 用户反馈：检查完没结果、没按钮） ---------- */
+// 旧实现只在「有新版本」时才 display:flex，无更新 / 检查失败时整行隐藏 ——
+// 用户点完「检查更新」页面一个字都不变（失败原因只在 toast 里闪 3.5 秒），
+// 看起来就是"检查完没有结果，也没有更新按钮"。
+v = await ev(`(async()=>{
+  const snap = () => ({ title: document.getElementById('upd-title').textContent,
+                        detail: document.getElementById('upd-detail').textContent,
+                        applyShown: getComputedStyle(document.getElementById('btn-updapply')).display !== 'none',
+                        applyText: document.getElementById('btn-updapply').textContent,
+                        tip: document.getElementById('win-vtip').textContent });
+  const setStatus = async (s) => {
+    window.__mock.updStatus = s;
+    ST.upd = await window.bridge.call('update_status', {});
+    renderUpdate();
+    renderTopbar({ instances: [] });
+    return snap();
+  };
+  switchPage('settings');
+  const out = {};
+  out.fresh = await setStatus({ checked_at: 0, engine: null, app: null, error: '' });
+  out.hasNew = await setStatus({ checked_at: 1791622949, error: '',
+    engine: { available: true, latest: '1.0.4', current: '1.0.2' },
+    app: { available: false, latest: '2.1.5', current: '2.1.5' } });
+  out.latest = await setStatus({ checked_at: 1791622949, error: '',
+    engine: { available: false, latest: '1.0.4', current: '1.0.4' },
+    app: { available: false, latest: '2.1.5', current: '2.1.5' } });
+  out.failed = await setStatus({ checked_at: 1791622949, engine: null, app: null,
+    error: 'engine: HTTP Error 403: rate limit exceeded' });
+  window.__mock.updStatus = null;
+  return JSON.stringify(out);
+})()`);
+{
+  const d = JSON.parse(v);
+  ok('未检查过时更新行也有明确状态',
+     d.fresh.title === '更新状态' && /还没检查过/.test(d.fresh.detail) && !d.fresh.applyShown, v);
+  ok('有更新时给出当前→最新与升级按钮',
+     d.hasNew.title === '发现新版本' && /v1\.0\.4/.test(d.hasNew.detail)
+     && /当前 1\.0\.2/.test(d.hasNew.detail) && d.hasNew.applyShown && /升级/.test(d.hasNew.applyText), v);
+  ok('无更新时写明「已是最新」而不是整行消失',
+     d.latest.title === '已是最新' && /App v2\.1\.5/.test(d.latest.detail)
+     && /引擎 v1\.0\.4/.test(d.latest.detail) && !d.latest.applyShown, v);
+  ok('显示的版本号是纯版本号（不带 tensorfold-native 前缀）',
+     !/tensorfold-?native/i.test(d.hasNew.detail) && !/tensorfold/i.test(d.latest.detail), v);
+  ok('检查失败时把原因留在页面上（不只弹 toast）',
+     d.failed.title === '检查失败' && /rate limit/.test(d.failed.detail) && !d.failed.applyShown, v);
+  ok('顶栏提示随状态变化（不把失败/未检查说成"已是最新"）',
+     /有新版本/.test(d.hasNew.tip) && /已是最新/.test(d.latest.tip) && /失败/.test(d.failed.tip), v);
+}
+
 // 版本信息必须启动即加载（旧版只在打开设置页时取 settings，监控页长期显示 "App v— · 引擎 未安装"）
 const verTxt = await ev(`JSON.stringify({
   win: (document.getElementById('win-ver')||{}).textContent || '',

@@ -453,6 +453,25 @@ def main():
           f"app={app and {'latest': app.get('latest'), 'prerelease': app.get('prerelease')}} err={res['error'][:80]}")
     check("B3 缓存可读", uc.cached().get("checked_at", 0) > 0)
     check("B3 maybe_background 节流", uc.maybe_background(3600) and not uc.maybe_background(3600))
+    # 版本号归一：detect() 给的是 CLI 自报原文（原生二进制 "tensorfold-native 1.0.2"、
+    # 内嵌解释器 "tensorfold 0.6.5"）。原样拿去做比对与显示，用户会看到
+    # "当前 tensorfold-native 1.0.2"，且名字里带别的数字就会比错。
+    from backend.update import _clean_version
+    check("B3 版本号归一（原生二进制自报串）",
+          _clean_version("tensorfold-native 1.0.2") == "1.0.2", _clean_version("tensorfold-native 1.0.2"))
+    check("B3 版本号归一（内嵌解释器自报串）",
+          _clean_version("tensorfold 0.6.5") == "0.6.5", _clean_version("tensorfold 0.6.5"))
+    check("B3 版本号归一（v 前缀 / 空串）",
+          _clean_version("v2.1.5") == "2.1.5" and _clean_version("") == "")
+    uc2 = UpdateChecker(engine_version="tensorfold-native 0.0.1")
+    r2 = uc2.check_engine()
+    check("B3 结果里的 current 是纯版本号（raw 另存）",
+          r2["current"] == "0.0.1" and r2["current_raw"] == "tensorfold-native 0.0.1"
+          and r2["available"] is True,
+          f"current={r2['current']} raw={r2['current_raw']} avail={r2['available']}")
+    check("B3 有更新时 latest 确实高于 current",
+          bool(r2["latest"]) and _cmp(r2["latest"], r2["current"]) > 0,
+          f"{r2['current']} → {r2['latest']}")
 
     # ============ B6: 加速配套（主模型 ↔ 辅助模型联动） ============
     print("== B6: 加速配套（草稿模型联动） ==")

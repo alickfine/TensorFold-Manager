@@ -19,7 +19,7 @@ import urllib.request
 
 ENGINE_REPO = "ashhart/TensorFold"
 APP_REPO = "alickfine/TensorFold-Manager"
-APP_VERSION = "2.1.5"
+APP_VERSION = "2.1.6"
 
 _OPENER = None
 
@@ -42,6 +42,23 @@ def _env_no_proxy() -> dict:
 
 def _version_key(v: str) -> tuple:
     return tuple(int(x) for x in re.findall(r"\d+", v or ""))
+
+
+_VERSION_RE = re.compile(r"\d+(?:\.\d+)+")
+
+
+def _clean_version(s: str) -> str:
+    """把引擎/App 自报的版本串归一成纯版本号（1.0.2）。
+
+    实测坑：`detect()` 拿到的字符串是 CLI 自报原文 —— 原生二进制是
+    "tensorfold-native 1.0.2"，内嵌解释器是 "tensorfold 0.6.5"。直接拿去比对
+    只是靠"提取所有数字"侥幸能用，且 `current` 会原样显示成
+    "tensorfold-native 1.0.2"，用户看不懂；万一名字里带别的数字就会比错。
+    """
+    m = _VERSION_RE.search(s or "")
+    if m:
+        return m.group(0)
+    return (s or "").strip().lstrip("v")
 
 
 def _cmp(a: str, b: str) -> int:
@@ -133,28 +150,30 @@ class UpdateChecker:
     def check_engine(self) -> dict:
         data = _get_json(f"https://api.github.com/repos/{ENGINE_REPO}/releases/latest")
         tag = (data.get("tag_name") or "").lstrip("v")
-        cur = re.sub(r"^v", "", self.engine_version or "")
+        cur = _clean_version(self.engine_version)
         newer = bool(tag) and _cmp(tag, cur) > 0
         return {"available": newer, "latest": tag, "current": cur,
+                "current_raw": self.engine_version or "",
                 "url": data.get("html_url", ""),
                 "notes": (data.get("body") or "")[:2000]}
 
     # ---------- App ----------
     def check_app(self) -> dict:
+        cur = _clean_version(self.app_version)
         try:
             releases = _get_json(f"https://api.github.com/repos/{APP_REPO}/releases")
         except urllib.error.HTTPError as exc:
             if exc.code == 404:  # 仓库无 release → 无更新，不是错误
-                return {"available": False, "latest": "", "current": self.app_version, "url": ""}
+                return {"available": False, "latest": "", "current": cur, "url": ""}
             raise
         cands = [r for r in releases if not r.get("draft")]
         if not cands:
-            return {"available": False, "latest": "", "current": self.app_version, "url": ""}
+            return {"available": False, "latest": "", "current": cur, "url": ""}
         cands.sort(key=lambda r: _version_key((r.get("tag_name") or "").lstrip("v")), reverse=True)
         best = cands[0]
         tag = (best.get("tag_name") or "").lstrip("v")
-        return {"available": _cmp(tag, self.app_version) > 0, "latest": tag,
-                "current": self.app_version, "url": best.get("html_url", ""),
+        return {"available": bool(tag) and _cmp(tag, cur) > 0, "latest": tag,
+                "current": cur, "url": best.get("html_url", ""),
                 "prerelease": bool(best.get("prerelease"))}
 
     # ---------- 组合 ----------

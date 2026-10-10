@@ -88,9 +88,12 @@ function renderTopbar(ov) {
   const S = ST.settings || {};
   const eng = (ST.upd && ST.upd.engine) || {}, app = (ST.upd && ST.upd.app) || {};
   ver.childNodes[0].nodeValue = 'v' + (S.app_version || '—');
+  const u = ST.upd || {};
   vtip.textContent = eng.available ? `引擎有新版本 v${eng.latest}，设置页一键升级`
-    : app.available ? `App 有新版本 v${app.latest}`
-    : `引擎 ${S.version || '—'} · 已是最新`;
+    : app.available ? `App 有新版本 v${app.latest}，设置页一键升级`
+    : u.error ? '上次检查更新失败，设置页可重试'
+    : u.checked_at ? `引擎 ${eng.current || S.version || '—'} · 已是最新`
+    : `引擎 ${S.version || '—'}`;
   ver.classList.toggle('new', !!(eng.available || app.available));
 }
 
@@ -805,24 +808,69 @@ async function refreshModelsOnly() {
   renderChatTop();
 }
 
+// 更新状态行：**永远有结果**。
+// 旧实现只在「有新版本」时才 display:flex，其余情况整行隐藏 —— 用户点完检查更新
+// 页面一个字都不变（失败原因也只在 toast 里闪 3.5 秒），看起来就是"没结果、没按钮"。
 function renderUpdate() {
   const u = ST.upd || {}, eng = u.engine || {}, app = u.app || {};
-  const row = $('upd-row');
-  const avail = eng.available || app.available;
-  row.style.display = avail ? 'flex' : 'none';
-  if (!avail) return;
+  const title = $('upd-title'), detail = $('upd-detail'), btn = $('btn-updapply');
+  if (!title || !detail || !btn) return;
+  const avail = !!(eng.available || app.available);
+  const err = String(u.error || '').trim();
+  btn.style.display = avail ? '' : 'none';
+  if (avail) {
+    const parts = [];
+    if (eng.available) parts.push(`引擎 v${eng.latest}（当前 ${eng.current || '—'}）`);
+    if (app.available) parts.push(`App v${app.latest}${app.prerelease ? '（预发布）' : ''}（当前 ${app.current || '—'}）`);
+    title.textContent = '发现新版本';
+    detail.textContent = parts.join(' · ');
+    btn.textContent = eng.available ? '升级引擎' : '打开下载页';
+    return;
+  }
+  btn.textContent = '升级';
+  if (err) {
+    // 失败原因留在页面上（旧实现只在 toast 里闪一下，用户回来什么都看不到）
+    const hint = /403|rate limit/i.test(err) ? '（GitHub 限流，稍后重试即可）'
+      : /timed out|timeout/i.test(err) ? '（网络超时，检查代理/网络）'
+      : /Name or service|getaddrinfo|URLError/i.test(err) ? '（连不上 GitHub，检查网络）' : '';
+    title.textContent = '检查失败';
+    detail.textContent = err.slice(0, 150) + hint + ' · 点「检查更新」重试';
+    return;
+  }
+  if (!u.checked_at) {
+    title.textContent = '更新状态';
+    detail.textContent = '还没检查过 — 点右侧「检查更新」';
+    return;
+  }
+  const S = ST.settings || {};
+  title.textContent = '已是最新';
+  detail.textContent = `App v${app.current || S.app_version || '—'} · 引擎 v${eng.current || '未安装'}`
+    + ` · 上次检查 ${fmtTime(u.checked_at)}`;
+}
+
+// 检查结果同时落一行到 toast，页面与提示一致（不再是"检查完成"四个字看不出结论）
+function updateConclusion(u) {
+  const eng = (u && u.engine) || {}, app = (u && u.app) || {};
+  if (u && u.error) return '检查失败：' + u.error;
   const parts = [];
   if (eng.available) parts.push(`引擎 v${eng.latest}`);
-  if (app.available) parts.push(`App v${app.latest}${app.prerelease ? '（预发布）' : ''}`);
-  row.querySelector('.sl span').textContent = parts.join(' · ') + ' · 点击右侧一键升级';
+  if (app.available) parts.push(`App v${app.latest}`);
+  return parts.length ? '发现新版本：' + parts.join(' · ') : '已是最新，无需升级';
 }
 
 async function doUpdateCheck() {
+  const btn = $('btn-updcheck');
+  const label = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = '检查中…'; }
   toast('正在检查 GitHub 更新 …');
-  ST.upd = await call('update_check', {}).catch(e => ({ error: String(e) }));
-  if (ST.upd && ST.upd.error) toast('检查失败: ' + ST.upd.error); else toast('检查完成');
+  try {
+    ST.upd = await call('update_check', {}).catch(e => ({ error: String(e) }));
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = label || '检查更新 ▸'; }
+  }
+  toast(updateConclusion(ST.upd));
   try { ST.settings = (await callTimeout('settings', {}, 15000)) || ST.settings || {}; } catch (e) {}
-  loadSettings();
+  await loadSettings();
   renderTopbar(await call('overview', {}).catch(() => ({ instances: [] })));
 }
 
