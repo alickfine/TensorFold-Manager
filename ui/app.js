@@ -38,6 +38,44 @@ function toast(msg, ms) {
   t._h = setTimeout(() => t.classList.remove('show'), ms || 3500);
 }
 
+/* ---------- 应用内确认框 ----------
+   背景（2026-10-10 实测）：v2 壳层是 WKWebView，而 backend/shell.py 一直没有实现
+   WKUIDelegate。WebKit 的默认行为是 confirm() 立刻返回 false、alert() 静默丢弃、
+   prompt() 返回 null —— 于是 `if (!confirm(...)) return;` 这一句让「升级引擎 /
+   删除缓存 / 清除累计用量 / 重启实例」四个按钮**点了必然什么都不做，连弹窗都不出现**。
+   壳层现已补上原生 UIDelegate（后端 _UIDelegate），但对话框统一走页面内实现：
+   样式一致、栅格可断言、浏览器预览页（file:// 直开）行为也相同。 */
+let _cfResolve = null;
+function askConfirm(opt) {
+  const o = typeof opt === 'string' ? { body: opt } : (opt || {});
+  const ov = $('cf-overlay');
+  if (!ov) {                        // 极简兜底：没有弹窗节点时退回原生（有 UIDelegate 兜底）
+    return Promise.resolve(window.confirm(o.body || '') === true);
+  }
+  if (_cfResolve) { _cfResolve(false); _cfResolve = null; }   // 重入时先收掉上一个
+  return new Promise(resolve => {
+    _cfResolve = resolve;
+    $('cf-title').textContent = o.title || '确认';
+    $('cf-body').textContent = o.body || '';
+    const yes = $('cf-yes');
+    yes.textContent = o.ok || '确定';
+    yes.classList.toggle('danger', !!o.danger);
+    ov.classList.add('open');
+    yes.focus();
+  });
+}
+function closeConfirm(v) {
+  const ov = $('cf-overlay');
+  if (ov) ov.classList.remove('open');
+  const r = _cfResolve;
+  _cfResolve = null;
+  if (r) r(v === true);
+}
+function confirmOpen() {
+  const ov = $('cf-overlay');
+  return !!ov && ov.classList.contains('open');
+}
+
 /* ---------- 主题 ---------- */
 function applyTheme(mode) {
   const dark = mode === 'dark';
@@ -229,7 +267,10 @@ window.loadModel = async function (id) {
 };
 
 window.delModel = async function (id) {
-  if (!confirm(`删除缓存 ${id} ？\n（重新加载需重新下载）`)) return;
+  if (!await askConfirm({
+    title: '删除缓存', danger: true, ok: '删除',
+    body: `删除缓存 ${id} ？\n（重新加载需重新下载）`,
+  })) return;
   const r = await call('model_delete', { repo_id: id }).catch(e => ({ error: String(e) }));
   toast(r && r.ok ? '已删除' : '删除失败: ' + (r && r.error));
   refresh();
@@ -601,7 +642,10 @@ window.setUsageMode = function (mode) {
 };
 
 window.clearUsage = async function () {
-  if (!confirm('清除累计用量？\n（只清 Manager 记的累计数字，不影响引擎与聊天记录；清空后从现在重新累计）')) return;
+  if (!await askConfirm({
+    title: '清除累计用量',
+    body: '清除累计用量？\n（只清 Manager 记的累计数字，不影响引擎与聊天记录；清空后从现在重新累计）',
+  })) return;
   const r = await call('usage_reset', {}).catch(e => ({ error: String(e) }));
   toast(r && r.ok ? '累计用量已清除' : '清除失败: ' + (r && r.error));
   return refresh();
@@ -721,7 +765,10 @@ window.setListen = async function (scope) {
 };
 
 window.restartForListen = async function () {
-  if (!confirm('重启全部运行中实例以应用新的监听范围？\n（大模型重新加载约 30-60s）')) return;
+  if (!await askConfirm({
+    title: '重启实例',
+    body: '重启全部运行中实例以应用新的监听范围？\n（大模型重新加载约 30-60s）',
+  })) return;
   toast('正在按新监听范围重启实例 …');
   const r = await call('restart_instances', {}).catch(e => ({ error: String(e) }));
   if (r && r.error) toast('重启失败: ' + r.error);
@@ -875,13 +922,38 @@ async function doUpdateCheck() {
 }
 
 async function doUpdateApply() {
-  const eng = (ST.upd.engine || {});
+  const u = ST.upd || {}, eng = u.engine || {}, app = u.app || {};
+  const btn = $('btn-updapply');
   if (eng.available) {
-    if (!confirm(`升级引擎到 v${eng.latest}？\n将从 GitHub 拉取覆盖安装；升级完成后会自动用新引擎重载当前运行中的模型。`)) return;
+    if (!await askConfirm({
+      title: '升级引擎', ok: '开始升级',
+      body: `升级引擎到 v${eng.latest}？\n将从 GitHub 拉取覆盖安装；升级完成后会自动用新引擎重载当前运行中的模型。`,
+    })) return;
+    // 拉包 + SHA256 校验 + 解压可能要 1-2 分钟：按钮必须进入进行中状态，
+    // 否则用户会以为又"没反应"而反复点。
+    const label = btn ? btn.textContent : '';
+    if (btn) { btn.disabled = true; btn.textContent = '升级中…'; }
     toast('正在从 GitHub 拉取安装（可能需要 1-2 分钟）…');
-    const r = await call('update_apply_engine', {}).catch(e => ({ error: String(e) }));
-    toast(r && r.ok ? `已升级到 ${r.version}${r.restarted_hint ? '，' + r.restarted_hint : ''}` : '升级失败: ' + (r && r.error));
-  } else if ((ST.upd.app || {}).url) {
+    let r;
+    try {
+      r = await call('update_apply_engine', {}).catch(e => ({ ok: false, error: String(e) }));
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = label || '升级引擎'; }
+    }
+    const done = (r && r.ok)
+      ? `已升级到 ${r.version}${r.restarted_hint ? '，' + r.restarted_hint : ''}`
+      : `升级失败: ${(r && r.error) || '未知原因'}`;
+    // 复检：升级成功后引擎版本已推进，状态行必须从「发现新版本」变「已是最新」，
+    // 否则用户看到升级成功却还挂着升级按钮，会以为没生效。
+    await doUpdateCheck();
+    toast(done, 6000);
+    return;
+  }
+  if (app.available) {
+    if (!await askConfirm({
+      title: '打开下载页', ok: '打开',
+      body: `App v${app.latest} 需手动替换安装（应用内不自替换）。\n现在打开 GitHub 下载页？`,
+    })) return;
     call('update_open_app', {}).catch(() => {});
     toast('已在浏览器打开 App 下载页');
   }
@@ -1110,6 +1182,11 @@ async function boot() {
   });
   $('win-theme').addEventListener('click', toggleTheme);
   $('btn-theme2').addEventListener('click', toggleTheme);
+  // 应用内确认框（替代恒返 false 的原生 confirm，见文件顶部说明）
+  $('cf-yes').addEventListener('click', () => closeConfirm(true));
+  $('cf-no').addEventListener('click', () => closeConfirm(false));
+  $('cf-overlay').addEventListener('click', (e) => { if (e.target === $('cf-overlay')) closeConfirm(false); });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && confirmOpen()) closeConfirm(false); });
   $('btn-newchat').addEventListener('click', newChat);
   $('btn-send').addEventListener('click', send);
   $('chat-text').addEventListener('keydown', (e) => {

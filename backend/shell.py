@@ -118,6 +118,79 @@ class _NavDelegate(NSObject):
         print(f"[shell] 页面加载失败: {error.localizedDescription()}")
 
 
+def _default_alert(message, info, style, buttons):
+    """构造一个 NSAlert。**模块函数**：NSObject 子类里任何自定义方法都会被
+    pyobjc 按选择器校验参数个数（`_panel` 带 4 参直接抛 BadPrototypeError，
+    App 会在 import 阶段就起不来），所以面板构造一律留在类外。"""
+    a = AppKit.NSAlert.alloc().init()
+    a.setMessageText_(message or "")
+    if info:
+        a.setInformativeText_(info)
+    a.setAlertStyle_(style)
+    for b in buttons:
+        a.addButtonWithTitle_(b)
+    return a
+
+
+# 面板工厂：模块级可替换（测试打桩用它，避免真的弹模态窗阻塞）
+_alert = _default_alert
+
+
+class _UIDelegate(NSObject):
+    """WKWebView 的 alert / confirm / prompt 面板（原生 NSAlert）。
+
+    不设 UI delegate 时 WebKit 走默认行为：confirm() 立刻返回 false、
+    alert() 静默丢弃、prompt() 返回 null。裸 WKWebView 实测（2026-10-10）：
+        confirm('x') -> 'false'   alert('x') -> 'undefined'   prompt('x','d') -> 'null'
+    页面上 `if (!confirm(...)) return;` 于是**永远**走"用户取消"分支——
+    按钮点了既不弹窗也不报错，看起来就是"按钮坏了"（升级引擎按钮即此因）。
+
+    两条硬约束：
+      1. 每个回调**必须**调用 completionHandler，否则该次 JS 调用永久挂起；
+      2. WKWebView.uiDelegate 是 **weak** 引用，实例必须由 Shell 侧强引用持有
+         （build() 里存进 self._refs）。
+    """
+
+    def webView_runJavaScriptAlertPanelWithMessage_initiatedByFrame_completionHandler_(
+            self, webview, message, frame, handler):
+        try:
+            _alert("TensorFold Manager", message,
+                   AppKit.NSAlertStyleInformational, ["好"]).runModal()
+        except Exception:
+            traceback.print_exc()
+        finally:
+            handler()
+
+    def webView_runJavaScriptConfirmPanelWithMessage_initiatedByFrame_completionHandler_(
+            self, webview, message, frame, handler):
+        ok = False
+        try:
+            a = _alert("TensorFold Manager", message,
+                       AppKit.NSAlertStyleWarning, ["好", "取消"])
+            ok = (a.runModal() == AppKit.NSAlertFirstButtonReturn)
+        except Exception:
+            traceback.print_exc()
+        finally:
+            handler(ok)
+
+    def webView_runJavaScriptTextInputPanelWithPrompt_defaultText_initiatedByFrame_completionHandler_(
+            self, webview, prompt, default_text, frame, handler):
+        text = None
+        try:
+            a = _alert("TensorFold Manager", prompt,
+                       AppKit.NSAlertStyleInformational, ["好", "取消"])
+            field = AppKit.NSTextField.alloc().initWithFrame_(NSMakeRect(0, 0, 260, 24))
+            field.setStringValue_(default_text or "")
+            a.setAccessoryView_(field)
+            a.window().setInitialFirstResponder_(field)
+            if a.runModal() == AppKit.NSAlertFirstButtonReturn:
+                text = str(field.stringValue())
+        except Exception:
+            traceback.print_exc()
+        finally:
+            handler(text)
+
+
 class Shell:
     """主窗装配（纯 Python；app.run() 前调用 build()）。"""
 
@@ -172,7 +245,11 @@ class Shell:
                         traceback.print_exc()
         nav2 = _Nav2.alloc().init()
         self.webview.setNavigationDelegate_(nav2)
-        self._refs.update({"bridge": bridge, "reply": reply, "nav": nav2, "win": self.window})
+        # uiDelegate 是 weak 引用：实例必须由 _refs 强持有，否则被回收后
+        # 又退化成「confirm() 恒返 false、alert() 静默丢弃」的 WebKit 默认行为。
+        ui = _UIDelegate.alloc().init()
+        self.webview.setUIDelegate_(ui)
+        self._refs.update({"bridge": bridge, "reply": reply, "nav": nav2, "win": self.window, "ui": ui})
 
         nsurl = NSURL.fileURLWithPath_(url)
         self.webview.loadFileURL_allowingReadAccessToURL_(

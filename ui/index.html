@@ -173,6 +173,19 @@
 
   </div>
 
+  <!-- 应用内确认框：壳层 WKWebView 的 confirm() 默认恒返 false（见 app.js 顶部说明），
+       危险操作一律走这里，保证「点了有弹窗、确认才执行」。 -->
+  <div class="overlay" id="cf-overlay">
+    <div class="cfm">
+      <div class="cfh"><b id="cf-title">确认</b></div>
+      <div class="cfb" id="cf-body">—</div>
+      <div class="cff">
+        <button class="mbtn" id="cf-no">取消</button>
+        <button class="mbtn pri" id="cf-yes">确定</button>
+      </div>
+    </div>
+  </div>
+
   <div class="overlay" id="ms-overlay" onclick="if(event.target===this)closeSettings()">
     <div class="modal">
       <div class="mh"><b id="ms-title">模型设置</b><button class="x" onclick="closeSettings()">✕</button></div>

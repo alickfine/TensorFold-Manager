@@ -59,7 +59,7 @@ input,select,textarea{-webkit-user-select:text;user-select:text}
 .ver:hover .vtip{display:block}
 .overlay{position:fixed;inset:0;background:rgba(10,12,16,.45);display:none;align-items:center;justify-content:center;z-index:20}
 .overlay.open{display:flex}
-.modal{width:430px;max-height:88%;background:var(--bg);border-radius:14px;box-shadow:var(--shadow-lg);display:flex;flex-direction:column;overflow:hidden}
+.modal{width:min(430px,calc(100vw - 32px));max-height:88%;background:var(--bg);border-radius:14px;box-shadow:var(--shadow-lg);display:flex;flex-direction:column;overflow:hidden}
 .modal .mh{display:flex;align-items:center;padding:14px 18px;border-bottom:1px solid var(--line)}
 .modal .mh b{font-size:14px}
 .modal .mh .x{margin-left:auto;width:24px;height:24px;border-radius:7px;color:var(--ink3);font-size:14px}
@@ -164,6 +164,13 @@ input,select,textarea{-webkit-user-select:text;user-select:text}
 
 /* ---- 模型页 ---- */
 .pg{flex:1;overflow:auto;padding:22px 26px;display:flex;flex-direction:column;gap:16px}
+/* 主区是 flex 列容器，子块默认 flex-shrink:1 —— 窗口不够高时 flex 会把每个
+   .plist / .utbl 压到比内容还矮，而这些容器自身 overflow:hidden 且不滚动，
+   于是内容被**永久裁掉**，.pg 也因为子块已被压扁而拿不到滚动条。
+   实测 900×600：「端口分配」那组渲染高只剩 72px（真实内容 507px），
+   设置页底部的更新/应用/本地三组整组不可见，且怎么滚都看不到。
+   修法：子块一律按自身内容高度排布，滚动的责任只交给 .pg。 */
+.pg>*{flex:0 0 auto}
 .pg h3{font-size:15.5px;font-weight:700}
 .mcards{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}
 .mcard{border:1px solid var(--line);border-radius:13px;padding:15px 16px;background:var(--bg);transition:border-color .15s}
@@ -273,3 +280,50 @@ input.field.num{min-width:120px}
 #scan-roots .pth{font-family:ui-monospace,monospace;font-size:11px;color:var(--ink4);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1 1 auto;min-width:0}
 #scan-roots .cnt{color:var(--ink3);flex:none}
 #scan-roots .miss{color:var(--warn);flex:none}
+
+/* ============ 应用内确认框 ============
+   背景：v2 壳层是 WKWebView，backend/shell.py 一直没有实现 WKUIDelegate，
+   WebKit 的默认行为是 confirm() 立刻返回 false、alert() 静默丢弃、prompt() 返回 null
+   （2026-10-10 用裸 WKWebView 实测：confirm→'false'、alert→'undefined'、prompt→'null'）。
+   于是页面里 `if (!confirm(...)) return;` 这一句让四个按钮点了**什么都不发生**。
+   壳层已补原生 UIDelegate 兜底，但对话框一律走页面内实现：样式统一、
+   可被闸门断言、浏览器预览页（file:// 直开）表现也一致。 */
+#cf-overlay{z-index:30}
+.cfm{width:min(400px,calc(100vw - 32px));background:var(--bg);border-radius:14px;
+  box-shadow:var(--shadow-lg);padding:17px 19px 13px;display:flex;flex-direction:column;gap:9px}
+.cfm .cfh b{font-size:14.5px;font-weight:700}
+.cfm .cfb{font-size:12.5px;color:var(--ink2);line-height:1.62;white-space:pre-wrap;
+  max-height:46vh;overflow:auto;overflow-wrap:anywhere}
+.cfm .cff{display:flex;justify-content:flex-end;gap:8px;margin-top:3px}
+.mbtn.danger{background:var(--danger);color:#fff;border-color:var(--danger)}
+.mbtn.danger:hover{color:#fff;filter:brightness(1.08)}
+
+/* ============ 窄窗口自适应 ============
+   壳层窗口最小 900×600，启动时铺满工作区、用户可自由缩小。
+   .pg 已负责纵向滚动（见上方 .pg>*），这里处理横向挤不下时的降列。 */
+/* 3 列指标 → 2 列：主区可用宽度 = 视口 − 侧栏 210 − .pg 左右留白 52 */
+@media (max-width:1180px){
+  .mgrid{grid-template-columns:repeat(2,1fr)}
+}
+/* 5 列用量键值 → 3 列：26px 大字号的数字在 110px 出头的格子里会被挤爆 */
+@media (max-width:1320px){
+  .kv{grid-template-columns:repeat(4,1fr)}
+}
+@media (max-width:1120px){
+  .kv{grid-template-columns:repeat(3,1fr)}
+}
+/* 用量表：固定像素列总宽 410px，窄窗口留不下给模型名时按比例收敛 */
+@media (max-width:1120px){
+  .utbl .urow{grid-template-columns:1fr 56px 74px 74px 82px 66px;gap:6px}
+}
+/* 设置行：控件挤不下时整体换行，避免输入框/按钮被推出容器 */
+@media (max-width:1040px){
+  .setrow{flex-wrap:wrap;row-gap:9px}
+  .setrow .sl{flex:1 1 100%}
+  .field.path{min-width:0;flex:1 1 190px}
+}
+/* 侧栏与对话列表：窄窗口让位给内容 */
+@media (max-width:1000px){
+  .side{width:176px}
+  .conv-col{width:160px}
+}

@@ -21,8 +21,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
   <key>CFBundleName</key><string>TensorFold Manager</string>
   <key>CFBundleDisplayName</key><string>TensorFold Manager</string>
   <key>CFBundleIdentifier</key><string>local.tensorfold.manager</string>
-  <key>CFBundleVersion</key><string>2.1.6</string>
-  <key>CFBundleShortVersionString</key><string>2.1.6</string>
+  <key>CFBundleVersion</key><string>2.1.7</string>
+  <key>CFBundleShortVersionString</key><string>2.1.7</string>
   <key>CFBundleExecutable</key><string>TensorFoldManager</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
@@ -47,13 +47,21 @@ mkdir -p "$BUILD/dmgroot"
 mv "$APP" "$BUILD/dmgroot/TensorFold Manager.app"
 ln -s /Applications "$BUILD/dmgroot/Applications"
 cat > "$BUILD/dmgroot/README-安装说明.txt" <<'TXT'
-TensorFold Manager v2.1.6 —— 本地 LLM 推理引擎管理端（Apple Silicon 专用）
+TensorFold Manager v2.1.7 —— 本地 LLM 推理引擎管理端（Apple Silicon 专用）
 
 安装：把 "TensorFold Manager.app" 拖到「应用」文件夹（或直接双击运行本卷里的 App）。
 如已安装旧版，先移除旧版再拖入。
 
 App 自带内嵌 Python 运行时（TensorFold 引擎 + MLX + 原生 macOS 壳），无需另装任何依赖。
 模型缓存沿用系统目录 ~/.cache/huggingface，不占 App 体积；大模型首次加载约 30-60s。
+
+v2.1.7 新特性：
+- 窗口自适应：不再有被遮挡/裁掉的内容与按钮（主区按内容高度排布并纵向滚动，
+  窄窗口自动降列；此前从 900x600 到 1280x800 每一档设置页底部都丢内容且滚不到）；
+- 升级引擎按钮修好：壳层补上 WKWebView 的原生对话框委托，确认框改走应用内实现
+  （此前 confirm() 在 WKWebView 里恒返 false，按钮点了不弹窗、不报错、什么都不发生）；
+- 同一问题一并修好的还有「删除缓存 / 清除累计用量 / 重启实例」三个按钮；
+- 升级成功后状态行自动收口为「已是最新」，不再挂着一个已经没用的升级按钮。
 
 v2.1.6 新特性：
 - 更新状态行永远有结果：未检查 / 发现新版本（含当前→最新）/ 已是最新 / 检查失败（原因留在页面上）；

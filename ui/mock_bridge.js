@@ -4,7 +4,7 @@
   // 闸门可翻转的开关：覆盖「草稿模型已下载 / 未下载」「推测解码开 / 关」「下载进度条」
   // 「监听范围 本机 / 局域网」几条分支
   const S = window.__mock = { draftCached: true, drafts: true, pulling: false, listen: 'local',
-                              updStatus: null };
+                              updStatus: null, applyFail: false };
   // 每核占用 mock（Apple Silicon：12 性能核 + 24 能效核，与真机读数同构）
   const ARM_P12 = [88, 74, 91, 66, 82, 79, 95, 70, 63, 87, 72, 80];
   const ARM_E24 = [41, 33, 52, 28, 45, 37, 22, 49, 31, 44, 26, 38,
@@ -121,6 +121,7 @@
     model_settings_save: (a) => { window.__lastSave = a; return { ok: true }; },
     model_settings_reset: () => ({ ok: true }),
     model_pull: () => ({ ok: true }),
+    model_delete: () => { window.__modelDel = (window.__modelDel || 0) + 1; return { ok: true }; },
     model_info: (a) => {
       const ref = (a && a.ref) || 'TensorFold/Qwen3.8-27B-MLX-4bit';
       const hasDraft = /Qwen3\.8-27B-MLX-4bit$/.test(ref);
@@ -141,6 +142,20 @@
     },
     update_status: () => S.updStatus || ({ checked_at: 0, engine: null, app: null, error: '' }),
     update_check: () => S.updStatus || ({ checked_at: 1, engine: { available: true, latest: '0.6.5', current: '0.6.4' }, app: { available: false, current: '2.0.0' }, error: '' }),
+    // 一键升级：闸门要能断言"点确定后真的调到了后端"，并验证升级后状态行会收口。
+    // 旧 mock 里**没有**这两个方法 → 桥直接 reject('unknown method')，
+    // 于是升级链路从来没被闸门走过，按钮坏了也没人发现。
+    update_apply_engine: () => {
+      window.__applyCalls = (window.__applyCalls || 0) + 1;
+      if (S.applyFail) return { ok: false, error: '下载失败: SHA256 不符' };
+      if (S.updStatus && S.updStatus.engine) {
+        S.updStatus = { ...S.updStatus, checked_at: Date.now() / 1000,
+          engine: { ...S.updStatus.engine, available: false, current: S.updStatus.engine.latest } };
+      }
+      return { ok: true, version: '1.0.4', restarted: [], restart_failed: [],
+               restarted_hint: '已用新引擎重新加载: Qwen3.8-27B-MLX-4bit' };
+    },
+    update_open_app: () => { window.__openAppCalls = (window.__openAppCalls || 0) + 1; return { ok: true }; },
     chat_list: () => [],
     chat_create: ({ chat }) => Object.assign({ id: 'mock1', messages: [] }, chat, { updated: Date.now() / 1000 }),
     chat_get: () => null,

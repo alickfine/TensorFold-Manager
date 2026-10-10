@@ -405,10 +405,22 @@ v = await ev(`(async()=>{
   ok('每模型行显示模型名与总量', d.first.includes('Qwen3.8-27B-MLX-4bit') && d.first.includes('4,260,000'), v);
   ok('累计口径显示「清除累计」', d.clearVisible, v);
 }
-// 清除累计必须真的调后端（不是只清 UI）
-v = await ev(`(async()=>{ window.__usageReset=0; window.confirm=()=>true;
-  await clearUsage(); return String(window.__usageReset) })()`);
-ok('清除累计调用后端 usage_reset', v === '1', String(v));
+// 清除累计必须真的调后端（不是只清 UI）。
+// 注意：不能再靠 window.confirm=()=>true 打桩了 —— 危险操作已改成应用内确认框
+// （#cf-overlay），旧的打桩对它是无效的，await 会永远不返回（曾把闸门挂死 5 分钟）。
+// 现在的写法更强：既验证弹了确认框，又验证点「确定」才真的调后端。
+v = await ev(`(async()=>{ window.__usageReset=0;
+  const p = clearUsage();
+  await new Promise(r=>setTimeout(r,40));
+  const opened = confirmOpen();
+  document.getElementById('cf-yes').click();
+  await p;
+  return JSON.stringify({ reset: window.__usageReset, opened }) })()`);
+{
+  const d = JSON.parse(v);
+  ok('清除累计弹应用内确认框', d.opened === true, v);
+  ok('清除累计调用后端 usage_reset', d.reset === 1, v);
+}
 // 会话口径不显示「清除」（累计才有意义）
 v = await ev(`(async()=>{ await setUsageMode('session');
   return getComputedStyle(document.getElementById('st-usage-clear')).display })()`);
@@ -522,6 +534,99 @@ v = await ev(`(async()=>{
   ok('顶栏提示随状态变化（不把失败/未检查说成"已是最新"）',
      /有新版本/.test(d.hasNew.tip) && /已是最新/.test(d.latest.tip) && /失败/.test(d.failed.tip), v);
 }
+
+/* ---------- 升级引擎按钮：点了必须真的发请求（2026-10-10 用户反馈：按钮不起作用） ---------- */
+// 真因：壳层 WKWebView 没设 UIDelegate，WebKit 默认让 confirm() 恒返 false，
+// doUpdateApply 第一句 `if (!confirm(...)) return;` 直接把点击吞掉 —— 不弹窗、不报错、没反应。
+// 现在改走应用内确认框（#cf-overlay）。这里跑完整点击链路：取消不发请求、确定才发。
+v = await ev(`(async()=>{
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+  switchPage('settings');
+  window.__applyCalls = 0;
+  window.__mock.updStatus = { checked_at: 1791622949, error: '',
+    engine: { available: true, latest: '1.0.4', current: '1.0.2' },
+    app: { available: false, latest: '2.1.6', current: '2.1.6' } };
+  ST.upd = await window.bridge.call('update_status', {});
+  renderUpdate();
+  const out = {};
+  const applyBtn = document.getElementById('btn-updapply');
+  out.applyShown = getComputedStyle(applyBtn).display !== 'none';
+  out.btnText = applyBtn.textContent;
+
+  // (1) 取消路径：点按钮 → 必须出现确认框 → 点取消 → 不得发请求
+  applyBtn.click();
+  await sleep(40);
+  out.dlgOpen = confirmOpen();
+  out.dlgTitle = document.getElementById('cf-title').textContent;
+  out.dlgBody = document.getElementById('cf-body').textContent;
+  document.getElementById('cf-no').click();
+  await sleep(40);
+  out.closedAfterCancel = !confirmOpen();
+  out.callsAfterCancel = window.__applyCalls;
+
+  // (2) 确认路径：再点 → 点确定 → 必须真的调到 update_apply_engine
+  applyBtn.click();
+  await sleep(40);
+  document.getElementById('cf-yes').click();
+  await sleep(500);
+  out.callsAfterYes = window.__applyCalls;
+  out.closedAfterYes = !confirmOpen();
+  // 升级成功后状态行必须收口成「已是最新」，否则用户看到"升级成功"还挂着升级按钮
+  out.titleAfter = document.getElementById('upd-title').textContent;
+  out.applyShownAfter = getComputedStyle(document.getElementById('btn-updapply')).display !== 'none';
+  out.toast = document.getElementById('toast') ? document.getElementById('toast').textContent : '';
+  window.__mock.updStatus = null;
+  return JSON.stringify(out);
+})()`);
+{
+  const d = JSON.parse(v);
+  ok('有更新时升级按钮可见且文案明确', d.applyShown === true && /升级引擎/.test(d.btnText), v);
+  ok('点升级按钮会弹出确认框（而不是静默返回）', d.dlgOpen === true, v);
+  ok('确认框写明目标版本与后果', /升级引擎/.test(d.dlgTitle) && /v1\.0\.4/.test(d.dlgBody) && /重载/.test(d.dlgBody), v);
+  ok('确认框点「取消」不发请求', d.callsAfterCancel === 0 && d.closedAfterCancel === true, v);
+  ok('确认框点「确定」真的调用 update_apply_engine', d.callsAfterYes === 1, v);
+  ok('确认框用完即关', d.closedAfterYes === true, v);
+  ok('升级完成后状态行收口为「已是最新」并收起升级按钮',
+     d.titleAfter === '已是最新' && d.applyShownAfter === false, v);
+  ok('升级结论落在提示上（不是"检查完成"这种看不出结论的话）', /已升级到 1\.0\.4/.test(d.toast), v);
+}
+
+/* ---------- 其余危险操作同样走应用内确认框（同一个 confirm() 坑的受害者） ---------- */
+v = await ev(`(async()=>{
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+  switchPage('models');
+  ST.cache = await window.bridge.call('models_installed', {});
+  renderCacheList();
+  const out = {};
+  const btn = [...document.querySelectorAll('#cache-list button')].find(b => b.textContent.trim() === '删除');
+  out.found = !!btn;
+  if (!btn) return JSON.stringify(out);
+  window.__modelDel = 0;
+  btn.click();
+  await sleep(40);
+  out.open = confirmOpen();
+  out.body = document.getElementById('cf-body').textContent;
+  out.danger = document.getElementById('cf-yes').classList.contains('danger');
+  document.getElementById('cf-no').click();
+  await sleep(40);
+  out.callsAfterCancel = window.__modelDel;
+  return JSON.stringify(out);
+})()`);
+{
+  const d = JSON.parse(v);
+  ok('删除缓存按钮存在且走应用内确认框', d.found === true && d.open === true && /删除缓存/.test(d.body || ''), v);
+  ok('删除是危险操作（确认按钮标红）', d.danger === true, v);
+  ok('删除确认点取消不真删', d.callsAfterCancel === 0, v);
+}
+
+// 静态护栏：页面上不允许再出现裸 confirm/alert/prompt ——
+// 壳层 UIDelegate 已补上，但页面内对话框要保证样式统一且可被闸门断言。
+const rawUi = fs.readFileSync(path.join(ROOT, 'ui', 'app.js'), 'utf-8')
+  .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+ok('app.js 不再调用原生 confirm/alert/prompt',
+   !/(^|[^.\w])confirm\s*\(/.test(rawUi) && !/(^|[^.\w])alert\s*\(/.test(rawUi)
+   && !/(^|[^.\w])prompt\s*\(/.test(rawUi),
+   (rawUi.match(/(^|[^.\w])(confirm|alert|prompt)\s*\(/g) || []).join(','));
 
 // 版本信息必须启动即加载（旧版只在打开设置页时取 settings，监控页长期显示 "App v— · 引擎 未安装"）
 const verTxt = await ev(`JSON.stringify({

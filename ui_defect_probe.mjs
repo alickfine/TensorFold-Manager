@@ -243,6 +243,68 @@ ok('空态文案未被横向拉伸（宽度≈同字体自然宽度）',
    !st.missing && !st.__err && st.shown && st.textInSvg === 0
    && Math.abs(st.w - st.refW) <= 1.5 && Math.abs(st.h - st.refH) <= 3, stretch);
 
+/* ====== 窗口非最大化：主区不得裁掉内容与按钮 ======
+   用户反馈「窗口没有最大化的时候，永远有被遮挡的内容和按钮」。
+   根因：.pg 是 flex 列容器，子块默认 flex-shrink:1 —— 窗口不够高时 flex 把每个
+   .plist / .utbl 压到比内容还矮，而这些容器自身 overflow:hidden 且不滚动，
+   于是内容被**永久裁掉**，.pg 也因为子块已被压扁而拿不到滚动条（滚都滚不到）。
+   实测 900×600：设置页「端口分配」那组渲染高只剩 72px（真实内容 507px），
+   底部「更新/应用/本地」整组不可见。修法：.pg>*{flex:0 0 auto}。 */
+const LAYOUT_PROBE = `(() => {
+  const vis = el => { const cs = getComputedStyle(el);
+    return cs.display !== 'none' && cs.visibility !== 'hidden' && el.getClientRects().length > 0; };
+  const pg = document.querySelector('.page.on .pg');
+  const clipped = [];
+  document.querySelectorAll('.page.on .pg > *').forEach(el => {
+    if (!vis(el)) return;
+    const cs = getComputedStyle(el);
+    const hidesX = cs.overflowX === 'hidden' || cs.overflowX === 'clip';
+    const hidesY = cs.overflowY === 'hidden' || cs.overflowY === 'clip';
+    const ellipsis = cs.textOverflow === 'ellipsis';
+    const tag = el.id ? '#' + el.id : (el.className ? '.' + String(el.className).split(' ')[0] : el.tagName.toLowerCase());
+    if (hidesX && el.scrollWidth - el.clientWidth > 1 && !ellipsis)
+      clipped.push('横向 ' + tag + ' 裁掉 ' + (el.scrollWidth - el.clientWidth) + 'px');
+    if (hidesY && el.scrollHeight - el.clientHeight > 1)
+      clipped.push('纵向 ' + tag + ' 裁掉 ' + (el.scrollHeight - el.clientHeight) + 'px');
+  });
+  const badBtns = [...document.querySelectorAll('.page.on button')].filter(vis).map(b => {
+    const r = b.getBoundingClientRect();
+    return { t: b.textContent.trim().slice(0, 10), right: Math.round(r.right), w: Math.round(r.width) };
+  }).filter(o => o.right > innerWidth + 1 || o.w < 1);
+  return { vw: innerWidth, vh: innerHeight,
+    docOverX: document.documentElement.scrollWidth > innerWidth + 1,
+    pgScrollable: pg ? pg.scrollHeight > pg.clientHeight + 1 : null,
+    pgOver: pg ? pg.scrollHeight - pg.clientHeight : null, clipped, badBtns };
+})()`;
+
+for (const [w, h] of [[900, 600], [1000, 640], [1100, 720], [1280, 800]]) {
+  await c.send('Emulation.setDeviceMetricsOverride', { width: w, height: h, deviceScaleFactor: 1, mobile: false });
+  await c.send('Page.navigate', { url: 'http://127.0.0.1:8899/index.html' });
+  await new Promise(r => setTimeout(r, 1500));
+  const bad = [];
+  let settingsScroll = null;
+  for (const page of ['metrics', 'models', 'settings']) {
+    await ev(`(async () => { switchPage('${page}'); if ('${page}' === 'settings') await loadSettings(); return 1; })()`);
+    await new Promise(r => setTimeout(r, 300));
+    const d = await ev(LAYOUT_PROBE);
+    if (!d || d.__err) { bad.push(page + ': 探测失败 ' + JSON.stringify(d)); continue; }
+    if (d.docOverX) bad.push(page + ': 文档横向溢出');
+    for (const x of d.clipped) bad.push(page + ': ' + x);
+    for (const b of d.badBtns) bad.push(page + ': 按钮越界 ' + JSON.stringify(b));
+    if (page === 'settings') settingsScroll = d;
+  }
+  ok(`@${w}×${h} 各页无被裁内容/无越界按钮`, bad.length === 0, JSON.stringify(bad.slice(0, 6)));
+  if (w === 900) {
+    // 机制断言：设置页内容必然高于视口，此处的关键是**能滚到**（旧实现滚不动）
+    ok('@900×600 设置页主区可纵向滚动（内容高于视口时必须滚得到）',
+       settingsScroll && settingsScroll.pgScrollable === true && settingsScroll.pgOver > 100,
+       JSON.stringify(settingsScroll && { over: settingsScroll.pgOver, scrollable: settingsScroll.pgScrollable }));
+  }
+}
+await c.send('Emulation.setDeviceMetricsOverride', { width: 900, height: 600, deviceScaleFactor: 1, mobile: false });
+await c.send('Page.navigate', { url: 'http://127.0.0.1:8899/index.html' });
+await new Promise(r => setTimeout(r, 1500));
+
 console.log(`RESULT: ${pass} PASS / ${fail} FAIL`);
 chrome.kill();
 srv.close();

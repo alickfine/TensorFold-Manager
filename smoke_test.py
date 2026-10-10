@@ -734,6 +734,72 @@ def main():
               and (ovh.get("cpu_cores") or 0) > 0 and isinstance(ovh.get("load"), list),
               f"cpu={ovh.get('cpu_label')} gpu={ovh.get('gpu_label')} load={ovh.get('load')}")
 
+    # ============ B9: 一键升级链路（2026-10-10 用户反馈：升级引擎按钮不起作用） ============
+    # 真因：壳层 WKWebView 从未实现 WKUIDelegate，WebKit 默认让 confirm() 恒返 false
+    # （裸 WKWebView 实测 confirm→'false' / alert→'undefined' / prompt→'null'），
+    # 于是 doUpdateApply 第一句 `if (!confirm(...)) return;` 把点击直接吞掉：
+    # 不弹窗、不报错、什么都不做。同一坑还埋了「删除缓存 / 清除累计用量 / 重启实例」。
+    print("== B9: 一键升级链路 ==")
+    import pathlib
+    import re as _re
+    root = pathlib.Path(HERE)
+    shell_src = (root / "backend" / "shell.py").read_text(encoding="utf-8")
+    try:
+        from backend import shell as _shell
+        dlg = _shell._UIDelegate.alloc().init()
+        need = ("webView_runJavaScriptAlertPanelWithMessage_initiatedByFrame_completionHandler_",
+                "webView_runJavaScriptConfirmPanelWithMessage_initiatedByFrame_completionHandler_",
+                "webView_runJavaScriptTextInputPanelWithPrompt_defaultText_initiatedByFrame_completionHandler_")
+        check("B9 壳层模块可导入（NSObject 子类没被 pyobjc 拒）",
+              hasattr(_shell, "_UIDelegate") and hasattr(_shell, "_alert"), "")
+        check("B9 委托实现 alert/confirm/prompt 三个面板回调（选择器须逐一精确匹配）",
+              all(hasattr(dlg, m) for m in need),
+              str([m for m in need if not hasattr(dlg, m)])[:110])
+        check("B9 面板工厂在 NSObject 子类之外（类内自定义方法会被 pyobjc 判 BadPrototypeError，启动即崩）",
+              "def _default_alert(" in shell_src
+              and shell_src.index("def _default_alert(") < shell_src.index("class _UIDelegate"),
+              "")
+    except Exception as exc:
+        check("B9 壳层模块可导入（NSObject 子类没被 pyobjc 拒）", False, f"{type(exc).__name__}: {exc}"[:130])
+    check("B9 build() 把 uiDelegate 挂上并强引用（WKWebView.uiDelegate 是 weak）",
+          "setUIDelegate_" in shell_src and '"ui": ui' in shell_src, "")
+
+    ui_src = (root / "ui" / "app.js").read_text(encoding="utf-8")
+    code_only = _re.sub(r"/\*[\s\S]*?\*/", "", ui_src)
+    code_only = _re.sub(r"^\s*//.*$", "", code_only, flags=_re.M)
+    bad_calls = _re.findall(r"(?:^|[^.\w])(confirm|alert|prompt)\s*\(", code_only)
+    check("B9 前端不再调用原生 confirm/alert/prompt", not bad_calls, str(bad_calls[:3]))
+    check("B9 四处危险操作都改成应用内确认框",
+          ui_src.count("await askConfirm(") >= 4, f"askConfirm 调用点={ui_src.count('await askConfirm(')}")
+    check("B9 升级按钮有进行中状态 + 升级后复检收口",
+          "升级中…" in ui_src and "await doUpdateCheck();" in ui_src, "")
+    mock_src = (root / "ui" / "mock_bridge.js").read_text(encoding="utf-8")
+    check("B9 假桥覆盖一键升级（旧版缺这两个方法 → 桥直接 reject，闸门从没走过这条路）",
+          "update_apply_engine" in mock_src and "update_open_app" in mock_src, "")
+
+    # 升级包的 URL 模板必须与真实 Release 资产命名对得上（apply_engine 拼的是
+    # tensorfold-<tag>-macos-arm64.tar.gz）。这里真下载一次 .sha256 核对，
+    # 而不是只比对字符串模板 —— 上游改命名时能第一时间报出来。
+    from backend.update import ENGINE_REPO, _opener as _uopener
+    _tag = (eng or {}).get("latest") or ""
+    if _tag:
+        _u = (f"https://github.com/{ENGINE_REPO}/releases/download/v{_tag}"
+              f"/tensorfold-{_tag}-macos-arm64.tar.gz.sha256")
+        try:
+            _req = urllib.request.Request(_u, headers={"User-Agent": "TensorFold-Manager"})
+            with _uopener().open(_req, timeout=20) as _resp:
+                _body = _resp.read().decode("utf-8", "replace").strip()
+            _ok = bool(_re.match(r"^[0-9a-f]{64}\s+tensorfold-" + _re.escape(_tag)
+                                 + r"-macos-arm64\.tar\.gz$", _body))
+            check("B9 引擎升级包 URL 与真实资产命名一致（.sha256 可下载且自洽）", _ok,
+                  _body[:96])
+        except Exception as exc:
+            check("B9 引擎升级包 URL 与真实资产命名一致（.sha256 可下载且自洽）", False,
+                  f"{type(exc).__name__}: {exc}"[:110])
+    else:
+        check("B9 引擎升级包 URL 与真实资产命名一致（.sha256 可下载且自洽）", False,
+              "上游没给出 latest 版本号（B3 已在上方失败）")
+
     # ============ 杂项 ============
     print("== 杂项 ==")
     check("cached_models 可运行", isinstance(cached_models(), list))
